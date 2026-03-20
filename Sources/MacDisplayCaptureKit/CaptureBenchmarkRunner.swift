@@ -75,47 +75,6 @@ struct MDKCaptureBenchmarkTimeline {
     }
 }
 
-private final class MDKCaptureBenchmarkTimelineBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var timeline = MDKCaptureBenchmarkTimeline()
-    private let timeSource: @Sendable () -> TimeInterval
-    private var isRecording = false
-
-    init(timeSource: @escaping @Sendable () -> TimeInterval) {
-        self.timeSource = timeSource
-    }
-
-    func recordFrame() {
-        lock.lock()
-        if isRecording {
-            timeline.recordFrame(at: timeSource())
-        }
-        lock.unlock()
-    }
-
-    func beginRecording() {
-        lock.lock()
-        timeline = MDKCaptureBenchmarkTimeline()
-        isRecording = true
-        lock.unlock()
-    }
-
-    func endRecording() -> MDKCaptureBenchmarkTimeline {
-        lock.lock()
-        isRecording = false
-        let capturedTimeline = timeline
-        lock.unlock()
-        return capturedTimeline
-    }
-
-    func snapshot() -> MDKCaptureBenchmarkTimeline {
-        lock.lock()
-        let capturedTimeline = timeline
-        lock.unlock()
-        return capturedTimeline
-    }
-}
-
 struct MDKCaptureBenchmarkProcessingSnapshot {
     let processedFrameCount: UInt64
     let processingFailureCount: UInt64
@@ -127,94 +86,92 @@ struct MDKCaptureBenchmarkFrameSnapshot {
     let pixelFormat: UInt32?
 }
 
-private final class MDKCaptureBenchmarkProcessingBox: @unchecked Sendable {
-    private let lock = NSLock()
+private struct MDKCaptureBenchmarkRecordingSnapshot {
+    let timeline: MDKCaptureBenchmarkTimeline
+    let processing: MDKCaptureBenchmarkProcessingSnapshot
+    let deliveredFrame: MDKCaptureBenchmarkFrameSnapshot
+}
+
+private actor MDKCaptureBenchmarkRecorder {
+    private var timeline = MDKCaptureBenchmarkTimeline()
     private var processedFrameCount: UInt64 = 0
     private var processingFailureCount: UInt64 = 0
+    private var deliveredFrameWidth: Int?
+    private var deliveredFrameHeight: Int?
+    private var deliveredFramePixelFormat: UInt32?
     private var isRecording = false
 
-    func recordSuccess() {
-        lock.lock()
-        if isRecording {
-            processedFrameCount += 1
-        }
-        lock.unlock()
-    }
-
-    func recordFailure() {
-        lock.lock()
-        if isRecording {
-            processingFailureCount += 1
-        }
-        lock.unlock()
-    }
-
     func beginRecording() {
-        lock.lock()
+        timeline = MDKCaptureBenchmarkTimeline()
         processedFrameCount = 0
         processingFailureCount = 0
+        deliveredFrameWidth = nil
+        deliveredFrameHeight = nil
+        deliveredFramePixelFormat = nil
         isRecording = true
-        lock.unlock()
     }
 
-    func endRecording() -> MDKCaptureBenchmarkProcessingSnapshot {
-        lock.lock()
+    func recordFrame(
+        at time: TimeInterval,
+        width: Int,
+        height: Int,
+        pixelFormat: UInt32,
+        processingSucceeded: Bool
+    ) {
+        guard isRecording else {
+            return
+        }
+
+        timeline.recordFrame(at: time)
+
+        if deliveredFrameWidth == nil {
+            deliveredFrameWidth = width
+            deliveredFrameHeight = height
+            deliveredFramePixelFormat = pixelFormat
+        }
+
+        if processingSucceeded {
+            processedFrameCount += 1
+        } else {
+            processingFailureCount += 1
+        }
+    }
+
+    func finishRecording() -> MDKCaptureBenchmarkRecordingSnapshot {
         isRecording = false
-        let snapshot = MDKCaptureBenchmarkProcessingSnapshot(
-            processedFrameCount: processedFrameCount,
-            processingFailureCount: processingFailureCount
+        return MDKCaptureBenchmarkRecordingSnapshot(
+            timeline: timeline,
+            processing: MDKCaptureBenchmarkProcessingSnapshot(
+                processedFrameCount: processedFrameCount,
+                processingFailureCount: processingFailureCount
+            ),
+            deliveredFrame: MDKCaptureBenchmarkFrameSnapshot(
+                width: deliveredFrameWidth,
+                height: deliveredFrameHeight,
+                pixelFormat: deliveredFramePixelFormat
+            )
         )
-        lock.unlock()
-        return snapshot
-    }
-
-    func snapshot() -> MDKCaptureBenchmarkProcessingSnapshot {
-        lock.lock()
-        let snapshot = MDKCaptureBenchmarkProcessingSnapshot(
-            processedFrameCount: processedFrameCount,
-            processingFailureCount: processingFailureCount
-        )
-        lock.unlock()
-        return snapshot
     }
 }
 
-private final class MDKCaptureBenchmarkFrameBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var width: Int?
-    private var height: Int?
-    private var pixelFormat: UInt32?
-    private var isRecording = false
+private final class MDKCaptureBenchmarkBridgeBox<T>: @unchecked Sendable {
+    var result: T?
+}
 
-    func record(frame: MDKCaptureFrame) {
-        lock.lock()
-        if isRecording, width == nil {
-            width = frame.width
-            height = frame.height
-            pixelFormat = frame.pixelFormat
+private enum MDKCaptureBenchmarkActorBridge {
+    static func wait<T>(
+        _ operation: @escaping @Sendable () async -> T
+    ) -> T {
+        let semaphore = DispatchSemaphore(value: 0)
+        let box = MDKCaptureBenchmarkBridgeBox<T>()
+
+        Task { [box] in
+            box.result = await operation()
+            semaphore.signal()
         }
-        lock.unlock()
-    }
 
-    func beginRecording() {
-        lock.lock()
-        width = nil
-        height = nil
-        pixelFormat = nil
-        isRecording = true
-        lock.unlock()
-    }
-
-    func endRecording() -> MDKCaptureBenchmarkFrameSnapshot {
-        lock.lock()
-        isRecording = false
-        let snapshot = MDKCaptureBenchmarkFrameSnapshot(
-            width: width,
-            height: height,
-            pixelFormat: pixelFormat
-        )
-        lock.unlock()
-        return snapshot
+        semaphore.wait()
+        return box.result!
     }
 }
 
@@ -332,19 +289,33 @@ public enum MDKCaptureBenchmarkRunner {
         let clampedWarmupDuration = max(warmupDuration, 0)
         let clampedSampleDuration = max(sampleDuration, 0)
         let session = try makeSession(configuration)
-        let timeline = MDKCaptureBenchmarkTimelineBox(timeSource: timeSource)
-        let processing = MDKCaptureBenchmarkProcessingBox()
-        let deliveredFrame = MDKCaptureBenchmarkFrameBox()
+        let recorder = MDKCaptureBenchmarkRecorder()
+        let pendingRecordings = DispatchGroup()
         let processor = try makeProcessor()
 
         try session.start { frame in
-            timeline.recordFrame()
-            deliveredFrame.record(frame: frame)
+            let processingSucceeded: Bool
             do {
                 try processor.process(frame: frame)
-                processing.recordSuccess()
+                processingSucceeded = true
             } catch {
-                processing.recordFailure()
+                processingSucceeded = false
+            }
+
+            pendingRecordings.enter()
+            let frameWidth = frame.width
+            let frameHeight = frame.height
+            let framePixelFormat = frame.pixelFormat
+            let frameTime = timeSource()
+            Task {
+                await recorder.recordFrame(
+                    at: frameTime,
+                    width: frameWidth,
+                    height: frameHeight,
+                    pixelFormat: framePixelFormat,
+                    processingSucceeded: processingSucceeded
+                )
+                pendingRecordings.leave()
             }
         }
 
@@ -352,27 +323,29 @@ public enum MDKCaptureBenchmarkRunner {
             sleeper(clampedWarmupDuration)
         }
 
-        let measurementStartedAt = timeSource()
+        pendingRecordings.wait()
         let baselineStats = session.statistics
-        timeline.beginRecording()
-        processing.beginRecording()
-        deliveredFrame.beginRecording()
+        MDKCaptureBenchmarkActorBridge.wait {
+            await recorder.beginRecording()
+        }
+        let measurementStartedAt = timeSource()
         sleeper(clampedSampleDuration)
-        let measuredTimeline = timeline.endRecording()
-        let measuredProcessing = processing.endRecording()
-        let measuredDeliveredFrame = deliveredFrame.endRecording()
-        let measuredStats = session.statistics.delta(since: baselineStats)
         session.stop()
+        pendingRecordings.wait()
+        let measuredStats = session.statistics.delta(since: baselineStats)
+        let recording = MDKCaptureBenchmarkActorBridge.wait {
+            await recorder.finishRecording()
+        }
 
         let measuredDuration = max(timeSource() - measurementStartedAt, 0)
         return MDKCaptureBenchmarkAnalyzer.result(
             configuration: configuration,
             stats: measuredStats,
-            processing: measuredProcessing,
-            deliveredFrame: measuredDeliveredFrame,
+            processing: recording.processing,
+            deliveredFrame: recording.deliveredFrame,
             sampleDuration: clampedSampleDuration,
             measuredDuration: measuredDuration,
-            timeline: measuredTimeline,
+            timeline: recording.timeline,
             runStartedAt: measurementStartedAt
         )
     }
