@@ -25,6 +25,10 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
         let result = MDKCaptureBenchmarkAnalyzer.result(
             configuration: configuration,
             stats: stats,
+            processing: MDKCaptureBenchmarkProcessingSnapshot(
+                processedFrameCount: 120,
+                processingFailureCount: 0
+            ),
             sampleDuration: 1.0,
             measuredDuration: 1.2,
             timeline: timeline,
@@ -38,6 +42,14 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
         XCTAssertEqual(result.observedFrameRate, 120.0, accuracy: 0.05)
         XCTAssertEqual(result.deliveryRatio, 1.0, accuracy: 0.001)
         XCTAssertEqual(result.firstFrameLatency ?? -1, 0.1, accuracy: 0.0001)
+        XCTAssertEqual(result.processedFrameCount, 120)
+        XCTAssertEqual(result.processingFailureCount, 0)
+        XCTAssertEqual(
+            result.processedFrameRate,
+            Double(result.processedFrameCount) / (11.0916666667 - 10.1),
+            accuracy: 0.001
+        )
+        XCTAssertEqual(result.processedFrameRatio, 1.0, accuracy: 0.001)
     }
 
     func testAnalyzerFallsBackToMeasuredDurationWithoutFrameTimeline() {
@@ -60,6 +72,10 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
         let result = MDKCaptureBenchmarkAnalyzer.result(
             configuration: configuration,
             stats: stats,
+            processing: MDKCaptureBenchmarkProcessingSnapshot(
+                processedFrameCount: 1,
+                processingFailureCount: 0
+            ),
             sampleDuration: 1.0,
             measuredDuration: 1.5,
             timeline: MDKCaptureBenchmarkTimeline(),
@@ -82,6 +98,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
             dynamicRangeMode: .hdrCanonical
         )
         let session = FakeCaptureSession(backend: .cgDisplayStream)
+        let processor = FakeFrameProcessor()
         let timeBox = FakeTimeBox(initial: 20.0)
 
         let result = try MDKCaptureBenchmarkRunner.run(
@@ -89,6 +106,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
             warmupDuration: 0,
             sampleDuration: 1.0,
             makeSession: { _ in session },
+            makeProcessor: { processor },
             timeSource: { timeBox.currentTime },
             sleeper: { duration in
                 timeBox.advance(by: 0.05)
@@ -108,6 +126,10 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
         XCTAssertEqual(result.observedFrameRate, 20.0, accuracy: 0.001)
         XCTAssertEqual(result.deliveryRatio, 20.0 / 120.0, accuracy: 0.001)
         XCTAssertEqual(result.firstFrameLatency ?? -1, 0.05, accuracy: 0.0001)
+        XCTAssertEqual(result.processedFrameCount, 2)
+        XCTAssertEqual(result.processingFailureCount, 0)
+        XCTAssertEqual(result.processedFrameRatio, 1.0, accuracy: 0.001)
+        XCTAssertEqual(processor.processedFrameCount, 2)
         XCTAssertFalse(session.isRunning)
     }
 
@@ -152,7 +174,11 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                     skippedFrameCount: 2,
                     observedFrameRate: 117.7,
                     deliveryRatio: 117.7 / 120.0,
-                    firstFrameLatency: 0.02
+                    firstFrameLatency: 0.02,
+                    processedFrameCount: 118,
+                    processingFailureCount: 0,
+                    processedFrameRate: 117.7,
+                    processedFrameRatio: 1.0
                 )
             }
         )
@@ -183,7 +209,11 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 skippedFrameCount: 1,
                 observedFrameRate: 114.0,
                 deliveryRatio: 0.95,
-                firstFrameLatency: 0.03
+                firstFrameLatency: 0.03,
+                processedFrameCount: 119,
+                processingFailureCount: 0,
+                processedFrameRate: 114.0,
+                processedFrameRatio: 1.0
             ),
             errorDescription: nil
         )
@@ -211,7 +241,11 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 skippedFrameCount: 10,
                 observedFrameRate: 80.0,
                 deliveryRatio: 0.66,
-                firstFrameLatency: 0.12
+                firstFrameLatency: 0.12,
+                processedFrameCount: 76,
+                processingFailureCount: 4,
+                processedFrameRate: 76.0,
+                processedFrameRatio: 0.95
             ),
             errorDescription: nil
         )
@@ -240,7 +274,11 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 skippedFrameCount: 0,
                 observedFrameRate: 60.0,
                 deliveryRatio: 0.50,
-                firstFrameLatency: 0.11
+                firstFrameLatency: 0.11,
+                processedFrameCount: 60,
+                processingFailureCount: 0,
+                processedFrameRate: 60.0,
+                processedFrameRatio: 1.0
             ),
             errorDescription: nil
         )
@@ -258,7 +296,11 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 skippedFrameCount: 2,
                 observedFrameRate: 114.0,
                 deliveryRatio: 0.95,
-                firstFrameLatency: 0.04
+                firstFrameLatency: 0.04,
+                processedFrameCount: 118,
+                processingFailureCount: 0,
+                processedFrameRate: 114.0,
+                processedFrameRatio: 1.0
             ),
             errorDescription: nil
         )
@@ -334,7 +376,11 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                         skippedFrameCount: 1,
                         observedFrameRate: 114.0,
                         deliveryRatio: 0.95,
-                        firstFrameLatency: 0.03
+                        firstFrameLatency: 0.03,
+                        processedFrameCount: 119,
+                        processingFailureCount: 0,
+                        processedFrameRate: 114.0,
+                        processedFrameRatio: 1.0
                     ),
                     errorDescription: nil
                 )
@@ -352,6 +398,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
         XCTAssertEqual(report.measurements.count, 1)
         XCTAssertEqual(report.measurements[0].backend, "cgdisplaystream")
         XCTAssertEqual(report.measurements[0].observedFrameRate ?? -1, 114.0, accuracy: 0.001)
+        XCTAssertEqual(report.measurements[0].processedFrameCount, 119)
         XCTAssertEqual(decoded, report)
     }
 
@@ -366,6 +413,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
             dynamicRangeMode: .hdrCanonical
         )
         let session = FakeCaptureSession(backend: .cgDisplayStream)
+        let processor = FakeFrameProcessor()
         let timeBox = FakeTimeBox(initial: 100.0)
 
         let result = try MDKCaptureBenchmarkRunner.run(
@@ -373,6 +421,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
             warmupDuration: 0.5,
             sampleDuration: 1.0,
             makeSession: { _ in session },
+            makeProcessor: { processor },
             timeSource: { timeBox.currentTime },
             sleeper: { duration in
                 switch duration {
@@ -402,6 +451,44 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
         XCTAssertEqual(result.observedFrameRate, 5.0, accuracy: 0.001)
         XCTAssertEqual(result.deliveryRatio, 5.0 / 120.0, accuracy: 0.001)
         XCTAssertEqual(result.firstFrameLatency ?? -1, 0.20, accuracy: 0.0001)
+        XCTAssertEqual(result.processedFrameCount, 2)
+        XCTAssertEqual(processor.processedFrameCount, 3)
+    }
+
+    func testRunnerRecordsProcessingFailuresSeparatelyFromCaptureDelivery() throws {
+        let configuration = MDKCaptureConfiguration(
+            displayID: 99,
+            width: 3840,
+            height: 2160,
+            frameRate: 120,
+            pixelFormat: 0x78343230,
+            backend: .cgDisplayStream,
+            dynamicRangeMode: .hdrCanonical
+        )
+        let session = FakeCaptureSession(backend: .cgDisplayStream)
+        let processor = FakeFrameProcessor(failingSequenceNumbers: [2])
+        let timeBox = FakeTimeBox(initial: 30.0)
+
+        let result = try MDKCaptureBenchmarkRunner.run(
+            configuration: configuration,
+            warmupDuration: 0,
+            sampleDuration: 1.0,
+            makeSession: { _ in session },
+            makeProcessor: { processor },
+            timeSource: { timeBox.currentTime },
+            sleeper: { duration in
+                timeBox.advance(by: 0.10)
+                session.emitFrame()
+                timeBox.advance(by: 0.10)
+                session.emitFrame()
+                timeBox.advance(by: max(duration - 0.20, 0))
+            }
+        )
+
+        XCTAssertEqual(result.deliveredFrameCount, 2)
+        XCTAssertEqual(result.processedFrameCount, 1)
+        XCTAssertEqual(result.processingFailureCount, 1)
+        XCTAssertEqual(result.processedFrameRatio, 0.5, accuracy: 0.001)
     }
 
     func testPlannerMarksBackendsUnavailableWhenScreenCapturePermissionIsMissing() {
@@ -481,6 +568,22 @@ private final class FakeCaptureSession: MDKCaptureSessionControlling {
             skippedFrameCount: statistics.skippedFrameCount + 1,
             lastDisplayTime: statistics.lastDisplayTime + 1
         )
+    }
+}
+
+private final class FakeFrameProcessor: MDKCaptureFrameProcessing, @unchecked Sendable {
+    private(set) var processedFrameCount: UInt64 = 0
+    private let failingSequenceNumbers: Set<UInt64>
+
+    init(failingSequenceNumbers: Set<UInt64> = []) {
+        self.failingSequenceNumbers = failingSequenceNumbers
+    }
+
+    func process(frame: MDKCaptureFrame) throws {
+        if failingSequenceNumbers.contains(frame.sequenceNumber) {
+            throw MDKCaptureFrameProcessingError.surfaceUnavailable
+        }
+        processedFrameCount += 1
     }
 }
 

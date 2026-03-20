@@ -12,6 +12,10 @@ public final class MDKCaptureBenchmarkResult: NSObject {
     public let observedFrameRate: Double
     public let deliveryRatio: Double
     public let firstFrameLatency: TimeInterval?
+    public let processedFrameCount: UInt64
+    public let processingFailureCount: UInt64
+    public let processedFrameRate: Double
+    public let processedFrameRatio: Double
 
     public init(
         backend: MDKCaptureBackend,
@@ -23,7 +27,11 @@ public final class MDKCaptureBenchmarkResult: NSObject {
         skippedFrameCount: UInt64,
         observedFrameRate: Double,
         deliveryRatio: Double,
-        firstFrameLatency: TimeInterval?
+        firstFrameLatency: TimeInterval?,
+        processedFrameCount: UInt64,
+        processingFailureCount: UInt64,
+        processedFrameRate: Double,
+        processedFrameRatio: Double
     ) {
         self.backend = backend
         self.requestedFrameRate = requestedFrameRate
@@ -35,6 +43,10 @@ public final class MDKCaptureBenchmarkResult: NSObject {
         self.observedFrameRate = observedFrameRate
         self.deliveryRatio = deliveryRatio
         self.firstFrameLatency = firstFrameLatency
+        self.processedFrameCount = processedFrameCount
+        self.processingFailureCount = processingFailureCount
+        self.processedFrameRate = processedFrameRate
+        self.processedFrameRatio = processedFrameRatio
         super.init()
     }
 }
@@ -92,10 +104,68 @@ private final class MDKCaptureBenchmarkTimelineBox: @unchecked Sendable {
     }
 }
 
+struct MDKCaptureBenchmarkProcessingSnapshot {
+    let processedFrameCount: UInt64
+    let processingFailureCount: UInt64
+}
+
+private final class MDKCaptureBenchmarkProcessingBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var processedFrameCount: UInt64 = 0
+    private var processingFailureCount: UInt64 = 0
+    private var isRecording = false
+
+    func recordSuccess() {
+        lock.lock()
+        if isRecording {
+            processedFrameCount += 1
+        }
+        lock.unlock()
+    }
+
+    func recordFailure() {
+        lock.lock()
+        if isRecording {
+            processingFailureCount += 1
+        }
+        lock.unlock()
+    }
+
+    func beginRecording() {
+        lock.lock()
+        processedFrameCount = 0
+        processingFailureCount = 0
+        isRecording = true
+        lock.unlock()
+    }
+
+    func endRecording() -> MDKCaptureBenchmarkProcessingSnapshot {
+        lock.lock()
+        isRecording = false
+        let snapshot = MDKCaptureBenchmarkProcessingSnapshot(
+            processedFrameCount: processedFrameCount,
+            processingFailureCount: processingFailureCount
+        )
+        lock.unlock()
+        return snapshot
+    }
+
+    func snapshot() -> MDKCaptureBenchmarkProcessingSnapshot {
+        lock.lock()
+        let snapshot = MDKCaptureBenchmarkProcessingSnapshot(
+            processedFrameCount: processedFrameCount,
+            processingFailureCount: processingFailureCount
+        )
+        lock.unlock()
+        return snapshot
+    }
+}
+
 enum MDKCaptureBenchmarkAnalyzer {
     static func result(
         configuration: MDKCaptureConfiguration,
         stats: MDKCaptureSessionStatistics,
+        processing: MDKCaptureBenchmarkProcessingSnapshot,
         sampleDuration: TimeInterval,
         measuredDuration: TimeInterval,
         timeline: MDKCaptureBenchmarkTimeline,
@@ -122,6 +192,20 @@ enum MDKCaptureBenchmarkAnalyzer {
 
         let firstFrameLatency = timeline.firstFrameTime.map { max($0 - runStartedAt, 0) }
 
+        let processedFrameRate: Double
+        let processedFrameRatio: Double
+        if effectiveDuration > 0 {
+            processedFrameRate = Double(processing.processedFrameCount) / effectiveDuration
+            if stats.deliveredFrameCount > 0 {
+                processedFrameRatio = Double(processing.processedFrameCount) / Double(stats.deliveredFrameCount)
+            } else {
+                processedFrameRatio = 0
+            }
+        } else {
+            processedFrameRate = 0
+            processedFrameRatio = 0
+        }
+
         return MDKCaptureBenchmarkResult(
             backend: configuration.backend,
             requestedFrameRate: configuration.frameRate,
@@ -132,7 +216,11 @@ enum MDKCaptureBenchmarkAnalyzer {
             skippedFrameCount: stats.skippedFrameCount,
             observedFrameRate: observedFrameRate,
             deliveryRatio: deliveryRatio,
-            firstFrameLatency: firstFrameLatency
+            firstFrameLatency: firstFrameLatency,
+            processedFrameCount: processing.processedFrameCount,
+            processingFailureCount: processing.processingFailureCount,
+            processedFrameRate: processedFrameRate,
+            processedFrameRatio: processedFrameRatio
         )
     }
 }
@@ -158,6 +246,7 @@ public enum MDKCaptureBenchmarkRunner {
             warmupDuration: warmupDuration,
             sampleDuration: sampleDuration,
             makeSession: MDKCaptureSessionFactory.makeSession(configuration:),
+            makeProcessor: { try MDKMetalTextureBindingProcessor() },
             timeSource: { ProcessInfo.processInfo.systemUptime },
             sleeper: { Thread.sleep(forTimeInterval: $0) }
         )
@@ -168,6 +257,7 @@ public enum MDKCaptureBenchmarkRunner {
         warmupDuration: TimeInterval,
         sampleDuration: TimeInterval,
         makeSession: (MDKCaptureConfiguration) throws -> MDKCaptureSessionControlling,
+        makeProcessor: () throws -> any MDKCaptureFrameProcessing,
         timeSource: @escaping @Sendable () -> TimeInterval,
         sleeper: (TimeInterval) -> Void
     ) throws -> MDKCaptureBenchmarkResult {
@@ -175,9 +265,17 @@ public enum MDKCaptureBenchmarkRunner {
         let clampedSampleDuration = max(sampleDuration, 0)
         let session = try makeSession(configuration)
         let timeline = MDKCaptureBenchmarkTimelineBox(timeSource: timeSource)
+        let processing = MDKCaptureBenchmarkProcessingBox()
+        let processor = try makeProcessor()
 
-        try session.start { _ in
+        try session.start { frame in
             timeline.recordFrame()
+            do {
+                try processor.process(frame: frame)
+                processing.recordSuccess()
+            } catch {
+                processing.recordFailure()
+            }
         }
 
         if clampedWarmupDuration > 0 {
@@ -187,8 +285,10 @@ public enum MDKCaptureBenchmarkRunner {
         let measurementStartedAt = timeSource()
         let baselineStats = session.statistics
         timeline.beginRecording()
+        processing.beginRecording()
         sleeper(clampedSampleDuration)
         let measuredTimeline = timeline.endRecording()
+        let measuredProcessing = processing.endRecording()
         let measuredStats = session.statistics.delta(since: baselineStats)
         session.stop()
 
@@ -196,6 +296,7 @@ public enum MDKCaptureBenchmarkRunner {
         return MDKCaptureBenchmarkAnalyzer.result(
             configuration: configuration,
             stats: measuredStats,
+            processing: measuredProcessing,
             sampleDuration: clampedSampleDuration,
             measuredDuration: measuredDuration,
             timeline: measuredTimeline,

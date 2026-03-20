@@ -17,6 +17,10 @@ public struct MDKCaptureBenchmarkMeasurementReport: Codable, Equatable, Sendable
     public let observedFrameRate: Double?
     public let deliveryRatio: Double?
     public let firstFrameLatency: TimeInterval?
+    public let processedFrameCount: UInt64?
+    public let processingFailureCount: UInt64?
+    public let processedFrameRate: Double?
+    public let processedFrameRatio: Double?
 }
 
 public struct MDKCaptureBenchmarkSuiteReport: Codable, Equatable, Sendable {
@@ -60,7 +64,11 @@ public enum MDKCaptureBenchmarkReport {
                 skippedFrameCount: result?.skippedFrameCount,
                 observedFrameRate: result?.observedFrameRate,
                 deliveryRatio: result?.deliveryRatio,
-                firstFrameLatency: result?.firstFrameLatency
+                firstFrameLatency: result?.firstFrameLatency,
+                processedFrameCount: result?.processedFrameCount,
+                processingFailureCount: result?.processingFailureCount,
+                processedFrameRate: result?.processedFrameRate,
+                processedFrameRatio: result?.processedFrameRatio
             )
         }
 
@@ -124,4 +132,5 @@ public enum MDKCaptureBenchmarkReport {
             return "compare-backends"
         }
     }
+
 }

@@ -9,6 +9,7 @@ enum MDKHostBenchmarkFormatter {
         lines.append("Target: \(suite.plan.target.name)")
         lines.append("Target ID: \(suite.plan.target.identifier)")
         lines.append("Intent: \(suite.plan.intent == .compareBackends ? "compare-backends" : "validate-default-backend")")
+        lines.append("Processing path: metal-texture-binding")
         lines.append("Screen capture access: \(suite.plan.screenCaptureAccessAuthorized ? "authorized" : "not authorized")")
         lines.append("Warmup duration: \(String(format: "%.2fs", suite.warmupDuration))")
         lines.append("Sample duration: \(String(format: "%.2fs", suite.sampleDuration))")
@@ -37,6 +38,10 @@ enum MDKHostBenchmarkFormatter {
                 if let firstFrameLatency = result.firstFrameLatency {
                     lines.append("First frame latency: \(String(format: "%.3fs", firstFrameLatency))")
                 }
+                lines.append("Processed frames: \(result.processedFrameCount)")
+                lines.append("Processing failures: \(result.processingFailureCount)")
+                lines.append("Processed FPS: \(String(format: "%.2f", result.processedFrameRate))")
+                lines.append("Processed ratio: \(String(format: "%.3f", result.processedFrameRatio))")
             }
             lines.append("Summary: \(measurementAssessment.summary)")
             if !measurementAssessment.failedExpectations.isEmpty {
@@ -57,6 +62,8 @@ enum MDKHostBenchmarkFormatter {
             return "AVFoundation"
         case .cgDisplayStream:
             return "CGDisplayStream"
+        @unknown default:
+            return "Unknown"
         }
     }
 }
