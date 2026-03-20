@@ -24,6 +24,25 @@ public struct MDKCaptureFrame: Sendable, Equatable {
     public let width: Int
     public let height: Int
     public let pixelFormat: UInt32
+    public let surface: MDKCaptureSurface?
+
+    public init(
+        sequenceNumber: UInt64,
+        displayTime: UInt64,
+        surfaceID: UInt32,
+        width: Int,
+        height: Int,
+        pixelFormat: UInt32,
+        surface: MDKCaptureSurface? = nil
+    ) {
+        self.sequenceNumber = sequenceNumber
+        self.displayTime = displayTime
+        self.surfaceID = surfaceID
+        self.width = width
+        self.height = height
+        self.pixelFormat = pixelFormat
+        self.surface = surface
+    }
 }
 
 public struct MDKCaptureSessionStatistics: Sendable, Equatable {
@@ -264,7 +283,8 @@ private final class MDKCGDisplayStreamCaptureDriver: MDKCaptureSessionDriver {
                 surfaceID: IOSurfaceGetID(surface),
                 width: IOSurfaceGetWidth(surface),
                 height: IOSurfaceGetHeight(surface),
-                pixelFormat: IOSurfaceGetPixelFormat(surface)
+                pixelFormat: IOSurfaceGetPixelFormat(surface),
+                surface: MDKCaptureSurface(ioSurface: surface)
             )
         )
     }

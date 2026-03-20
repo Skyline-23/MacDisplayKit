@@ -25,7 +25,7 @@ struct MDKAVFoundationScreenInputConfiguration: Equatable {
 func makeMDKAVFoundationScreenInputConfiguration(
     for configuration: MDKCaptureConfiguration
 ) -> MDKAVFoundationScreenInputConfiguration {
-    MDKAVFoundationScreenInputConfiguration(
+    return MDKAVFoundationScreenInputConfiguration(
         minFrameDuration: MDKFrameDuration(for: configuration.frameRate),
         capturesCursor: false,
         capturesMouseClicks: false
@@ -152,10 +152,13 @@ extension MDKAVFoundationCaptureDriver: AVCaptureVideoDataOutputSampleBufferDele
         let height = CVPixelBufferGetHeight(pixelBuffer)
         let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
         let surfaceID: UInt32
+        let captureSurface: MDKCaptureSurface?
         if let surface = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue() {
             surfaceID = IOSurfaceGetID(surface)
+            captureSurface = MDKCaptureSurface(ioSurface: surface)
         } else {
             surfaceID = 0
+            captureSurface = nil
         }
 
         let callback: MDKCaptureFrameHandler?
@@ -182,7 +185,8 @@ extension MDKAVFoundationCaptureDriver: AVCaptureVideoDataOutputSampleBufferDele
                 surfaceID: surfaceID,
                 width: width,
                 height: height,
-                pixelFormat: pixelFormat
+                pixelFormat: pixelFormat,
+                surface: captureSurface
             )
         )
     }

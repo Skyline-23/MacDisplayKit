@@ -30,7 +30,8 @@ let project = Project(
                 .target(name: "MacDisplayKitObjCShim"),
                 .sdk(name: "CoreGraphics", type: .framework),
                 .sdk(name: "CoreVideo", type: .framework),
-                .sdk(name: "IOSurface", type: .framework)
+                .sdk(name: "IOSurface", type: .framework),
+                .sdk(name: "Metal", type: .framework)
             ],
             settings: .settings(
                 base: [
