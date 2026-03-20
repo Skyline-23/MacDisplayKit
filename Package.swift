@@ -92,7 +92,10 @@ let package = Package(
         ),
         .testTarget(
             name: "MacDisplayKitTests",
-            dependencies: ["MacDisplayKit"],
+            dependencies: [
+                "MacDisplayKit",
+                "MacDisplayCaptureKit"
+            ],
             path: "Tests/MacDisplayKitTests"
         )
     ],

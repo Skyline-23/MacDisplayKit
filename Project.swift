@@ -188,7 +188,8 @@ let project = Project(
                 "Tests/MacDisplayKitTests/**/*.{swift,m,mm,c,cpp}"
             ],
             dependencies: [
-                .target(name: "MacDisplayKit")
+                .target(name: "MacDisplayKit"),
+                .target(name: "MacDisplayCaptureKit")
             ]
         )
     ],
