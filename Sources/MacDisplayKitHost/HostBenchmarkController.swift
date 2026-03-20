@@ -13,6 +13,14 @@ final class MDKHostBenchmarkController {
         MDKCapabilityMatrix.optimizationTargets()
     }
 
+    func display(id: UInt32) -> MDKDisplayDescriptor? {
+        availableDisplays().first { $0.id == id }
+    }
+
+    func target(identifier: String) -> MDKCaptureOptimizationTarget? {
+        MDKCaptureOptimizationTargets.target(identifier: identifier)
+    }
+
     func runBenchmark(
         display: MDKDisplayDescriptor,
         target: MDKCaptureOptimizationTarget,

@@ -83,6 +83,8 @@ let project = Project(
                 base: [
                     "PRODUCT_NAME": "MacDisplayKitLegacyHost",
                     "GENERATE_INFOPLIST_FILE": "YES",
+                    "BUILD_LIBRARY_FOR_DISTRIBUTION": "NO",
+                    "SWIFT_ENABLE_LIBRARY_EVOLUTION": "NO",
                     "HEADER_SEARCH_PATHS": [
                         "$(SRCROOT)",
                         "$(SRCROOT)/Sources/MacDisplayKitObjCShim/LegacyRuntime"
@@ -173,7 +175,9 @@ let project = Project(
             settings: .settings(
                 base: [
                     "PRODUCT_NAME": "MacDisplayKitHost",
-                    "GENERATE_INFOPLIST_FILE": "YES"
+                    "GENERATE_INFOPLIST_FILE": "YES",
+                    "BUILD_LIBRARY_FOR_DISTRIBUTION": "NO",
+                    "SWIFT_ENABLE_LIBRARY_EVOLUTION": "NO"
                 ]
             )
         ),

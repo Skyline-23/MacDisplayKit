@@ -285,6 +285,63 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
         XCTAssertFalse(validateSuite.assessment.passed)
         XCTAssertTrue(compareSuite.assessment.passed)
     }
+
+    func testOptimizationTargetsExposeStableIdentifiers() {
+        XCTAssertEqual(
+            MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly.identifier,
+            "uhd-hdr-120-capture-only"
+        )
+        XCTAssertEqual(
+            MDKCaptureOptimizationTargets.target(identifier: "qhd-hdr-120-virtual-display")?.name,
+            "QHD HDR 120 Virtual Display"
+        )
+    }
+
+    func testSuiteReportEncodesAssessmentAndMeasurementMetrics() throws {
+        let display = MDKDisplayDescriptor(id: 77, name: "77", localizedName: "Test Display")
+        let target = MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly
+        let suite = MDKCaptureBenchmarkSuiteResult(
+            plan: MDKCaptureBenchmarkPlan(
+                target: target,
+                display: display,
+                intent: .validateDefaultBackend,
+                candidates: []
+            ),
+            pixelFormat: 0x78343230,
+            sampleDuration: 1.0,
+            measurements: [
+                MDKCaptureBenchmarkMeasurement(
+                    backend: .cgDisplayStream,
+                    available: true,
+                    reason: "Primary backend available.",
+                    result: MDKCaptureBenchmarkResult(
+                        backend: .cgDisplayStream,
+                        requestedFrameRate: 120,
+                        requestedSampleDuration: 1.0,
+                        measuredDuration: 1.02,
+                        callbackCount: 120,
+                        deliveredFrameCount: 119,
+                        skippedFrameCount: 1,
+                        observedFrameRate: 114.0,
+                        deliveryRatio: 0.95,
+                        firstFrameLatency: 0.03
+                    ),
+                    errorDescription: nil
+                )
+            ]
+        )
+
+        let report = MDKCaptureBenchmarkReport.make(from: suite)
+        let jsonData = try MDKCaptureBenchmarkReport.jsonData(for: suite)
+        let decoded = try JSONDecoder().decode(MDKCaptureBenchmarkSuiteReport.self, from: jsonData)
+
+        XCTAssertEqual(report.targetIdentifier, "uhd-hdr-120-capture-only")
+        XCTAssertTrue(report.suitePassed)
+        XCTAssertEqual(report.measurements.count, 1)
+        XCTAssertEqual(report.measurements[0].backend, "cgdisplaystream")
+        XCTAssertEqual(report.measurements[0].observedFrameRate ?? -1, 114.0, accuracy: 0.001)
+        XCTAssertEqual(decoded, report)
+    }
 }
 
 private final class FakeCaptureSession: MDKCaptureSessionControlling {

@@ -8,6 +8,7 @@ public enum MDKCaptureScenarioTopology: Int {
 
 @objcMembers
 public final class MDKCaptureOptimizationTarget: NSObject, NSCopying {
+    public let identifier: String
     public let name: String
     public let topology: MDKCaptureScenarioTopology
     public let width: Int
@@ -19,6 +20,7 @@ public final class MDKCaptureOptimizationTarget: NSObject, NSCopying {
     public let notes: [String]
 
     public init(
+        identifier: String,
         name: String,
         topology: MDKCaptureScenarioTopology,
         width: Int,
@@ -29,6 +31,7 @@ public final class MDKCaptureOptimizationTarget: NSObject, NSCopying {
         acceptanceThresholds: MDKCaptureBenchmarkThresholds,
         notes: [String]
     ) {
+        self.identifier = identifier
         self.name = name
         self.topology = topology
         self.width = width
@@ -63,6 +66,7 @@ public final class MDKCaptureOptimizationTarget: NSObject, NSCopying {
 
     public func copy(with zone: NSZone? = nil) -> Any {
         MDKCaptureOptimizationTarget(
+            identifier: identifier,
             name: name,
             topology: topology,
             width: width,
@@ -79,6 +83,7 @@ public final class MDKCaptureOptimizationTarget: NSObject, NSCopying {
 public enum MDKCaptureOptimizationTargets {
     public static var uhdHDR120CaptureOnly: MDKCaptureOptimizationTarget {
         MDKCaptureOptimizationTarget(
+            identifier: "uhd-hdr-120-capture-only",
             name: "UHD HDR 120 Capture Only",
             topology: .captureOnly,
             width: 3840,
@@ -100,6 +105,7 @@ public enum MDKCaptureOptimizationTargets {
 
     public static var uhdHDR120VirtualDisplay: MDKCaptureOptimizationTarget {
         MDKCaptureOptimizationTarget(
+            identifier: "uhd-hdr-120-virtual-display",
             name: "UHD HDR 120 Virtual Display",
             topology: .virtualDisplay,
             width: 3840,
@@ -121,6 +127,7 @@ public enum MDKCaptureOptimizationTargets {
 
     public static var qhdHDR120VirtualDisplay: MDKCaptureOptimizationTarget {
         MDKCaptureOptimizationTarget(
+            identifier: "qhd-hdr-120-virtual-display",
             name: "QHD HDR 120 Virtual Display",
             topology: .virtualDisplay,
             width: 2560,
@@ -146,5 +153,9 @@ public enum MDKCaptureOptimizationTargets {
             uhdHDR120VirtualDisplay,
             qhdHDR120VirtualDisplay
         ]
+    }
+
+    public static func target(identifier: String) -> MDKCaptureOptimizationTarget? {
+        allTargets().first { $0.identifier == identifier }
     }
 }
