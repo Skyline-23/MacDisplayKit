@@ -1,13 +1,13 @@
 import Foundation
 
 @objc
-public enum MDKCaptureBackend: Int {
+public enum MDKCaptureBackend: Int, Sendable {
     case avFoundation = 0
     case cgDisplayStream = 1
 }
 
 @objc
-public enum MDKDynamicRangeMode: Int {
+public enum MDKDynamicRangeMode: Int, Sendable {
     case sdr = 0
     case hdrCanonical = 1
     case hdrLocal = 2

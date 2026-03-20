@@ -27,7 +27,10 @@ let project = Project(
                 "Sources/MacDisplayCaptureKit/**"
             ],
             dependencies: [
-                .target(name: "MacDisplayKitObjCShim")
+                .target(name: "MacDisplayKitObjCShim"),
+                .sdk(name: "CoreGraphics", type: .framework),
+                .sdk(name: "CoreVideo", type: .framework),
+                .sdk(name: "IOSurface", type: .framework)
             ],
             settings: .settings(
                 base: [

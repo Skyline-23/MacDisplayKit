@@ -62,7 +62,10 @@ let package = Package(
             dependencies: ["MacDisplayKitObjCShim"],
             path: "Sources/MacDisplayCaptureKit",
             linkerSettings: [
-                .linkedFramework("Foundation")
+                .linkedFramework("Foundation"),
+                .linkedFramework("CoreGraphics"),
+                .linkedFramework("CoreVideo"),
+                .linkedFramework("IOSurface")
             ]
         ),
         .target(
