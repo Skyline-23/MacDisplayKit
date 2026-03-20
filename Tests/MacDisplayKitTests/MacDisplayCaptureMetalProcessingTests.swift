@@ -45,6 +45,24 @@ final class MacDisplayCaptureMetalProcessingTests: XCTestCase {
         }
     }
 
+    func testMetalTextureCopyProcessorProcessesBGRAFrame() throws {
+        let device = try requireMetalDevice()
+        let surface = try makeBGRAIOSurface(width: 1280, height: 720)
+        let frame = MDKCaptureFrame(
+            sequenceNumber: 2,
+            displayTime: 2,
+            surfaceID: IOSurfaceGetID(surface),
+            width: 1280,
+            height: 720,
+            pixelFormat: kCVPixelFormatType_32BGRA,
+            surface: MDKCaptureSurface(ioSurface: surface)
+        )
+
+        let processor = try MDKMetalTextureCopyProcessor(device: device, maxInflightCommandBuffers: 1)
+
+        XCTAssertNoThrow(try processor.process(frame: frame))
+    }
+
     private func requireMetalDevice() throws -> any MTLDevice {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("Metal device is not available on this host.")

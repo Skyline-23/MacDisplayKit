@@ -246,7 +246,7 @@ public enum MDKCaptureBenchmarkRunner {
             warmupDuration: warmupDuration,
             sampleDuration: sampleDuration,
             makeSession: MDKCaptureSessionFactory.makeSession(configuration:),
-            makeProcessor: { try MDKMetalTextureBindingProcessor() },
+            makeProcessor: { try MDKMetalTextureCopyProcessor() },
             timeSource: { ProcessInfo.processInfo.systemUptime },
             sleeper: { Thread.sleep(forTimeInterval: $0) }
         )
