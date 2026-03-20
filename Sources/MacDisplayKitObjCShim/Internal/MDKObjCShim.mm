@@ -257,6 +257,8 @@ static NSDictionary<NSString *, id> *MDKCreateMachPortSnapshot(mach_port_t port)
 static NSMutableDictionary<NSString *, id> *MDKActiveSCKTraceState = nil;
 static NSObject *MDKActiveSCKTraceLock = nil;
 static NSMutableArray<id> *MDKActiveSCKRemoteQueues = nil;
+static NSMutableDictionary<NSString *, NSMutableDictionary<NSString *, id> *> *MDKActiveSCKRemoteQueueEntries = nil;
+static dispatch_queue_t MDKActiveSCKScreenSampleHandlerQueue = nil;
 static void *MDKActiveSCRemoteQueueWrapper = nullptr;
 static dispatch_queue_t MDKActiveSCRemoteQueueWrapperQueue = nil;
 static dispatch_semaphore_t MDKActiveSCRemoteQueueWrapperSemaphore = nil;
@@ -280,6 +282,7 @@ static NSDictionary<NSString *, id> *MDKSummarizeXPCObject(xpc_object_t object);
 static NSDictionary<NSString *, id> *MDKSummarizeSampleCarrier(id sample);
 static NSDictionary<NSString *, id> *MDKSummarizePointerValue(const void *pointer);
 static NSString *MDKCopyBlockSignatureString(id block);
+static NSDictionary<NSString *, id> *MDKCopySCKRemoteQueueEntrySummaryForType(unsigned char queueType);
 static BOOL MDKPrimeSCRemoteQueueWrapperIfPossible(id remoteQueue);
 
 @implementation MDKShimStreamOutputCollector
@@ -815,6 +818,79 @@ static NSString *MDKCopyBlockSignatureString(id block) {
     return [NSString stringWithUTF8String:signature];
 }
 
+static NSString *MDKPointerKey(id object) {
+    if (object == nil) {
+        return nil;
+    }
+
+    return [NSString stringWithFormat:@"%p", (__bridge const void *) object];
+}
+
+static NSDictionary<NSString *, id> *MDKCopySCRemoteQueueContainerState(id container) {
+    if (container == nil) {
+        return @{
+            @"present": @NO
+        };
+    }
+
+    NSMutableDictionary<NSString *, id> *summary = [@{
+        @"present": @YES,
+        @"container": MDKSummarizeObject(container),
+    } mutableCopy];
+
+    NSDictionary<NSString *, NSString *> *pointerIvarNames = @{
+        @"videoReceiveQueuePointer": @"_videoReceiveQueue",
+        @"audioReceiveQueuePointer": @"_audioReceiveQueue",
+        @"microphoneReceiveQueuePointer": @"_microphoneReceiveQueue",
+    };
+    [pointerIvarNames enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *ivarName, __unused BOOL *stop) {
+        NSValue *value = MDKCopyRawPointerIvar(container, ivarName.UTF8String);
+        summary[key] = value != nil ? [NSString stringWithFormat:@"%p", value.pointerValue] : @"";
+        if (value != nil) {
+            NSString *wrapperKey = [key stringByReplacingOccurrencesOfString:@"Pointer" withString:@"Wrapper"];
+            summary[wrapperKey] = MDKDescribeRemoteQueueWrapper(value.pointerValue);
+        }
+    }];
+
+    NSDictionary<NSString *, NSString *> *objectIvarNames = @{
+        @"videoReceiveQueue": @"_videoReceiveQueue",
+        @"audioReceiveQueue": @"_audioReceiveQueue",
+        @"microphoneReceiveQueue": @"_microphoneReceiveQueue",
+    };
+    [objectIvarNames enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *ivarName, __unused BOOL *stop) {
+        id value = MDKCopyObjectIvar(container, ivarName.UTF8String);
+        if (value != nil) {
+            summary[key] = MDKSummarizeObject(value);
+        }
+    }];
+
+    return summary;
+}
+
+static NSDictionary<NSString *, id> *MDKCopySCKRemoteQueueEntrySummaryForType(unsigned char queueType) {
+    @synchronized(MDKActiveSCKTraceLock) {
+        for (NSMutableDictionary<NSString *, id> *entry in MDKActiveSCKRemoteQueueEntries.allValues) {
+            NSNumber *entryQueueType = entry[@"queueType"];
+            if (entryQueueType != nil && entryQueueType.unsignedCharValue == queueType) {
+                NSMutableDictionary<NSString *, id> *summary = [NSMutableDictionary dictionary];
+                summary[@"queueType"] = @(queueType);
+                if (entry[@"queueObject"] != nil) {
+                    summary[@"queueObject"] = MDKSummarizeObject(entry[@"queueObject"]);
+                }
+                if (entry[@"remoteQueue"] != nil) {
+                    summary[@"remoteQueue"] = MDKSummarizeObject(entry[@"remoteQueue"]);
+                }
+                return summary;
+            }
+        }
+    }
+
+    return @{
+        @"present": @NO,
+        @"queueType": @(queueType),
+    };
+}
+
 static NSDictionary<NSString *, id> *MDKCopySCStreamInternalState(id stream) {
     if (stream == nil) {
         return @{
@@ -837,37 +913,22 @@ static NSDictionary<NSString *, id> *MDKCopySCStreamInternalState(id stream) {
         summary[@"sharingSession"] = MDKSummarizeObject(sharingSession);
     }
 
+    id streamManager = MDKCopyObjectIvar(stream, "_streamManager");
+    if (streamManager != nil) {
+        summary[@"streamManager"] = MDKSummarizeObject(streamManager);
+        summary[@"streamManagerState"] = MDKCopySCRemoteQueueContainerState(streamManager);
+    }
+
     dispatch_queue_t sampleHandlerQueue = reinterpret_cast<dispatch_queue_t>(MDKCopyObjectIvar(stream, "_screenSampleHandlerQueue"));
     if (sampleHandlerQueue != nullptr) {
         summary[@"screenSampleHandlerQueueLabel"] =
             [NSString stringWithUTF8String:dispatch_queue_get_label(sampleHandlerQueue)] ?: @"";
     }
 
-    NSDictionary<NSString *, NSString *> *pointerIvarNames = @{
-        @"videoReceiveQueuePointer": @"_videoReceiveQueue",
-        @"audioReceiveQueuePointer": @"_audioReceiveQueue",
-        @"microphoneReceiveQueuePointer": @"_microphoneReceiveQueue",
-    };
-    [pointerIvarNames enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *ivarName, __unused BOOL *stop) {
-        NSValue *value = MDKCopyRawPointerIvar(stream, ivarName.UTF8String);
-        summary[key] = value != nil ? [NSString stringWithFormat:@"%p", value.pointerValue] : @"";
-        if (value != nil) {
-            NSString *wrapperKey = [key stringByReplacingOccurrencesOfString:@"Pointer" withString:@"Wrapper"];
-            summary[wrapperKey] = MDKDescribeRemoteQueueWrapper(value.pointerValue);
-        }
-    }];
-
-    NSDictionary<NSString *, NSString *> *objectIvarNames = @{
-        @"videoReceiveQueue": @"_videoReceiveQueue",
-        @"audioReceiveQueue": @"_audioReceiveQueue",
-        @"microphoneReceiveQueue": @"_microphoneReceiveQueue",
-    };
-    [objectIvarNames enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *ivarName, BOOL *stop) {
-        id value = MDKCopyObjectIvar(stream, ivarName.UTF8String);
-        if (value != nil) {
-            summary[key] = MDKSummarizeObject(value);
-        }
-    }];
+    [summary addEntriesFromDictionary:MDKCopySCRemoteQueueContainerState(stream)];
+    summary[@"videoQueueEntry"] = MDKCopySCKRemoteQueueEntrySummaryForType(1);
+    summary[@"audioQueueEntry"] = MDKCopySCKRemoteQueueEntrySummaryForType(0);
+    summary[@"microphoneQueueEntry"] = MDKCopySCKRemoteQueueEntrySummaryForType(2);
 
     return summary;
 }
@@ -900,6 +961,8 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"remoteQueueObjectEventCount": @0,
         } mutableCopy];
         MDKActiveSCKRemoteQueues = [NSMutableArray array];
+        MDKActiveSCKRemoteQueueEntries = [NSMutableDictionary dictionary];
+        MDKActiveSCKScreenSampleHandlerQueue = nil;
         MDKActiveSCRemoteQueueWrapper = nullptr;
         MDKActiveSCRemoteQueueWrapperQueue = nil;
         MDKActiveSCRemoteQueueWrapperSemaphore = nil;
@@ -983,10 +1046,21 @@ static BOOL MDKPrimeSCRemoteQueueWrapperIfPossible(id remoteQueue) {
         return NO;
     }
 
-    dispatch_queue_t queue = dispatch_queue_create(
-        "com.skyline23.MacDisplayKit.sc-remote-queue-wrapper",
-        DISPATCH_QUEUE_SERIAL
-    );
+    dispatch_queue_t queue = nil;
+    @synchronized(MDKActiveSCKTraceLock) {
+        queue = MDKActiveSCKScreenSampleHandlerQueue;
+    }
+    if (queue == nil) {
+        queue = dispatch_queue_create(
+            "com.skyline23.MacDisplayKit.sc-remote-queue-wrapper",
+            DISPATCH_QUEUE_SERIAL
+        );
+        state[@"usedPreferredSampleHandlerQueue"] = @NO;
+    } else {
+        state[@"usedPreferredSampleHandlerQueue"] = @YES;
+        state[@"preferredSampleHandlerQueueLabel"] =
+            [NSString stringWithUTF8String:dispatch_queue_get_label(queue)] ?: @"";
+    }
     dispatch_semaphore_t callbackSemaphore = dispatch_semaphore_create(0);
     __block NSUInteger callbackCount = 0;
     void *receiverQueue = nullptr;
@@ -1700,18 +1774,21 @@ static void MDKSwizzledFigSetSinkNode(id self, SEL _cmd, id sinkNode) {
 }
 
 static void MDKSwizzledSCRemoteQueueSetRemoteQueue(id self, SEL _cmd, id remoteQueue) {
-    BOOL shouldPrimeReceiver = NO;
     @synchronized(MDKActiveSCKTraceLock) {
         if (MDKActiveSCKTraceState != nil && remoteQueue != nil && MDKActiveSCKRemoteQueues != nil) {
-            shouldPrimeReceiver = MDKActiveSCKRemoteQueues.count == 0;
             [MDKActiveSCKRemoteQueues addObject:remoteQueue];
         }
-    }
-
-    if (shouldPrimeReceiver) {
-        const BOOL wrapped = MDKPrimeSCRemoteQueueWrapperIfPossible(remoteQueue);
-        if (!wrapped) {
-            MDKPrimeFigRemoteQueueReceiverIfPossible(remoteQueue);
+        NSString *queueKey = MDKPointerKey(self);
+        if (queueKey != nil && MDKActiveSCKRemoteQueueEntries != nil) {
+            NSMutableDictionary<NSString *, id> *entry = MDKActiveSCKRemoteQueueEntries[queueKey];
+            if (entry == nil) {
+                entry = [NSMutableDictionary dictionary];
+                MDKActiveSCKRemoteQueueEntries[queueKey] = entry;
+            }
+            entry[@"queueObject"] = self;
+            if (remoteQueue != nil) {
+                entry[@"remoteQueue"] = remoteQueue;
+            }
         }
     }
 
@@ -1727,6 +1804,19 @@ static void MDKSwizzledSCRemoteQueueSetRemoteQueue(id self, SEL _cmd, id remoteQ
 }
 
 static void MDKSwizzledSCRemoteQueueSetQueueType(id self, SEL _cmd, unsigned char queueType) {
+    @synchronized(MDKActiveSCKTraceLock) {
+        NSString *queueKey = MDKPointerKey(self);
+        if (queueKey != nil && MDKActiveSCKRemoteQueueEntries != nil) {
+            NSMutableDictionary<NSString *, id> *entry = MDKActiveSCKRemoteQueueEntries[queueKey];
+            if (entry == nil) {
+                entry = [NSMutableDictionary dictionary];
+                MDKActiveSCKRemoteQueueEntries[queueKey] = entry;
+            }
+            entry[@"queueObject"] = self;
+            entry[@"queueType"] = @(queueType);
+        }
+    }
+
     MDKRecordRemoteQueueObjectEvent(
         @"sc-remote-queue-set-queue-type",
         @{
@@ -1739,6 +1829,28 @@ static void MDKSwizzledSCRemoteQueueSetQueueType(id self, SEL _cmd, unsigned cha
 }
 
 static void MDKRecordRemoteQueueConsumerEvent(NSString *kind, id queue) {
+    NSString *queueKey = MDKPointerKey(queue);
+    if (queueKey != nil) {
+        @synchronized(MDKActiveSCKTraceLock) {
+            if (MDKActiveSCKRemoteQueueEntries != nil) {
+                NSMutableDictionary<NSString *, id> *entry = MDKActiveSCKRemoteQueueEntries[queueKey];
+                if (entry == nil) {
+                    entry = [NSMutableDictionary dictionary];
+                    MDKActiveSCKRemoteQueueEntries[queueKey] = entry;
+                }
+                entry[@"queueObject"] = queue;
+                NSNumber *queueType = MDKPerformUnsignedCharGetter(queue, sel_registerName("queueType"));
+                if (queueType != nil) {
+                    entry[@"queueType"] = queueType;
+                }
+                id remoteQueue = MDKPerformObjectGetter(queue, sel_registerName("remoteQueue"));
+                if (remoteQueue != nil) {
+                    entry[@"remoteQueue"] = remoteQueue;
+                }
+            }
+        }
+    }
+
     MDKRecordSCKTraceEvent(
         kind,
         @{
@@ -1753,6 +1865,17 @@ static void MDKSwizzledStartRemoteReceiveQueue(id self, SEL _cmd, id queue) {
 }
 
 static void MDKSwizzledStartRemoteVideoReceiveQueue(id self, SEL _cmd, id queue) {
+    BOOL needsPrime = NO;
+    @synchronized(MDKActiveSCKTraceLock) {
+        needsPrime = (MDKActiveSCRemoteQueueWrapper == nullptr);
+    }
+    if (needsPrime) {
+        const BOOL wrapped = MDKPrimeSCRemoteQueueWrapperIfPossible(queue);
+        if (!wrapped) {
+            MDKPrimeFigRemoteQueueReceiverIfPossible(queue);
+        }
+    }
+
     MDKRecordRemoteQueueConsumerEvent(@"stream-start-remote-video-receive-queue", queue);
     MDKOriginalStartRemoteVideoReceiveQueue(self, _cmd, queue);
     MDKRecordSCKTraceEvent(
@@ -2411,6 +2534,8 @@ static void MDKAttemptSCRemoteQueueWrapperProbeForCapturedVideoQueue(NSTimeInter
             @"updateStatus": @(updateStatus),
             @"destroySymbolPresent": @(destroySymbol != nullptr),
             @"remoteQueue": probeState[@"remoteQueue"] ?: [NSNull null],
+            @"usedPreferredSampleHandlerQueue": probeState[@"usedPreferredSampleHandlerQueue"] ?: @NO,
+            @"preferredSampleHandlerQueueLabel": probeState[@"preferredSampleHandlerQueueLabel"] ?: [NSNull null],
             @"notes": @[
                 @"Primes SCRemoteQueue_CreateReceiverQueue on the first captured ScreenCaptureKit remote queue before SCStream consumes the queue.",
                 @"Uses the private ScreenCaptureKit wrapper instead of a raw FigRemoteQueueReceiver."
@@ -2647,6 +2772,18 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
                                                     }];
         }
         return nil;
+    }
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        MDKActiveSCKScreenSampleHandlerQueue =
+            reinterpret_cast<dispatch_queue_t>(MDKCopyObjectIvar(stream, "_screenSampleHandlerQueue"));
+        if (MDKActiveSCKTraceState != nil) {
+            MDKActiveSCKTraceState[@"screenSampleHandlerQueueCaptured"] = @(MDKActiveSCKScreenSampleHandlerQueue != nil);
+            if (MDKActiveSCKScreenSampleHandlerQueue != nil) {
+                MDKActiveSCKTraceState[@"screenSampleHandlerQueueLabel"] =
+                    [NSString stringWithUTF8String:dispatch_queue_get_label(MDKActiveSCKScreenSampleHandlerQueue)] ?: @"";
+            }
+        }
     }
 
     dispatch_semaphore_t startCompletion = dispatch_semaphore_create(0);
