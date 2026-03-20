@@ -21,7 +21,7 @@ final class MacDisplayCaptureSessionTests: XCTestCase {
         XCTAssertEqual(session.statistics, .zero)
     }
 
-    func testFactoryRejectsUnsupportedAVFoundationSessionCreation() {
+    func testFactoryCreatesAVFoundationSession() throws {
         let configuration = MDKCaptureConfiguration(
             displayID: 77,
             width: 1920,
@@ -31,10 +31,11 @@ final class MacDisplayCaptureSessionTests: XCTestCase {
             backend: .avFoundation,
             dynamicRangeMode: .sdr
         )
+        let session = try MDKCaptureSessionFactory.makeSession(configuration: configuration)
 
-        XCTAssertThrowsError(try MDKCaptureSessionFactory.makeSession(configuration: configuration)) { error in
-            XCTAssertEqual(error as? MDKCaptureSessionError, .unsupportedBackend(.avFoundation))
-        }
+        XCTAssertEqual(session.backend, .avFoundation)
+        XCTAssertFalse(session.isRunning)
+        XCTAssertEqual(session.statistics, .zero)
     }
 
     func testStopIsSafeBeforeStart() throws {

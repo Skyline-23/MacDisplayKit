@@ -92,7 +92,10 @@ public enum MDKCaptureSessionFactory {
                 driver: MDKCGDisplayStreamCaptureDriver(configuration: configuration)
             )
         case .avFoundation:
-            throw MDKCaptureSessionError.unsupportedBackend(.avFoundation)
+            return MDKCaptureSession(
+                configuration: configuration,
+                driver: MDKAVFoundationCaptureDriver(configuration: configuration)
+            )
         }
     }
 }
