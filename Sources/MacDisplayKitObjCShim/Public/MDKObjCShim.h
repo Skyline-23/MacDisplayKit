@@ -8,10 +8,7 @@ FOUNDATION_EXPORT NSURL *MDKShimLegacyRuntimeSourceRootURL(void);
 FOUNDATION_EXPORT NSArray<NSString *> *MDKShimPlannedModuleNames(void);
 FOUNDATION_EXPORT NSArray<NSDictionary<NSString *, id> *> *MDKShimListDisplays(void);
 FOUNDATION_EXPORT NSString * _Nullable MDKShimDisplayName(NSUInteger displayID);
-FOUNDATION_EXPORT BOOL MDKShimVideoScreenCaptureKitPreferred(void);
-FOUNDATION_EXPORT BOOL MDKShimVideoScreenCaptureKitAvailableForDisplay(NSUInteger displayID, NSInteger frameRate);
 FOUNDATION_EXPORT BOOL MDKShimVideoAVFoundationAvailableForDisplay(NSUInteger displayID, NSInteger frameRate);
-FOUNDATION_EXPORT BOOL MDKShimSystemAudioScreenCaptureKitSupported(void);
 FOUNDATION_EXPORT NSArray<NSString *> *MDKShimMicrophoneNames(void);
 FOUNDATION_EXPORT NSString * _Nullable MDKShimCreateVirtualDisplay(
     NSString *clientIdentifier,

@@ -580,17 +580,24 @@ namespace VDISPLAY {
     if (use_skylight_backend) {
       NSError *ns_error = nil;
       const auto session_nonce = skylight_display_nonce.fetch_add(1, std::memory_order_relaxed) + 1u;
-      const auto identity_seed = std::format(
-        "{}|{}|{}|{}|{}|{}|{}|{}",
-        client_uid ? client_uid : "",
-        client_name ? client_name : "",
-        logical_width,
-        logical_height,
-        width,
-        height,
-        scale_factor,
-        hi_dpi ? 1 : 0
-      );
+      std::ostringstream identity_seed_stream;
+      identity_seed_stream
+        << (client_uid ? client_uid : "")
+        << '|'
+        << (client_name ? client_name : "")
+        << '|'
+        << logical_width
+        << '|'
+        << logical_height
+        << '|'
+        << width
+        << '|'
+        << height
+        << '|'
+        << scale_factor
+        << '|'
+        << (hi_dpi ? 1 : 0);
+      const auto identity_seed = identity_seed_stream.str();
       const auto identity_hash = stable_identity_hash(identity_seed);
       const auto serial_number = static_cast<unsigned long long>(((identity_hash + session_nonce) & 0xFFFFFFFFull) | (kSkylightDisplayIdentityVersion << 32));
       const auto product_id = static_cast<unsigned long long>((width ^ (height << 1) ^ 0xA901u) + (kSkylightDisplayIdentityVersion << 20) + (session_nonce & 0xFFFFu));

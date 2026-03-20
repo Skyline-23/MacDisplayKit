@@ -16,7 +16,7 @@ public final class MDKFrameworkInfo: NSObject {
     }
 
     public static func plannedModules() -> [String] {
-        MDKShimPlannedModuleNames() as? [String] ?? []
+        MDKShimPlannedModuleNames()
     }
 
     public static func implementationLanguages() -> [String] {

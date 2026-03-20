@@ -2,9 +2,8 @@ import Foundation
 
 @objc
 public enum MDKCaptureBackend: Int {
-    case screenCaptureKit = 0
-    case avFoundation = 1
-    case cgDisplayStream = 2
+    case avFoundation = 0
+    case cgDisplayStream = 1
 }
 
 @objc

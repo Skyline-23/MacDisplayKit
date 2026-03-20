@@ -9,7 +9,7 @@ let baseSettings: SettingsDictionary = [
     "CODE_SIGN_STYLE": "Automatic",
     "CODE_SIGN_IDENTITY": "Apple Development",
     "DEVELOPMENT_TEAM": "6C922D256U",
-    "MACOSX_DEPLOYMENT_TARGET": "15.0"
+    "MACOSX_DEPLOYMENT_TARGET": "13.0"
 ]
 
 let project = Project(
@@ -21,7 +21,7 @@ let project = Project(
             destinations: .macOS,
             product: .framework,
             bundleId: "com.skyline23.MacDisplayCaptureKit",
-            deploymentTargets: .macOS("15.0"),
+            deploymentTargets: .macOS("13.0"),
             infoPlist: .default,
             sources: [
                 "Sources/MacDisplayCaptureKit/**"
@@ -41,7 +41,7 @@ let project = Project(
             destinations: .macOS,
             product: .framework,
             bundleId: "com.skyline23.MacDisplayVirtualDisplayKit",
-            deploymentTargets: .macOS("15.0"),
+            deploymentTargets: .macOS("13.0"),
             infoPlist: .default,
             sources: [
                 "Sources/MacDisplayVirtualDisplayKit/**"
@@ -61,11 +61,11 @@ let project = Project(
             destinations: .macOS,
             product: .app,
             bundleId: "com.skyline23.MacDisplayKitLegacyHost",
-            deploymentTargets: .macOS("15.0"),
+            deploymentTargets: .macOS("13.0"),
             infoPlist: .extendingDefault(
                 with: [
                     "CFBundleDisplayName": "MacDisplayKitLegacyHost",
-                    "LSMinimumSystemVersion": "15.0",
+                    "LSMinimumSystemVersion": "13.0",
                     "INFOPLIST_KEY_NSHighResolutionCapable": "YES",
                     "NSPrincipalClass": "NSApplication"
                 ]
@@ -92,7 +92,7 @@ let project = Project(
             destinations: .macOS,
             product: .framework,
             bundleId: "com.skyline23.MacDisplayKitObjCShim",
-            deploymentTargets: .macOS("15.0"),
+            deploymentTargets: .macOS("13.0"),
             infoPlist: .default,
             sources: [
                 "Sources/MacDisplayKitObjCShim/Public/**/*.{h,m,mm,c,cpp}",
@@ -109,8 +109,7 @@ let project = Project(
                 .sdk(name: "CoreMedia", type: .framework),
                 .sdk(name: "CoreGraphics", type: .framework),
                 .sdk(name: "CoreVideo", type: .framework),
-                .sdk(name: "Foundation", type: .framework),
-                .sdk(name: "ScreenCaptureKit", type: .framework)
+                .sdk(name: "Foundation", type: .framework)
             ],
             settings: .settings(
                 base: [
@@ -131,7 +130,7 @@ let project = Project(
             destinations: .macOS,
             product: .framework,
             bundleId: "com.skyline23.MacDisplayKit",
-            deploymentTargets: .macOS("15.0"),
+            deploymentTargets: .macOS("13.0"),
             infoPlist: .default,
             sources: [
                 "Sources/MacDisplayKit/**"
@@ -153,11 +152,11 @@ let project = Project(
             destinations: .macOS,
             product: .app,
             bundleId: "com.skyline23.MacDisplayKitHost",
-            deploymentTargets: .macOS("15.0"),
+            deploymentTargets: .macOS("13.0"),
             infoPlist: .extendingDefault(
                 with: [
                     "CFBundleDisplayName": "MacDisplayKitHost",
-                    "LSMinimumSystemVersion": "15.0",
+                    "LSMinimumSystemVersion": "13.0",
                     "INFOPLIST_KEY_NSHighResolutionCapable": "YES",
                     "NSPrincipalClass": "NSApplication"
                 ]
@@ -180,7 +179,7 @@ let project = Project(
             destinations: .macOS,
             product: .unitTests,
             bundleId: "com.skyline23.MacDisplayKitTests",
-            deploymentTargets: .macOS("15.0"),
+            deploymentTargets: .macOS("13.0"),
             infoPlist: .default,
             sources: [
                 "Tests/MacDisplayKitTests/**/*.{swift,m,mm,c,cpp}"

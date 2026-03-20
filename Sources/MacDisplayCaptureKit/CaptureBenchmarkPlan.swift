@@ -2,8 +2,8 @@ import Foundation
 
 @objc
 public enum MDKCapturePlanIntent: Int {
-    case replaceScreenCaptureKit = 0
-    case compareAgainstBaseline = 1
+    case replaceSystemCapture = 0
+    case compareAlternatives = 1
 }
 
 @objcMembers
@@ -49,16 +49,13 @@ public final class MDKCaptureBenchmarkPlan: NSObject {
 public final class MDKCaptureBackendAvailability: NSObject {
     public let avFoundationAvailable: Bool
     public let cgDisplayStreamAvailable: Bool
-    public let screenCaptureKitAvailable: Bool
 
     public init(
         avFoundationAvailable: Bool,
-        cgDisplayStreamAvailable: Bool,
-        screenCaptureKitAvailable: Bool
+        cgDisplayStreamAvailable: Bool
     ) {
         self.avFoundationAvailable = avFoundationAvailable
         self.cgDisplayStreamAvailable = cgDisplayStreamAvailable
-        self.screenCaptureKitAvailable = screenCaptureKitAvailable
         super.init()
     }
 }
@@ -67,7 +64,7 @@ public enum MDKCaptureBenchmarkPlanner {
     public static func plan(
         for display: MDKDisplayDescriptor,
         target: MDKCaptureOptimizationTarget,
-        intent: MDKCapturePlanIntent = .replaceScreenCaptureKit,
+        intent: MDKCapturePlanIntent = .replaceSystemCapture,
         availability: MDKCaptureBackendAvailability
     ) -> MDKCaptureBenchmarkPlan {
         let candidates: [MDKCaptureBackendCandidate] = [
@@ -82,15 +79,8 @@ public enum MDKCaptureBenchmarkPlanner {
                 backend: .cgDisplayStream,
                 available: availability.cgDisplayStreamAvailable,
                 reason: availability.cgDisplayStreamAvailable
-                    ? "CGDisplayStream capture is available and should be benchmarked as another SCK replacement candidate."
+                    ? "CGDisplayStream capture is available and should be benchmarked as another native replacement candidate."
                     : "CGDisplayStream backend is not available for this display yet."
-            ),
-            MDKCaptureBackendCandidate(
-                backend: .screenCaptureKit,
-                available: availability.screenCaptureKitAvailable,
-                reason: availability.screenCaptureKitAvailable
-                    ? "ScreenCaptureKit stays in the plan only as a comparison baseline."
-                    : "ScreenCaptureKit is not available for this display."
             )
         ]
 

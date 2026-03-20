@@ -86,9 +86,8 @@ namespace platf {
       mic->av_audio_capture = [[AVAudio alloc] init];
 
       if (is_system_audio_sink(audio_sink)) {
-        // ScreenCaptureKit-backed system-audio capture currently starves the
-        // separate video stream after a few frames on macOS. Prefer a stable
-        // video session over host-audio capture until the streams are unified.
+        // Native macOS host-audio capture is still disabled while the kit
+        // focuses on stable video acquisition and replacement backends.
         BOOST_LOG(warning) << "Temporarily disabling native macOS system audio capture to preserve video cadence."sv;
         return nullptr;
       }

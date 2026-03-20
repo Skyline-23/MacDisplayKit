@@ -27,7 +27,7 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(target.height, 2160)
         XCTAssertEqual(target.frameRate, 120)
         XCTAssertEqual(target.dynamicRangeMode, .hdrCanonical)
-        XCTAssertEqual(target.recommendedBackend, .screenCaptureKit)
+        XCTAssertEqual(target.recommendedBackend, .avFoundation)
         XCTAssertFalse(target.requiresVirtualDisplay)
     }
 
@@ -52,17 +52,16 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(configuration.height, 2160)
         XCTAssertEqual(configuration.frameRate, 120)
         XCTAssertEqual(configuration.pixelFormat, 0x78343230)
-        XCTAssertEqual(configuration.backend, .screenCaptureKit)
+        XCTAssertEqual(configuration.backend, .avFoundation)
         XCTAssertEqual(configuration.dynamicRangeMode, .hdrCanonical)
     }
 
-    func testBenchmarkPlannerPrefersAlternativeBackendsBeforeScreenCaptureKit() {
+    func testBenchmarkPlannerPrioritizesNativeReplacementBackends() {
         let display = MDKDisplayDescriptor(id: 77, name: "77", localizedName: "Test Display")
         let target = MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly
         let availability = MDKCaptureBackendAvailability(
             avFoundationAvailable: true,
-            cgDisplayStreamAvailable: false,
-            screenCaptureKitAvailable: true
+            cgDisplayStreamAvailable: false
         )
         let plan = MDKCaptureBenchmarkPlanner.plan(
             for: display,
@@ -70,13 +69,12 @@ final class MacDisplayKitTests: XCTestCase {
             availability: availability
         )
 
-        XCTAssertEqual(plan.intent, .replaceScreenCaptureKit)
-        XCTAssertEqual(plan.candidates.map(\.backend), [.avFoundation, .cgDisplayStream, .screenCaptureKit])
+        XCTAssertEqual(plan.intent, .replaceSystemCapture)
+        XCTAssertEqual(plan.candidates.map(\.backend), [.avFoundation, .cgDisplayStream])
         XCTAssertEqual(plan.preferredCandidate?.backend, .avFoundation)
-        XCTAssertEqual(plan.candidates.last?.backend, .screenCaptureKit)
         XCTAssertEqual(
             plan.candidates.last?.reason,
-            "ScreenCaptureKit stays in the plan only as a comparison baseline."
+            "CGDisplayStream backend is not available for this display yet."
         )
     }
 }

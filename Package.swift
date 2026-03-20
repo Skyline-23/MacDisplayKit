@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "MacDisplayKit",
     platforms: [
-        .macOS(.v15)
+        .macOS(.v13)
     ],
     products: [
         .library(
@@ -54,8 +54,7 @@ let package = Package(
                 .linkedFramework("CoreMedia"),
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("CoreVideo"),
-                .linkedFramework("Foundation"),
-                .linkedFramework("ScreenCaptureKit")
+                .linkedFramework("Foundation")
             ]
         ),
         .target(

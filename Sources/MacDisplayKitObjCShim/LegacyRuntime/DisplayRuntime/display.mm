@@ -32,7 +32,6 @@ namespace platf {
 
   namespace {
     constexpr double hdr_edr_threshold = 1.001;
-    constexpr unsigned int kMaxVirtualDisplayCaptureRestarts = 6;
 
     NSScreen *screen_for_display_id(CGDirectDisplayID display_id) {
       for (NSScreen *screen in [NSScreen screens]) {
@@ -115,25 +114,6 @@ namespace platf {
       return true;
     }
 
-#if SUNSHINE_HAVE_SCREENCAPTUREKIT
-    SCCaptureDynamicRange preferred_capture_dynamic_range_for_colorspace(const video::sunshine_colorspace_t &colorspace) {
-      if (!video::colorspace_is_hdr(colorspace)) {
-        return SCCaptureDynamicRangeSDR;
-      }
-
-      if (const char *captureTarget = std::getenv("SUNSHINE_MACOS_HDR_CAPTURE_TARGET"); captureTarget != nullptr) {
-        if (strcasecmp(captureTarget, "canonical") == 0) {
-          return SCCaptureDynamicRangeHDRCanonicalDisplay;
-        }
-        if (strcasecmp(captureTarget, "local") == 0 || strcasecmp(captureTarget, "localdisplay") == 0) {
-          return SCCaptureDynamicRangeHDRLocalDisplay;
-        }
-      }
-
-      return SCCaptureDynamicRangeHDRCanonicalDisplay;
-    }
-#endif
-
     struct display_capture_context_t {
       const display_t::push_captured_image_cb_t *push_cb;
       const display_t::pull_free_image_cb_t *pull_cb;
@@ -201,73 +181,12 @@ namespace platf {
     }
 
     void interrupt() override {
-#if SUNSHINE_HAVE_SCREENCAPTUREKIT
-      if ([av_capture screenCaptureKitAvailableForDisplay]) {
-        [av_capture finishScreenCaptureKitCapture];
-        return;
-      }
-#endif
       if (av_capture.session != nil) {
         [av_capture.session stopRunning];
       }
     }
 
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
-#if SUNSHINE_HAVE_SCREENCAPTUREKIT
-      if ([av_capture screenCaptureKitAvailableForDisplay]) {
-        unsigned int restart_attempt = 0;
-        while (true) {
-          NSError *capture_error = nil;
-          if (![av_capture beginScreenCaptureKitCapture:&capture_error]) {
-            BOOST_LOG(error) << "Failed to start macOS display capture."sv;
-            return capture_e::error;
-          }
-
-          bool restart_capture = false;
-          while (true) {
-            CMSampleBufferRef sampleBuffer = [av_capture copyNextScreenCaptureKitSampleBuffer];
-            if (sampleBuffer == nil) {
-              auto queued_frames = av_capture.screenCaptureFrameCount;
-              if (queued_frames < 60 && restart_attempt < kMaxVirtualDisplayCaptureRestarts) {
-                BOOST_LOG(warning) << "ScreenCaptureKit stopped too early (queued_frames="sv << queued_frames
-                                   << "); restarting capture attempt "sv << (restart_attempt + 1) << "/"
-                                   << kMaxVirtualDisplayCaptureRestarts;
-                if (proc::proc.virtual_display) {
-                  focus_virtual_display_workspace(display_id);
-                }
-                restart_capture = true;
-              }
-              break;
-            }
-
-            std::shared_ptr<img_t> img_out;
-            if (!pull_free_image_cb(img_out)) {
-              CFRelease(sampleBuffer);
-              [av_capture finishScreenCaptureKitCapture];
-              return capture_e::ok;
-            }
-            materialize_captured_frame(img_out, sampleBuffer, !direct_videotoolbox_frames);
-
-            const bool keep_capturing = push_captured_image_cb(std::move(img_out), true);
-            CFRelease(sampleBuffer);
-
-            if (!keep_capturing) {
-              [av_capture finishScreenCaptureKitCapture];
-              return capture_e::ok;
-            }
-          }
-
-          [av_capture finishScreenCaptureKitCapture];
-          if (!restart_capture) {
-            return capture_e::ok;
-          }
-
-          restart_attempt += 1;
-          std::this_thread::sleep_for(100ms);
-        }
-      }
-#endif
-
       auto *capture_context = new display_capture_context_t {
         &push_captured_image_cb,
         &pull_free_image_cb,
@@ -332,29 +251,6 @@ namespace platf {
         // A non-zero return value indicates failure to the calling function.
         return 1;
       }
-
-#if SUNSHINE_HAVE_SCREENCAPTUREKIT
-      if ([av_capture screenCaptureKitAvailableForDisplay]) {
-        NSError *capture_error = nil;
-        if (![av_capture beginScreenCaptureKitCapture:&capture_error]) {
-          BOOST_LOG(error) << "Failed to start macOS dummy capture frame."sv;
-          return 1;
-        }
-
-        CMSampleBufferRef sampleBuffer = [av_capture copyNextScreenCaptureKitSampleBuffer];
-        if (sampleBuffer == nil) {
-          [av_capture finishScreenCaptureKitCapture];
-          BOOST_LOG(error) << "Failed to receive macOS dummy capture frame."sv;
-          return 1;
-        }
-        std::shared_ptr<img_t> img_out(img, [](img_t *) {});
-        materialize_captured_frame(img_out, sampleBuffer, !direct_videotoolbox_frames);
-
-        CFRelease(sampleBuffer);
-        [av_capture finishScreenCaptureKitCapture];
-        return 0;
-      }
-#endif
 
       auto signal = [av_capture capture:^(CMSampleBufferRef sampleBuffer) {
         auto new_sample_buffer = std::make_shared<av_sample_buf_t>(sampleBuffer);
@@ -430,16 +326,6 @@ namespace platf {
           av_video.colorSpaceName = kCGColorSpaceITUR_2100_PQ;
           break;
       }
-
-#if SUNSHINE_HAVE_SCREENCAPTUREKIT
-      if (@available(macOS 15.0, *)) {
-        av_video.captureDynamicRange = preferred_capture_dynamic_range_for_colorspace(colorspace);
-        BOOST_LOG(info) << "macOS ScreenCaptureKit HDR capture target="
-                        << (av_video.captureDynamicRange == SCCaptureDynamicRangeHDRCanonicalDisplay ? "canonical"sv :
-                            av_video.captureDynamicRange == SCCaptureDynamicRangeHDRLocalDisplay ? "local"sv :
-                                                                                                   "sdr"sv);
-      }
-#endif
     }
   };
 

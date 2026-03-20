@@ -28,12 +28,4 @@ public final class MDKCaptureDiscovery: NSObject {
     public static func microphoneInputs() -> [MDKAudioInputDescriptor] {
         MDKShimMicrophoneNames().map(MDKAudioInputDescriptor.init(name:))
     }
-
-    public static var prefersScreenCaptureKitVideo: Bool {
-        MDKShimVideoScreenCaptureKitPreferred()
-    }
-
-    public static var supportsScreenCaptureKitSystemAudio: Bool {
-        MDKShimSystemAudioScreenCaptureKitSupported()
-    }
 }
