@@ -734,3 +734,34 @@ Interpretation:
   that boundary
 - when this run classifies both wrapper and nested callbacks as `60hz-like`, the remaining ceiling
   is very likely at or before `__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke`
+
+Follow-up passive trace after adding wrapper invoke entry/exit tracing around
+`__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke`:
+
+- `videoQueueWrapperInvokeEntryCadenceClassification=60hz-like`
+- `videoQueueWrapperInvokeExitCadenceClassification=60hz-like`
+- `videoQueueInvokeEntryToExitLeadPairCount=109`
+- `videoQueueInvokeEntryToExitLeadHistogram={"0.0ms":3,"0.1ms":64,"0.2ms":35,"0.3ms":3,"0.7ms":2,"0.8ms":1,"3.9ms":1}`
+- `videoQueueInvokeEntryToExitLeadMinMilliseconds=0.024334`
+- `videoQueueInvokeEntryToExitLeadMaxMilliseconds=3.923333`
+- `videoQueueNestedAttributedCallbackCount=109`
+- `videoQueueNestedUnattributedCallbackCount=0`
+- `videoQueueNestedInsideWrapperSequenceCount=109`
+- `videoQueueInvokeEntryToNestedLeadHistogram={"0.0ms":27,"0.1ms":79,"0.2ms":2,"3.3ms":1}`
+- `videoQueueNestedToInvokeExitLeadHistogram={"0.0ms":48,"0.1ms":57,"0.6ms":2,"0.7ms":2}`
+- `firstVideoQueueNestedBlockPrecedingEventKind=video-queue-wrapper-invoke-entry`
+- `firstVideoQueueNestedBlockPrecedingEventLeadMilliseconds=3.288333`
+- `firstVideoQueueNestedBlockInsideWrapperOriginalInvoke=1`
+
+Interpretation:
+
+- the entry and exit of `__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke` are still
+  `60hz-like`, matching the wrapper callback and the nested ScreenCaptureKit local receive block
+- every observed nested callback in this run stayed inside an active wrapper-original-invoke
+  interval (`109/109` attributed, `109/109` inside), so the nested handoff is synchronously
+  contained within the CMCapture wrapper path rather than being posted later on a different thread
+- almost every entry-to-exit, entry-to-nested, and nested-to-exit handoff is sub-millisecond, so
+  there is no meaningful headroom inside that wrapper body itself
+- this pushes the remaining cadence ceiling one step farther upstream and makes it very likely that
+  the dominant `60hz-like` behavior is already fixed before entry into
+  `__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke`

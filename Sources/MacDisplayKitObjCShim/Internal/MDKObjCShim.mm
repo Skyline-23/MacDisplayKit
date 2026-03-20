@@ -19,6 +19,7 @@
 #import "MDKObjCShim.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 
@@ -635,6 +636,13 @@ static dispatch_semaphore_t MDKActiveFigRemoteQueueReceiverSemaphore = nil;
 static NSMutableDictionary<NSString *, id> *MDKActiveFigRemoteQueueReceiverState = nil;
 static BOOL MDKActiveSCKAllowPrivateQueueProbes = NO;
 static BOOL MDKActiveSCKAllowVideoQueueWrapperProbe = NO;
+static std::atomic<uint64_t> MDKVideoQueueWrapperSequenceCounter{0};
+
+namespace {
+constexpr size_t MDKVideoQueueWrapperTLSStackCapacity = 16;
+thread_local uint64_t MDKVideoQueueWrapperSequenceTLSStack[MDKVideoQueueWrapperTLSStackCapacity] = {};
+thread_local size_t MDKVideoQueueWrapperSequenceTLSDepth = 0;
+}  // namespace
 
 struct MDKFigRemoteQueueMessage {
     const void *payloadBlock;
@@ -663,6 +671,43 @@ static BOOL MDKWrapVideoReceiveQueueCallbackIfPossible(id stream);
 static NSString *MDKBucketMilliseconds(double milliseconds);
 static void MDKIncrementMutableHistogram(NSMutableDictionary<NSString *, NSNumber *> *histogram, NSString *bucket);
 static NSString *MDKClassifyCadenceHistogram(NSDictionary<NSString *, NSNumber *> *histogram, NSUInteger deltaCount);
+
+static uint64_t MDKPushVideoQueueWrapperSequence(void) {
+    const uint64_t sequenceID = MDKVideoQueueWrapperSequenceCounter.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (MDKVideoQueueWrapperSequenceTLSDepth < MDKVideoQueueWrapperTLSStackCapacity) {
+        MDKVideoQueueWrapperSequenceTLSStack[MDKVideoQueueWrapperSequenceTLSDepth] = sequenceID;
+    } else {
+        MDKVideoQueueWrapperSequenceTLSStack[MDKVideoQueueWrapperTLSStackCapacity - 1] = sequenceID;
+    }
+    MDKVideoQueueWrapperSequenceTLSDepth += 1;
+    return sequenceID;
+}
+
+static uint64_t MDKCurrentVideoQueueWrapperSequence(void) {
+    if (MDKVideoQueueWrapperSequenceTLSDepth == 0) {
+        return 0;
+    }
+
+    const size_t index = std::min(MDKVideoQueueWrapperSequenceTLSDepth, MDKVideoQueueWrapperTLSStackCapacity) - 1;
+    return MDKVideoQueueWrapperSequenceTLSStack[index];
+}
+
+static size_t MDKCurrentVideoQueueWrapperSequenceDepth(void) {
+    return MDKVideoQueueWrapperSequenceTLSDepth;
+}
+
+static uint64_t MDKPopVideoQueueWrapperSequence(void) {
+    if (MDKVideoQueueWrapperSequenceTLSDepth == 0) {
+        return 0;
+    }
+
+    const size_t currentDepth = MDKVideoQueueWrapperSequenceTLSDepth;
+    const size_t index = std::min(currentDepth, MDKVideoQueueWrapperTLSStackCapacity) - 1;
+    const uint64_t sequenceID = MDKVideoQueueWrapperSequenceTLSStack[index];
+    MDKVideoQueueWrapperSequenceTLSStack[index] = 0;
+    MDKVideoQueueWrapperSequenceTLSDepth = currentDepth - 1;
+    return sequenceID;
+}
 
 @implementation MDKShimStreamOutputCollector
 
@@ -1738,6 +1783,8 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"videoRemoteQueueRecvFDAvailableBytesHistogram": [NSMutableDictionary dictionary],
             @"videoRemoteQueueRecvFDAvailableBytesMax": @0,
             @"videoQueueWrapperCallbackEventCount": @0,
+            @"videoQueueWrapperInvokeEntryEventCount": @0,
+            @"videoQueueWrapperInvokeExitEventCount": @0,
             @"videoQueueWrapperBlocks": [NSMutableDictionary dictionary],
             @"videoQueueWrapperInvokes": [NSMutableDictionary dictionary],
             @"videoQueueNestedBlockCallbackEventCount": @0,
@@ -2785,6 +2832,8 @@ static void MDKRecordRemoteQueueObjectEvent(NSString *kind, NSDictionary<NSStrin
 }
 
 static void MDKRecordVideoQueueWrapperCallbackEvent(
+    uint64_t sequenceID,
+    NSUInteger wrapperDepth,
     int status,
     const MDKFigRemoteQueueMessage *message,
     void *context
@@ -2804,6 +2853,8 @@ static void MDKRecordVideoQueueWrapperCallbackEvent(
     NSDictionary<NSString *, id> *surfaceSummary = message != nullptr ? MDKSummarizeIOSurface(message->surface) : @{ @"present": @NO };
     id messageType = message != nullptr ? static_cast<id>(@(message->messageType)) : [NSNull null];
     NSDictionary<NSString *, id> *payload = @{
+        @"wrapperSequenceID": sequenceID > 0 ? @(sequenceID) : [NSNull null],
+        @"wrapperDepth": @(wrapperDepth),
         @"status": @(status),
         @"messageType": messageType,
         @"surface": surfaceSummary,
@@ -2812,7 +2863,46 @@ static void MDKRecordVideoQueueWrapperCallbackEvent(
     MDKRecordSCKTraceEvent(@"video-queue-wrapper-callback", payload);
 }
 
+static void MDKRecordVideoQueueWrapperInvokeBoundaryEvent(
+    NSString *kind,
+    uint64_t sequenceID,
+    NSUInteger wrapperDepth,
+    int status,
+    const MDKFigRemoteQueueMessage *message,
+    void *context
+) {
+    BOOL shouldRecord = NO;
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            NSString *counterKey =
+                [kind isEqualToString:@"video-queue-wrapper-invoke-exit"] ?
+                    @"videoQueueWrapperInvokeExitEventCount" :
+                    @"videoQueueWrapperInvokeEntryEventCount";
+            NSUInteger eventCount = [MDKActiveSCKTraceState[counterKey] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[counterKey] = @(eventCount);
+            shouldRecord = eventCount <= 512;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    NSDictionary<NSString *, id> *surfaceSummary = message != nullptr ? MDKSummarizeIOSurface(message->surface) : @{ @"present": @NO };
+    id messageType = message != nullptr ? static_cast<id>(@(message->messageType)) : [NSNull null];
+    NSDictionary<NSString *, id> *payload = @{
+        @"wrapperSequenceID": sequenceID > 0 ? @(sequenceID) : [NSNull null],
+        @"wrapperDepth": @(wrapperDepth),
+        @"status": @(status),
+        @"messageType": messageType,
+        @"surface": surfaceSummary,
+        @"context": MDKSummarizePointerValue(context),
+    };
+    MDKRecordSCKTraceEvent(kind, payload);
+}
+
 static void MDKRecordVideoQueueNestedBlockCallbackEvent(
+    uint64_t wrapperSequenceID,
+    NSUInteger wrapperDepth,
     int status,
     const void *operation,
     void *context
@@ -2830,6 +2920,8 @@ static void MDKRecordVideoQueueNestedBlockCallbackEvent(
     }
 
     NSDictionary<NSString *, id> *payload = @{
+        @"wrapperSequenceID": wrapperSequenceID > 0 ? @(wrapperSequenceID) : [NSNull null],
+        @"wrapperDepth": @(wrapperDepth),
         @"status": @(status),
         @"operation": MDKSummarizePointerValue(operation),
         @"context": MDKSummarizePointerValue(context),
@@ -2851,7 +2943,17 @@ static void MDKInterposedVideoQueueBlockInvoke(
     MDKFigRemoteQueueMessage *message,
     void *context
 ) {
-    MDKRecordVideoQueueWrapperCallbackEvent(status, message, context);
+    const uint64_t sequenceID = MDKPushVideoQueueWrapperSequence();
+    const NSUInteger wrapperDepth = MDKCurrentVideoQueueWrapperSequenceDepth();
+    MDKRecordVideoQueueWrapperCallbackEvent(sequenceID, wrapperDepth, status, message, context);
+    MDKRecordVideoQueueWrapperInvokeBoundaryEvent(
+        @"video-queue-wrapper-invoke-entry",
+        sequenceID,
+        wrapperDepth,
+        status,
+        message,
+        context
+    );
 
     MDKVideoReceiveQueueBlockInvokeFn originalInvoke = nullptr;
     @synchronized(MDKActiveSCKTraceLock) {
@@ -2870,6 +2972,16 @@ static void MDKInterposedVideoQueueBlockInvoke(
     if (originalInvoke != nullptr) {
         originalInvoke(blockLiteral, status, message, context);
     }
+
+    MDKRecordVideoQueueWrapperInvokeBoundaryEvent(
+        @"video-queue-wrapper-invoke-exit",
+        sequenceID,
+        wrapperDepth,
+        status,
+        message,
+        context
+    );
+    MDKPopVideoQueueWrapperSequence();
 }
 
 static void MDKInterposedVideoQueueNestedBlockInvoke(
@@ -2878,7 +2990,13 @@ static void MDKInterposedVideoQueueNestedBlockInvoke(
     void *operation,
     void *context
 ) {
-    MDKRecordVideoQueueNestedBlockCallbackEvent(status, operation, context);
+    MDKRecordVideoQueueNestedBlockCallbackEvent(
+        MDKCurrentVideoQueueWrapperSequence(),
+        MDKCurrentVideoQueueWrapperSequenceDepth(),
+        status,
+        operation,
+        context
+    );
 
     MDKVideoQueueNestedBlockInvokeFn originalInvoke = nullptr;
     @synchronized(MDKActiveSCKTraceLock) {
@@ -6104,11 +6222,13 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     NSDictionary<NSString *, id> *firstVideoQueueCallbackPrecedingEvent = nil;
     NSDictionary<NSString *, id> *firstVideoQueueNestedBlockCallbackEvent = nil;
     NSUInteger firstVideoQueueCallbackEventIndex = NSNotFound;
+    NSUInteger firstVideoQueueNestedBlockCallbackEventIndex = NSNotFound;
     for (NSUInteger idx = 0; idx < traceEvents.count; ++idx) {
         NSDictionary<NSString *, id> *event = traceEvents[idx];
         if (firstVideoQueueNestedBlockCallbackEvent == nil &&
             [event[@"kind"] isEqualToString:@"video-queue-nested-block-callback"]) {
             firstVideoQueueNestedBlockCallbackEvent = event;
+            firstVideoQueueNestedBlockCallbackEventIndex = idx;
         }
         if (firstVideoQueueCallbackEvent != nil ||
             ![event[@"kind"] isEqualToString:@"video-queue-wrapper-callback"]) {
@@ -6126,6 +6246,23 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         [firstVideoQueueCallbackEvent[@"timestampNanos"] isKindOfClass:[NSNumber class]] ? firstVideoQueueCallbackEvent[@"timestampNanos"] : nil;
     NSNumber *firstVideoQueueNestedBlockCallbackTimestampNanos =
         [firstVideoQueueNestedBlockCallbackEvent[@"timestampNanos"] isKindOfClass:[NSNumber class]] ? firstVideoQueueNestedBlockCallbackEvent[@"timestampNanos"] : nil;
+    NSDictionary<NSString *, id> *firstVideoQueueNestedBlockPrecedingEvent =
+        (firstVideoQueueNestedBlockCallbackEventIndex != NSNotFound && firstVideoQueueNestedBlockCallbackEventIndex > 0 &&
+         [traceEvents[firstVideoQueueNestedBlockCallbackEventIndex - 1] isKindOfClass:[NSDictionary class]]) ?
+            traceEvents[firstVideoQueueNestedBlockCallbackEventIndex - 1] : nil;
+    NSString *firstVideoQueueNestedBlockPrecedingEventKind =
+        [firstVideoQueueNestedBlockPrecedingEvent[@"kind"] isKindOfClass:[NSString class]] ? firstVideoQueueNestedBlockPrecedingEvent[@"kind"] : nil;
+    NSNumber *firstVideoQueueNestedBlockPrecedingEventTimestampNanos =
+        [firstVideoQueueNestedBlockPrecedingEvent[@"timestampNanos"] isKindOfClass:[NSNumber class]] ?
+            firstVideoQueueNestedBlockPrecedingEvent[@"timestampNanos"] : nil;
+    NSNumber *firstVideoQueueNestedBlockPrecedingEventLeadMilliseconds = nil;
+    if ([firstVideoQueueNestedBlockCallbackTimestampNanos isKindOfClass:[NSNumber class]] &&
+        [firstVideoQueueNestedBlockPrecedingEventTimestampNanos isKindOfClass:[NSNumber class]]) {
+        const long double deltaNanos =
+            static_cast<long double>(firstVideoQueueNestedBlockCallbackTimestampNanos.unsignedLongLongValue) -
+            static_cast<long double>(firstVideoQueueNestedBlockPrecedingEventTimestampNanos.unsignedLongLongValue);
+        firstVideoQueueNestedBlockPrecedingEventLeadMilliseconds = @(static_cast<double>(deltaNanos / 1.0e6L));
+    }
     NSDictionary<NSString *, id> *firstVideoQueueCallbackSurface =
         [firstVideoQueueCallbackEvent[@"surface"] isKindOfClass:[NSDictionary class]] ? firstVideoQueueCallbackEvent[@"surface"] : nil;
     NSString *firstVideoQueueCallbackSurfacePointer =
@@ -6383,6 +6520,18 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             @"video-queue-wrapper-callback",
         ]]
     );
+    NSDictionary<NSString *, id> *videoQueueWrapperInvokeEntryCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"video-queue-wrapper-invoke-entry",
+        ]]
+    );
+    NSDictionary<NSString *, id> *videoQueueWrapperInvokeExitCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"video-queue-wrapper-invoke-exit",
+        ]]
+    );
     NSDictionary<NSString *, id> *videoQueueNestedBlockCadenceSummary = MDKCopyTraceEventCadenceSummary(
         traceEvents,
         [NSSet setWithArray:@[
@@ -6443,6 +6592,159 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         videoQueueWrapperToNestedLeadPairCount > 0 ? @(videoQueueWrapperToNestedLeadMaxMilliseconds) : nil;
     NSNumber *videoQueueWrapperToNestedLead120HzEquivalentCount =
         @(MDKHistogramCountInRange(videoQueueWrapperToNestedLeadHistogram, 0.0, 10.0));
+    NSMutableDictionary<NSNumber *, NSNumber *> *videoQueueWrapperEntryTimestampBySequence = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSNumber *, NSNumber *> *videoQueueWrapperExitTimestampBySequence = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSNumber *, NSNumber *> *videoQueueFirstNestedTimestampBySequence = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString *, NSNumber *> *videoQueueInvokeEntryToExitLeadHistogramMutable = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString *, NSNumber *> *videoQueueInvokeEntryToNestedLeadHistogramMutable = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString *, NSNumber *> *videoQueueNestedToInvokeExitLeadHistogramMutable = [NSMutableDictionary dictionary];
+    NSUInteger videoQueueNestedAttributedCallbackCount = 0;
+    NSUInteger videoQueueNestedUnattributedCallbackCount = 0;
+    NSUInteger videoQueueNestedInsideWrapperSequenceCount = 0;
+    NSUInteger videoQueueInvokeEntryToExitLeadPairCount = 0;
+    NSUInteger videoQueueNestedToInvokeExitPairCount = 0;
+    double videoQueueInvokeEntryToExitLeadMinMilliseconds = DBL_MAX;
+    double videoQueueInvokeEntryToExitLeadMaxMilliseconds = 0.0;
+    double videoQueueInvokeEntryToNestedLeadMinMilliseconds = DBL_MAX;
+    double videoQueueInvokeEntryToNestedLeadMaxMilliseconds = 0.0;
+    double videoQueueNestedToInvokeExitLeadMinMilliseconds = DBL_MAX;
+    double videoQueueNestedToInvokeExitLeadMaxMilliseconds = 0.0;
+    for (NSDictionary<NSString *, id> *event in traceEvents) {
+        NSString *kind = [event[@"kind"] isKindOfClass:[NSString class]] ? event[@"kind"] : nil;
+        NSNumber *timestampNanos = [event[@"timestampNanos"] isKindOfClass:[NSNumber class]] ? event[@"timestampNanos"] : nil;
+        NSNumber *wrapperSequenceID = [event[@"wrapperSequenceID"] isKindOfClass:[NSNumber class]] ? event[@"wrapperSequenceID"] : nil;
+        if (kind == nil || timestampNanos == nil) {
+            continue;
+        }
+
+        if ([kind isEqualToString:@"video-queue-wrapper-invoke-entry"]) {
+            if (wrapperSequenceID != nil && wrapperSequenceID.unsignedLongLongValue > 0) {
+                videoQueueWrapperEntryTimestampBySequence[wrapperSequenceID] = timestampNanos;
+            }
+            continue;
+        }
+
+        if ([kind isEqualToString:@"video-queue-wrapper-invoke-exit"]) {
+            if (wrapperSequenceID != nil && wrapperSequenceID.unsignedLongLongValue > 0) {
+                videoQueueWrapperExitTimestampBySequence[wrapperSequenceID] = timestampNanos;
+            }
+            continue;
+        }
+
+        if (![kind isEqualToString:@"video-queue-nested-block-callback"]) {
+            continue;
+        }
+
+        if (wrapperSequenceID == nil || wrapperSequenceID.unsignedLongLongValue == 0) {
+            videoQueueNestedUnattributedCallbackCount += 1;
+            continue;
+        }
+
+        videoQueueNestedAttributedCallbackCount += 1;
+        if (videoQueueFirstNestedTimestampBySequence[wrapperSequenceID] == nil) {
+            videoQueueFirstNestedTimestampBySequence[wrapperSequenceID] = timestampNanos;
+        }
+    }
+
+    for (NSNumber *wrapperSequenceID in videoQueueWrapperEntryTimestampBySequence) {
+        NSNumber *entryTimestampNanos = videoQueueWrapperEntryTimestampBySequence[wrapperSequenceID];
+        NSNumber *nestedTimestampNanos = videoQueueFirstNestedTimestampBySequence[wrapperSequenceID];
+        NSNumber *exitTimestampNanos = videoQueueWrapperExitTimestampBySequence[wrapperSequenceID];
+        if (entryTimestampNanos != nil &&
+            exitTimestampNanos != nil &&
+            exitTimestampNanos.unsignedLongLongValue >= entryTimestampNanos.unsignedLongLongValue) {
+            const double entryToExitLeadMilliseconds =
+                static_cast<double>(exitTimestampNanos.unsignedLongLongValue - entryTimestampNanos.unsignedLongLongValue) / 1.0e6;
+            MDKIncrementMutableHistogram(
+                videoQueueInvokeEntryToExitLeadHistogramMutable,
+                MDKBucketMilliseconds(entryToExitLeadMilliseconds)
+            );
+            videoQueueInvokeEntryToExitLeadPairCount += 1;
+            videoQueueInvokeEntryToExitLeadMinMilliseconds =
+                std::min(videoQueueInvokeEntryToExitLeadMinMilliseconds, entryToExitLeadMilliseconds);
+            videoQueueInvokeEntryToExitLeadMaxMilliseconds =
+                std::max(videoQueueInvokeEntryToExitLeadMaxMilliseconds, entryToExitLeadMilliseconds);
+        }
+
+        if (entryTimestampNanos == nil || nestedTimestampNanos == nil ||
+            nestedTimestampNanos.unsignedLongLongValue < entryTimestampNanos.unsignedLongLongValue) {
+            continue;
+        }
+
+        const double entryToNestedLeadMilliseconds =
+            static_cast<double>(nestedTimestampNanos.unsignedLongLongValue - entryTimestampNanos.unsignedLongLongValue) / 1.0e6;
+        MDKIncrementMutableHistogram(
+            videoQueueInvokeEntryToNestedLeadHistogramMutable,
+            MDKBucketMilliseconds(entryToNestedLeadMilliseconds)
+        );
+        videoQueueInvokeEntryToNestedLeadMinMilliseconds =
+            std::min(videoQueueInvokeEntryToNestedLeadMinMilliseconds, entryToNestedLeadMilliseconds);
+        videoQueueInvokeEntryToNestedLeadMaxMilliseconds =
+            std::max(videoQueueInvokeEntryToNestedLeadMaxMilliseconds, entryToNestedLeadMilliseconds);
+
+        if (exitTimestampNanos == nil || exitTimestampNanos.unsignedLongLongValue < nestedTimestampNanos.unsignedLongLongValue) {
+            continue;
+        }
+
+        videoQueueNestedInsideWrapperSequenceCount += 1;
+        const double nestedToExitLeadMilliseconds =
+            static_cast<double>(exitTimestampNanos.unsignedLongLongValue - nestedTimestampNanos.unsignedLongLongValue) / 1.0e6;
+        MDKIncrementMutableHistogram(
+            videoQueueNestedToInvokeExitLeadHistogramMutable,
+            MDKBucketMilliseconds(nestedToExitLeadMilliseconds)
+        );
+        videoQueueNestedToInvokeExitPairCount += 1;
+        videoQueueNestedToInvokeExitLeadMinMilliseconds =
+            std::min(videoQueueNestedToInvokeExitLeadMinMilliseconds, nestedToExitLeadMilliseconds);
+        videoQueueNestedToInvokeExitLeadMaxMilliseconds =
+            std::max(videoQueueNestedToInvokeExitLeadMaxMilliseconds, nestedToExitLeadMilliseconds);
+    }
+    NSDictionary<NSString *, NSNumber *> *videoQueueInvokeEntryToExitLeadHistogram =
+        [videoQueueInvokeEntryToExitLeadHistogramMutable copy];
+    NSDictionary<NSString *, NSNumber *> *videoQueueInvokeEntryToNestedLeadHistogram =
+        [videoQueueInvokeEntryToNestedLeadHistogramMutable copy];
+    NSDictionary<NSString *, NSNumber *> *videoQueueNestedToInvokeExitLeadHistogram =
+        [videoQueueNestedToInvokeExitLeadHistogramMutable copy];
+    NSNumber *videoQueueInvokeEntryToExitLeadMinMillisecondsNumber =
+        videoQueueInvokeEntryToExitLeadPairCount > 0 ? @(videoQueueInvokeEntryToExitLeadMinMilliseconds) : nil;
+    NSNumber *videoQueueInvokeEntryToExitLeadMaxMillisecondsNumber =
+        videoQueueInvokeEntryToExitLeadPairCount > 0 ? @(videoQueueInvokeEntryToExitLeadMaxMilliseconds) : nil;
+    NSNumber *videoQueueInvokeEntryToNestedLeadMinMillisecondsNumber =
+        videoQueueInvokeEntryToNestedLeadHistogram.count > 0 ? @(videoQueueInvokeEntryToNestedLeadMinMilliseconds) : nil;
+    NSNumber *videoQueueInvokeEntryToNestedLeadMaxMillisecondsNumber =
+        videoQueueInvokeEntryToNestedLeadHistogram.count > 0 ? @(videoQueueInvokeEntryToNestedLeadMaxMilliseconds) : nil;
+    NSNumber *videoQueueNestedToInvokeExitLeadMinMillisecondsNumber =
+        videoQueueNestedToInvokeExitPairCount > 0 ? @(videoQueueNestedToInvokeExitLeadMinMilliseconds) : nil;
+    NSNumber *videoQueueNestedToInvokeExitLeadMaxMillisecondsNumber =
+        videoQueueNestedToInvokeExitPairCount > 0 ? @(videoQueueNestedToInvokeExitLeadMaxMilliseconds) : nil;
+    NSNumber *videoQueueInvokeEntryToNestedLead120HzEquivalentCount =
+        @(MDKHistogramCountInRange(videoQueueInvokeEntryToNestedLeadHistogram, 0.0, 10.0));
+    NSNumber *videoQueueInvokeEntryToExitLead120HzEquivalentCount =
+        @(MDKHistogramCountInRange(videoQueueInvokeEntryToExitLeadHistogram, 0.0, 10.0));
+    NSNumber *videoQueueNestedToInvokeExitLead120HzEquivalentCount =
+        @(MDKHistogramCountInRange(videoQueueNestedToInvokeExitLeadHistogram, 0.0, 10.0));
+    NSNumber *firstVideoQueueNestedBlockWrapperSequenceID =
+        [firstVideoQueueNestedBlockCallbackEvent[@"wrapperSequenceID"] isKindOfClass:[NSNumber class]] ?
+            firstVideoQueueNestedBlockCallbackEvent[@"wrapperSequenceID"] : nil;
+    NSNumber *firstVideoQueueNestedBlockWrapperDepth =
+        [firstVideoQueueNestedBlockCallbackEvent[@"wrapperDepth"] isKindOfClass:[NSNumber class]] ?
+            firstVideoQueueNestedBlockCallbackEvent[@"wrapperDepth"] : nil;
+    NSNumber *firstVideoQueueNestedBlockInsideWrapperOriginalInvoke = nil;
+    if (firstVideoQueueNestedBlockWrapperSequenceID != nil &&
+        firstVideoQueueNestedBlockWrapperSequenceID.unsignedLongLongValue > 0 &&
+        firstVideoQueueNestedBlockCallbackTimestampNanos != nil) {
+        NSNumber *entryTimestampNanos =
+            videoQueueWrapperEntryTimestampBySequence[firstVideoQueueNestedBlockWrapperSequenceID];
+        NSNumber *exitTimestampNanos =
+            videoQueueWrapperExitTimestampBySequence[firstVideoQueueNestedBlockWrapperSequenceID];
+        if (entryTimestampNanos != nil && exitTimestampNanos != nil) {
+            const uint64_t nestedTimestampNanos = firstVideoQueueNestedBlockCallbackTimestampNanos.unsignedLongLongValue;
+            const BOOL inside =
+                entryTimestampNanos.unsignedLongLongValue <= nestedTimestampNanos &&
+                nestedTimestampNanos <= exitTimestampNanos.unsignedLongLongValue;
+            firstVideoQueueNestedBlockInsideWrapperOriginalInvoke = @(inside);
+        }
+    }
     NSString *videoReceiveQueueWrapperPointer =
         [videoReceiveQueueWrapper[@"pointer"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapper[@"pointer"] : nil;
     NSNumber *videoReceiveQueueWrapperMallocSize =
@@ -6654,16 +6956,41 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperCallbackDeltaHistogram=%@", MDKDescribeTraceValue(videoQueueWrapperCadenceSummary[@"deltaHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperCallback120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueWrapperCadenceSummary[@"delta120HzEquivalentCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperCallbackCadenceClassification=%@", MDKDescribeTraceValue(videoQueueWrapperCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeEntryEventCount=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeEntryCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeEntryDeltaHistogram=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeEntryCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeEntry120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeEntryCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeEntryCadenceClassification=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeEntryCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeExitEventCount=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeExitCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeExitDeltaHistogram=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeExitCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeExit120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeExitCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeExitCadenceClassification=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeExitCadenceSummary[@"cadenceClassification"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackEventCount=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackDeltaCount=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"deltaCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackDeltaHistogram=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"deltaHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallback120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"delta120HzEquivalentCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackCadenceClassification=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueNestedAttributedCallbackCount=%@", MDKDescribeTraceValue(@(videoQueueNestedAttributedCallbackCount))]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueNestedUnattributedCallbackCount=%@", MDKDescribeTraceValue(@(videoQueueNestedUnattributedCallbackCount))]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueNestedInsideWrapperSequenceCount=%@", MDKDescribeTraceValue(@(videoQueueNestedInsideWrapperSequenceCount))]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLeadPairCount=%@", MDKDescribeTraceValue(@(videoQueueWrapperToNestedLeadPairCount))]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLeadHistogram=%@", MDKDescribeTraceValue(videoQueueWrapperToNestedLeadHistogram)]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLead120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueWrapperToNestedLead120HzEquivalentCount)]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLeadMinMilliseconds=%@", MDKDescribeTraceValue(videoQueueWrapperToNestedLeadMinMillisecondsNumber)]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLeadMaxMilliseconds=%@", MDKDescribeTraceValue(videoQueueWrapperToNestedLeadMaxMillisecondsNumber)]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueInvokeEntryToExitLeadPairCount=%@", MDKDescribeTraceValue(@(videoQueueInvokeEntryToExitLeadPairCount))]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueInvokeEntryToExitLeadHistogram=%@", MDKDescribeTraceValue(videoQueueInvokeEntryToExitLeadHistogram)]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueInvokeEntryToExitLead120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueInvokeEntryToExitLead120HzEquivalentCount)]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueInvokeEntryToExitLeadMinMilliseconds=%@", MDKDescribeTraceValue(videoQueueInvokeEntryToExitLeadMinMillisecondsNumber)]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueInvokeEntryToExitLeadMaxMilliseconds=%@", MDKDescribeTraceValue(videoQueueInvokeEntryToExitLeadMaxMillisecondsNumber)]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueInvokeEntryToNestedLeadHistogram=%@", MDKDescribeTraceValue(videoQueueInvokeEntryToNestedLeadHistogram)]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueInvokeEntryToNestedLead120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueInvokeEntryToNestedLead120HzEquivalentCount)]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueInvokeEntryToNestedLeadMinMilliseconds=%@", MDKDescribeTraceValue(videoQueueInvokeEntryToNestedLeadMinMillisecondsNumber)]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueInvokeEntryToNestedLeadMaxMilliseconds=%@", MDKDescribeTraceValue(videoQueueInvokeEntryToNestedLeadMaxMillisecondsNumber)]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueNestedToInvokeExitLeadPairCount=%@", MDKDescribeTraceValue(@(videoQueueNestedToInvokeExitPairCount))]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueNestedToInvokeExitLeadHistogram=%@", MDKDescribeTraceValue(videoQueueNestedToInvokeExitLeadHistogram)]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueNestedToInvokeExitLead120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueNestedToInvokeExitLead120HzEquivalentCount)]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueNestedToInvokeExitLeadMinMilliseconds=%@", MDKDescribeTraceValue(videoQueueNestedToInvokeExitLeadMinMillisecondsNumber)]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueNestedToInvokeExitLeadMaxMilliseconds=%@", MDKDescribeTraceValue(videoQueueNestedToInvokeExitLeadMaxMillisecondsNumber)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperPointer=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperPointer)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperMallocSize=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperMallocSize)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperCandidateBlockOffsets=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperCandidateBlockOffsets)]];
@@ -6712,6 +7039,11 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInstalledCount=%@", MDKDescribeTraceValue(videoQueueWrapperInstallSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackTimestampNanos=%@", MDKDescribeTraceValue(firstVideoQueueCallbackTimestampNanos)]];
     [notes addObject:[NSString stringWithFormat:@"firstVideoQueueNestedBlockCallbackTimestampNanos=%@", MDKDescribeTraceValue(firstVideoQueueNestedBlockCallbackTimestampNanos)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueNestedBlockPrecedingEventKind=%@", MDKDescribeTraceValue(firstVideoQueueNestedBlockPrecedingEventKind)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueNestedBlockPrecedingEventLeadMilliseconds=%@", MDKDescribeTraceValue(firstVideoQueueNestedBlockPrecedingEventLeadMilliseconds)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueNestedBlockWrapperSequenceID=%@", MDKDescribeTraceValue(firstVideoQueueNestedBlockWrapperSequenceID)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueNestedBlockWrapperDepth=%@", MDKDescribeTraceValue(firstVideoQueueNestedBlockWrapperDepth)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueNestedBlockInsideWrapperOriginalInvoke=%@", MDKDescribeTraceValue(firstVideoQueueNestedBlockInsideWrapperOriginalInvoke)]];
     [notes addObject:[NSString stringWithFormat:@"firstVideoQueueNestedBlockLeadMilliseconds=%@", MDKDescribeTraceValue(firstVideoQueueNestedBlockLeadMilliseconds)]];
     [notes addObject:[NSString stringWithFormat:@"firstSuccessfulVideoQueueNestedBlockRescanReason=%@", MDKDescribeTraceValue(firstSuccessfulVideoQueueNestedBlockRescanReason)]];
     [notes addObject:[NSString stringWithFormat:@"firstSuccessfulVideoQueueNestedBlockRescanTimestampNanos=%@", MDKDescribeTraceValue(firstSuccessfulVideoQueueNestedBlockRescanTimestampNanos)]];
@@ -6815,12 +7147,28 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperMallocSize=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperMallocSize)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperCandidateBlockOffsets=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperCandidateBlockOffsets)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperCallbackEventCount=%@", MDKDescribeTraceValue(videoQueueWrapperCadenceSummary[@"eventCount"])]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeEntryEventCount=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeEntryCadenceSummary[@"eventCount"])]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeEntryCadenceClassification=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeEntryCadenceSummary[@"cadenceClassification"])]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeExitEventCount=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeExitCadenceSummary[@"eventCount"])]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeExitCadenceClassification=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeExitCadenceSummary[@"cadenceClassification"])]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackEventCount=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"eventCount"])]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueNestedAttributedCallbackCount=%@", MDKDescribeTraceValue(@(videoQueueNestedAttributedCallbackCount))]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueNestedUnattributedCallbackCount=%@", MDKDescribeTraceValue(@(videoQueueNestedUnattributedCallbackCount))]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueNestedInsideWrapperSequenceCount=%@", MDKDescribeTraceValue(@(videoQueueNestedInsideWrapperSequenceCount))]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLeadPairCount=%@", MDKDescribeTraceValue(@(videoQueueWrapperToNestedLeadPairCount))]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLeadHistogram=%@", MDKDescribeTraceValue(videoQueueWrapperToNestedLeadHistogram)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLead120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueWrapperToNestedLead120HzEquivalentCount)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLeadMinMilliseconds=%@", MDKDescribeTraceValue(videoQueueWrapperToNestedLeadMinMillisecondsNumber)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLeadMaxMilliseconds=%@", MDKDescribeTraceValue(videoQueueWrapperToNestedLeadMaxMillisecondsNumber)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueInvokeEntryToExitLeadPairCount=%@", MDKDescribeTraceValue(@(videoQueueInvokeEntryToExitLeadPairCount))]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueInvokeEntryToExitLeadHistogram=%@", MDKDescribeTraceValue(videoQueueInvokeEntryToExitLeadHistogram)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueInvokeEntryToExitLead120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueInvokeEntryToExitLead120HzEquivalentCount)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueInvokeEntryToExitLeadMinMilliseconds=%@", MDKDescribeTraceValue(videoQueueInvokeEntryToExitLeadMinMillisecondsNumber)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueInvokeEntryToExitLeadMaxMilliseconds=%@", MDKDescribeTraceValue(videoQueueInvokeEntryToExitLeadMaxMillisecondsNumber)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueInvokeEntryToNestedLeadHistogram=%@", MDKDescribeTraceValue(videoQueueInvokeEntryToNestedLeadHistogram)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueInvokeEntryToNestedLead120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueInvokeEntryToNestedLead120HzEquivalentCount)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueNestedToInvokeExitLeadHistogram=%@", MDKDescribeTraceValue(videoQueueNestedToInvokeExitLeadHistogram)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueNestedToInvokeExitLead120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueNestedToInvokeExitLead120HzEquivalentCount)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperInstalledOffset=%@", MDKDescribeTraceValue(videoQueueWrapperInstalledOffset)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperOriginalInvokeSymbol=%@", MDKDescribeTraceValue(videoQueueWrapperOriginalInvokeSymbol)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperOriginalInvokeImagePath=%@", MDKDescribeTraceValue(videoQueueWrapperOriginalInvokeImagePath)]];
@@ -6856,6 +7204,11 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventTimestampNanos=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventTimestampNanos)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventLeadMilliseconds=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventLeadMilliseconds)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventStreamState=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventStreamState)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueNestedBlockPrecedingEventKind=%@", MDKDescribeTraceValue(firstVideoQueueNestedBlockPrecedingEventKind)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueNestedBlockPrecedingEventLeadMilliseconds=%@", MDKDescribeTraceValue(firstVideoQueueNestedBlockPrecedingEventLeadMilliseconds)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueNestedBlockWrapperSequenceID=%@", MDKDescribeTraceValue(firstVideoQueueNestedBlockWrapperSequenceID)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueNestedBlockWrapperDepth=%@", MDKDescribeTraceValue(firstVideoQueueNestedBlockWrapperDepth)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueNestedBlockInsideWrapperOriginalInvoke=%@", MDKDescribeTraceValue(firstVideoQueueNestedBlockInsideWrapperOriginalInvoke)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackLastSetupEventIndex=%@", MDKDescribeTraceValue(firstVideoQueueCallbackLastSetupEventIndexNumber)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackLastSetupEventKind=%@", MDKDescribeTraceValue(firstVideoQueueCallbackLastSetupEventKind)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackLastSetupEventSelector=%@", MDKDescribeTraceValue(firstVideoQueueCallbackLastSetupEventSelector)]];
