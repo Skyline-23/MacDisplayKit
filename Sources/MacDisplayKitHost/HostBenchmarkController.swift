@@ -137,4 +137,14 @@ final class MDKHostBenchmarkController {
             sampleDuration: sampleDuration
         )
     }
+
+    func traceScreenCaptureKitTiming(
+        displayID: UInt32,
+        sampleDuration: TimeInterval
+    ) throws -> MDKScreenCaptureKitTimingTrace {
+        try MDKScreenCaptureKitTimingTracer.trace(
+            displayID: displayID,
+            sampleDuration: sampleDuration
+        )
+    }
 }

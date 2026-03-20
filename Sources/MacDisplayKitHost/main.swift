@@ -173,6 +173,12 @@ final class HostAppDelegate: NSObject, NSApplicationDelegate {
 }
 
 private func runHeadlessModeIfNeeded() -> Int32? {
+    guard CommandLine.arguments.dropFirst().contains(where: { $0.hasPrefix("--") }) else {
+        return nil
+    }
+
+    _ = NSApplication.shared
+    NSApp.setActivationPolicy(.prohibited)
     let controller = MDKHostBenchmarkController()
     return MDKHostCommandLine.runIfRequested(arguments: CommandLine.arguments, controller: controller)
 }

@@ -15,6 +15,7 @@
 #import "MDKObjCShim.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 #import "../LegacyRuntime/Capture/av_audio.h"
@@ -283,6 +284,8 @@ static NSDictionary<NSString *, id> *MDKSummarizeSampleCarrier(id sample);
 static NSDictionary<NSString *, id> *MDKSummarizePointerValue(const void *pointer);
 static NSString *MDKCopyBlockSignatureString(id block);
 static NSDictionary<NSString *, id> *MDKCopySCKRemoteQueueEntrySummaryForType(unsigned char queueType);
+static NSDictionary<NSString *, id> *MDKCopySCKRemoteQueueEntryForType(unsigned char queueType);
+static void MDKUpdateSCKSampleBufferDiagnostics(CMSampleBufferRef sampleBuffer);
 static BOOL MDKPrimeSCRemoteQueueWrapperIfPossible(id remoteQueue);
 
 @implementation MDKShimStreamOutputCollector
@@ -293,6 +296,8 @@ didOutputSampleBuffer:(id)sampleBuffer
     if (sampleBuffer == nil || ![sampleBuffer isKindOfClass:[NSObject class]]) {
         return;
     }
+
+    MDKUpdateSCKSampleBufferDiagnostics((__bridge CMSampleBufferRef) sampleBuffer);
 
     BOOL shouldRecord = NO;
     @synchronized(MDKActiveSCKTraceLock) {
@@ -749,6 +754,9 @@ static NSDictionary<NSString *, id> *MDKSummarizeSampleBuffer(CMSampleBufferRef 
         summary[@"pixelFormat"] = @(CVPixelBufferGetPixelFormatType(pixelBuffer));
         IOSurfaceRef surface = CVPixelBufferGetIOSurface(pixelBuffer);
         summary[@"hasIOSurface"] = @(surface != nullptr);
+        if (surface != nullptr) {
+            summary[@"surface"] = MDKSummarizeIOSurface(surface);
+        }
     } else {
         summary[@"hasIOSurface"] = @NO;
     }
@@ -868,27 +876,36 @@ static NSDictionary<NSString *, id> *MDKCopySCRemoteQueueContainerState(id conta
 }
 
 static NSDictionary<NSString *, id> *MDKCopySCKRemoteQueueEntrySummaryForType(unsigned char queueType) {
+    NSDictionary<NSString *, id> *entry = MDKCopySCKRemoteQueueEntryForType(queueType);
+    if (entry == nil) {
+        return @{
+            @"present": @NO,
+            @"queueType": @(queueType),
+        };
+    }
+
+    NSMutableDictionary<NSString *, id> *summary = [NSMutableDictionary dictionary];
+    summary[@"queueType"] = @(queueType);
+    if (entry[@"queueObject"] != nil) {
+        summary[@"queueObject"] = MDKSummarizeObject(entry[@"queueObject"]);
+    }
+    if (entry[@"remoteQueue"] != nil) {
+        summary[@"remoteQueue"] = MDKSummarizeObject(entry[@"remoteQueue"]);
+    }
+    return summary;
+}
+
+static NSDictionary<NSString *, id> *MDKCopySCKRemoteQueueEntryForType(unsigned char queueType) {
     @synchronized(MDKActiveSCKTraceLock) {
         for (NSMutableDictionary<NSString *, id> *entry in MDKActiveSCKRemoteQueueEntries.allValues) {
             NSNumber *entryQueueType = entry[@"queueType"];
             if (entryQueueType != nil && entryQueueType.unsignedCharValue == queueType) {
-                NSMutableDictionary<NSString *, id> *summary = [NSMutableDictionary dictionary];
-                summary[@"queueType"] = @(queueType);
-                if (entry[@"queueObject"] != nil) {
-                    summary[@"queueObject"] = MDKSummarizeObject(entry[@"queueObject"]);
-                }
-                if (entry[@"remoteQueue"] != nil) {
-                    summary[@"remoteQueue"] = MDKSummarizeObject(entry[@"remoteQueue"]);
-                }
-                return summary;
+                return [entry copy];
             }
         }
     }
 
-    return @{
-        @"present": @NO,
-        @"queueType": @(queueType),
-    };
+    return nil;
 }
 
 static NSDictionary<NSString *, id> *MDKCopySCStreamInternalState(id stream) {
@@ -952,6 +969,15 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"startCaptureCompletionSucceeded": @NO,
             @"collectStreamDataCallCount": @0,
             @"sampleBufferEventCount": @0,
+            @"sampleBufferArrivalDeltaCount": @0,
+            @"sampleBufferArrivalDeltaHistogram": [NSMutableDictionary dictionary],
+            @"sampleBufferPresentationDeltaCount": @0,
+            @"sampleBufferPresentationDeltaHistogram": [NSMutableDictionary dictionary],
+            @"sampleBufferConsecutiveSurfaceReuseCount": @0,
+            @"sampleBufferSurfaceUseCountHistogram": [NSMutableDictionary dictionary],
+            @"sampleBufferSurfaceUseCountMax": @0,
+            @"sampleBufferUniqueSurfacePointers": [NSMutableSet set],
+            @"sampleBufferUniqueSurfaceCount": @0,
             @"rpIOSurfaceEventCount": @0,
             @"captureHandlerSampleEventCount": @0,
             @"contentStreamEventCount": @0,
@@ -1193,6 +1219,107 @@ static NSString *MDKDescribeTraceValue(id value) {
     }
 
     return [value description] ?: @"<unknown>";
+}
+
+static NSString *MDKBucketMilliseconds(double milliseconds) {
+    const double rounded = std::round(milliseconds * 10.0) / 10.0;
+    return [NSString stringWithFormat:@"%.1fms", rounded];
+}
+
+static void MDKIncrementMutableHistogram(NSMutableDictionary<NSString *, NSNumber *> *histogram, NSString *bucket) {
+    if (histogram == nil || bucket == nil) {
+        return;
+    }
+
+    histogram[bucket] = @([histogram[bucket] unsignedIntegerValue] + 1);
+}
+
+static void MDKUpdateSCKSampleBufferDiagnostics(CMSampleBufferRef sampleBuffer) {
+    if (sampleBuffer == nullptr) {
+        return;
+    }
+
+    const uint64_t arrivalTimestampNanos = MDKCurrentTraceTimestampNanos();
+    const CMTime presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+    CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+    IOSurfaceRef surface = nullptr;
+    if (imageBuffer != nullptr && CFGetTypeID(imageBuffer) == CVPixelBufferGetTypeID()) {
+        surface = CVPixelBufferGetIOSurface(reinterpret_cast<CVPixelBufferRef>(imageBuffer));
+    }
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState == nil) {
+            return;
+        }
+
+        NSNumber *lastArrivalTimestampNanos = MDKActiveSCKTraceState[@"sampleBufferLastArrivalTimestampNanos"];
+        if (lastArrivalTimestampNanos != nil) {
+            const double arrivalDeltaMs =
+                static_cast<double>(arrivalTimestampNanos - lastArrivalTimestampNanos.unsignedLongLongValue) / 1000000.0;
+            MDKIncrementMutableHistogram(
+                MDKActiveSCKTraceState[@"sampleBufferArrivalDeltaHistogram"],
+                MDKBucketMilliseconds(arrivalDeltaMs)
+            );
+            MDKActiveSCKTraceState[@"sampleBufferArrivalDeltaCount"] =
+                @([MDKActiveSCKTraceState[@"sampleBufferArrivalDeltaCount"] unsignedIntegerValue] + 1);
+            NSNumber *maxArrivalDeltaMs = MDKActiveSCKTraceState[@"sampleBufferArrivalDeltaMaxMilliseconds"];
+            NSNumber *minArrivalDeltaMs = MDKActiveSCKTraceState[@"sampleBufferArrivalDeltaMinMilliseconds"];
+            if (maxArrivalDeltaMs == nil || arrivalDeltaMs > maxArrivalDeltaMs.doubleValue) {
+                MDKActiveSCKTraceState[@"sampleBufferArrivalDeltaMaxMilliseconds"] = @(arrivalDeltaMs);
+            }
+            if (minArrivalDeltaMs == nil || arrivalDeltaMs < minArrivalDeltaMs.doubleValue) {
+                MDKActiveSCKTraceState[@"sampleBufferArrivalDeltaMinMilliseconds"] = @(arrivalDeltaMs);
+            }
+        }
+        MDKActiveSCKTraceState[@"sampleBufferLastArrivalTimestampNanos"] = @(arrivalTimestampNanos);
+
+        if (CMTIME_IS_NUMERIC(presentationTimeStamp)) {
+            const double ptsSeconds = CMTimeGetSeconds(presentationTimeStamp);
+            NSNumber *lastPTSSeconds = MDKActiveSCKTraceState[@"sampleBufferLastPresentationTimeSeconds"];
+            if (lastPTSSeconds != nil) {
+                const double ptsDeltaMs = (ptsSeconds - lastPTSSeconds.doubleValue) * 1000.0;
+                MDKIncrementMutableHistogram(
+                    MDKActiveSCKTraceState[@"sampleBufferPresentationDeltaHistogram"],
+                    MDKBucketMilliseconds(ptsDeltaMs)
+                );
+                MDKActiveSCKTraceState[@"sampleBufferPresentationDeltaCount"] =
+                    @([MDKActiveSCKTraceState[@"sampleBufferPresentationDeltaCount"] unsignedIntegerValue] + 1);
+                NSNumber *maxPresentationDeltaMs = MDKActiveSCKTraceState[@"sampleBufferPresentationDeltaMaxMilliseconds"];
+                NSNumber *minPresentationDeltaMs = MDKActiveSCKTraceState[@"sampleBufferPresentationDeltaMinMilliseconds"];
+                if (maxPresentationDeltaMs == nil || ptsDeltaMs > maxPresentationDeltaMs.doubleValue) {
+                    MDKActiveSCKTraceState[@"sampleBufferPresentationDeltaMaxMilliseconds"] = @(ptsDeltaMs);
+                }
+                if (minPresentationDeltaMs == nil || ptsDeltaMs < minPresentationDeltaMs.doubleValue) {
+                    MDKActiveSCKTraceState[@"sampleBufferPresentationDeltaMinMilliseconds"] = @(ptsDeltaMs);
+                }
+            }
+            MDKActiveSCKTraceState[@"sampleBufferLastPresentationTimeSeconds"] = @(ptsSeconds);
+        }
+
+        if (surface != nullptr) {
+            NSString *surfacePointer = [NSString stringWithFormat:@"%p", surface];
+            MDKActiveSCKTraceState[@"sampleBufferLastSurfacePointer"] = surfacePointer;
+            NSMutableSet<NSString *> *uniqueSurfacePointers = MDKActiveSCKTraceState[@"sampleBufferUniqueSurfacePointers"];
+            [uniqueSurfacePointers addObject:surfacePointer];
+            MDKActiveSCKTraceState[@"sampleBufferUniqueSurfaceCount"] = @(uniqueSurfacePointers.count);
+
+            NSString *previousSurfacePointer = MDKActiveSCKTraceState[@"sampleBufferPreviousSurfacePointer"];
+            if (previousSurfacePointer != nil && [previousSurfacePointer isEqualToString:surfacePointer]) {
+                MDKActiveSCKTraceState[@"sampleBufferConsecutiveSurfaceReuseCount"] =
+                    @([MDKActiveSCKTraceState[@"sampleBufferConsecutiveSurfaceReuseCount"] unsignedIntegerValue] + 1);
+            }
+            MDKActiveSCKTraceState[@"sampleBufferPreviousSurfacePointer"] = surfacePointer;
+
+            const uint32_t useCount = IOSurfaceGetUseCount(surface);
+            MDKIncrementMutableHistogram(
+                MDKActiveSCKTraceState[@"sampleBufferSurfaceUseCountHistogram"],
+                [NSString stringWithFormat:@"%u", useCount]
+            );
+            if (useCount > [MDKActiveSCKTraceState[@"sampleBufferSurfaceUseCountMax"] unsignedIntValue]) {
+                MDKActiveSCKTraceState[@"sampleBufferSurfaceUseCountMax"] = @(useCount);
+            }
+        }
+    }
 }
 
 static NSArray<NSString *> *MDKTraceDiagnosticNotes(NSDictionary *event) {
@@ -1501,6 +1628,8 @@ static NSDictionary<NSString *, id> *MDKSummarizeIOSurface(IOSurfaceRef surface)
         @"height": @(IOSurfaceGetHeight(surface)),
         @"bytesPerRow": @(IOSurfaceGetBytesPerRow(surface)),
         @"pixelFormat": @(IOSurfaceGetPixelFormat(surface)),
+        @"useCount": @(IOSurfaceGetUseCount(surface)),
+        @"pointer": [NSString stringWithFormat:@"%p", surface],
     };
 }
 
@@ -1870,9 +1999,18 @@ static void MDKSwizzledStartRemoteVideoReceiveQueue(id self, SEL _cmd, id queue)
         needsPrime = (MDKActiveSCRemoteQueueWrapper == nullptr);
     }
     if (needsPrime) {
-        const BOOL wrapped = MDKPrimeSCRemoteQueueWrapperIfPossible(queue);
+        NSDictionary<NSString *, id> *videoQueueEntry = MDKCopySCKRemoteQueueEntryForType(1);
+        id remoteQueueCandidate = videoQueueEntry[@"remoteQueue"];
+
+        BOOL wrapped = NO;
+        if (remoteQueueCandidate != nil) {
+            wrapped = MDKPrimeSCRemoteQueueWrapperIfPossible(remoteQueueCandidate);
+        }
         if (!wrapped) {
-            MDKPrimeFigRemoteQueueReceiverIfPossible(queue);
+            wrapped = MDKPrimeSCRemoteQueueWrapperIfPossible(queue);
+        }
+        if (!wrapped) {
+            MDKPrimeFigRemoteQueueReceiverIfPossible(remoteQueueCandidate ?: queue);
         }
     }
 
@@ -2554,9 +2692,28 @@ static void MDKAttemptSCRemoteQueueWrapperProbeForCapturedVideoQueue(NSTimeInter
     }
 }
 
+static void MDKRunCurrentRunLoopForDuration(NSTimeInterval duration) {
+    if (duration <= 0) {
+        return;
+    }
+
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:duration];
+    while ([deadline timeIntervalSinceNow] > 0) {
+        @autoreleasepool {
+            NSDate *sliceDeadline = [NSDate dateWithTimeIntervalSinceNow:0.01];
+            BOOL handledDefault = [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:sliceDeadline];
+            BOOL handledCommon = [[NSRunLoop currentRunLoop] runMode:NSRunLoopCommonModes beforeDate:sliceDeadline];
+            if (!handledDefault && !handledCommon) {
+                usleep(1'000);
+            }
+        }
+    }
+}
+
 static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     NSUInteger displayID,
     NSTimeInterval timeout,
+    BOOL includePrivateQueueProbes,
     NSError * _Nullable * _Nullable error
 ) {
     if (!CGPreflightScreenCaptureAccess()) {
@@ -2813,9 +2970,13 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         startCompletion,
         dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(timeout * NSEC_PER_SEC))
     );
-    usleep(250 * 1000);
-    MDKAttemptSCRemoteQueueWrapperProbeForCapturedVideoQueue(timeout);
-    MDKAttemptFigRemoteQueueReceiverProbeForCapturedVideoQueue(timeout);
+    if (includePrivateQueueProbes) {
+        usleep(250 * 1000);
+        MDKAttemptSCRemoteQueueWrapperProbeForCapturedVideoQueue(timeout);
+        MDKAttemptFigRemoteQueueReceiverProbeForCapturedVideoQueue(timeout);
+    } else {
+        MDKRunCurrentRunLoopForDuration(timeout);
+    }
 
     MDKRecordSCKTraceEvent(
         @"post-start-stream-state",
@@ -3565,6 +3726,18 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"serializedFilter=%@", MDKDescribeTraceValue(serializedFilter)]];
     [notes addObject:[NSString stringWithFormat:@"collectStreamDataCallCount=%@", MDKDescribeTraceValue(snapshot[@"collectStreamDataCallCount"])]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferEventCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalDeltaCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferArrivalDeltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalDeltaMinMilliseconds=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferArrivalDeltaMinMilliseconds"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalDeltaMaxMilliseconds=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferArrivalDeltaMaxMilliseconds"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalDeltaHistogram=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferArrivalDeltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationDeltaCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferPresentationDeltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationDeltaMinMilliseconds=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferPresentationDeltaMinMilliseconds"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationDeltaMaxMilliseconds=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferPresentationDeltaMaxMilliseconds"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationDeltaHistogram=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferPresentationDeltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferUniqueSurfaceCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferUniqueSurfaceCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferConsecutiveSurfaceReuseCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferConsecutiveSurfaceReuseCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferSurfaceUseCountMax=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferSurfaceUseCountMax"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferSurfaceUseCountHistogram=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferSurfaceUseCountHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"rpIOSurfaceEventCount=%@", MDKDescribeTraceValue(snapshot[@"rpIOSurfaceEventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"captureHandlerSampleEventCount=%@", MDKDescribeTraceValue(snapshot[@"captureHandlerSampleEventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"contentStreamEventCount=%@", MDKDescribeTraceValue(snapshot[@"contentStreamEventCount"])]];
@@ -3573,6 +3746,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkEventCount=%@", MDKDescribeTraceValue(snapshot[@"remoteQueueSinkEventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"remoteQueueObjectEventCount=%@", MDKDescribeTraceValue(snapshot[@"remoteQueueObjectEventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"capturedRemoteQueueCount=%lu", (unsigned long) MDKCapturedSCKRemoteQueueCount()]];
+    [notes addObject:[NSString stringWithFormat:@"privateQueueProbesEnabled=%@", includePrivateQueueProbes ? @"true" : @"false"]];
     [notes addObject:@"stopCaptureWithCompletionHandler was intentionally skipped in the host-only trace to avoid an RPDaemonProxy stop-path NSXPCEncoder exception."];
     const BOOL succeeded = [snapshot[@"sawProxyCoreGraphics"] boolValue] && startError == nil;
     const std::int32_t status = startError != nil ? static_cast<std::int32_t>(startError.code) : (succeeded ? 0 : 1);
@@ -3582,6 +3756,406 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         [notes addObject:@"Public SCStream start completed and reached RPDaemonProxy proxyCoreGraphicsWithMethodType:config:machPort:completionHandler:."];
     } else {
         [notes addObject:@"Public SCStream start completed but the trace did not observe RPDaemonProxy proxyCoreGraphicsWithMethodType:config:machPort:completionHandler: before timeout."];
+    }
+
+    NSMutableDictionary<NSString *, id> *result = [@{
+        @"displayID": @(displayID),
+        @"sampleDuration": @(timeout),
+        @"status": @(status),
+        @"succeeded": @(succeeded),
+        @"streamID": streamID,
+        @"filterID": MDKPerformObjectGetter(filter, sel_registerName("filterID")) ?: @"",
+        @"selectors": [[selectors allObjects] sortedArrayUsingSelector:@selector(compare:)],
+        @"symbols": [[symbols allObjects] sortedArrayUsingSelector:@selector(compare:)],
+        @"steps": steps,
+        @"notes": notes,
+    } mutableCopy];
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        MDKActiveSCKTraceState = nil;
+    }
+
+    return result;
+}
+
+static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKPublicTimingTrace(
+    NSUInteger displayID,
+    NSTimeInterval timeout,
+    NSError * _Nullable * _Nullable error
+) {
+    if (!CGPreflightScreenCaptureAccess()) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:7
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Screen capture access is not authorized for the public ScreenCaptureKit timing trace."
+                                     }];
+        }
+        return nil;
+    }
+
+    if (timeout <= 0) {
+        timeout = 2.0;
+    }
+
+    NSBundle *screenCaptureKitBundle = [NSBundle bundleWithPath:@"/System/Library/Frameworks/ScreenCaptureKit.framework"];
+    if (screenCaptureKitBundle != nil && !screenCaptureKitBundle.loaded) {
+        [screenCaptureKitBundle load];
+    }
+
+    Class shareableContentClass = NSClassFromString(@"SCShareableContent");
+    Class filterClass = NSClassFromString(@"SCContentFilter");
+    Class configClass = NSClassFromString(@"SCStreamConfiguration");
+    Class streamClass = NSClassFromString(@"SCStream");
+    if (shareableContentClass == Nil || filterClass == Nil || configClass == Nil || streamClass == Nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:9
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Required ScreenCaptureKit classes are unavailable."
+                                     }];
+        }
+        return nil;
+    }
+
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(static_cast<CGDirectDisplayID>(displayID));
+    if (mode == nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:10
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Unable to resolve the current display mode for the ScreenCaptureKit timing trace."
+                                     }];
+        }
+        return nil;
+    }
+
+    const NSUInteger width = std::max(static_cast<NSUInteger>(CGDisplayModeGetPixelWidth(mode)), static_cast<NSUInteger>(1));
+    const NSUInteger height = std::max(static_cast<NSUInteger>(CGDisplayModeGetPixelHeight(mode)), static_cast<NSUInteger>(1));
+    CFRelease(mode);
+
+    MDKResetSCKTraceState(displayID, timeout);
+
+    __block id display = nil;
+    __block NSError *shareableContentError = nil;
+    if ([shareableContentClass respondsToSelector:sel_registerName("getShareableContentExcludingDesktopWindows:onScreenWindowsOnly:completionHandler:")]) {
+        dispatch_semaphore_t shareableContentCompletion = dispatch_semaphore_create(0);
+        ((void (*)(id, SEL, BOOL, BOOL, id)) objc_msgSend)(
+            shareableContentClass,
+            sel_registerName("getShareableContentExcludingDesktopWindows:onScreenWindowsOnly:completionHandler:"),
+            NO,
+            YES,
+            ^(id _Nullable shareableContent, NSError * _Nullable completionError) {
+                shareableContentError = completionError;
+                if (shareableContent != nil && [shareableContent respondsToSelector:sel_registerName("displays")]) {
+                    NSArray *displays = ((id (*)(id, SEL)) objc_msgSend)(shareableContent, sel_registerName("displays"));
+                    for (id candidate in displays) {
+                        if (![candidate respondsToSelector:sel_registerName("displayID")]) {
+                            continue;
+                        }
+
+                        unsigned int candidateDisplayID = ((unsigned int (*)(id, SEL)) objc_msgSend)(
+                            candidate,
+                            sel_registerName("displayID")
+                        );
+                        if (candidateDisplayID == static_cast<unsigned int>(displayID)) {
+                            display = candidate;
+                            break;
+                        }
+                    }
+                }
+                dispatch_semaphore_signal(shareableContentCompletion);
+            }
+        );
+
+        const NSDate *shareableDeadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+        while (display == nil && shareableContentError == nil && [shareableDeadline timeIntervalSinceNow] > 0) {
+            if (dispatch_semaphore_wait(shareableContentCompletion, dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(10 * NSEC_PER_MSEC))) == 0) {
+                break;
+            }
+            @autoreleasepool {
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, false);
+            }
+        }
+    }
+
+    if (display == nil && [shareableContentClass respondsToSelector:sel_registerName("getDisplayForDisplayId:")]) {
+        display = ((id (*)(id, SEL, unsigned int)) objc_msgSend)(
+            shareableContentClass,
+            sel_registerName("getDisplayForDisplayId:"),
+            static_cast<unsigned int>(displayID)
+        );
+    }
+
+    if (display == nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:11
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: shareableContentError.localizedDescription ?: @"Unable to resolve an SCDisplay for the timing trace."
+                                     }];
+        }
+        return nil;
+    }
+
+    id filter = ((id (*)(id, SEL, id, id, id)) objc_msgSend)(
+        ((id (*)(id, SEL)) objc_msgSend)(filterClass, sel_registerName("alloc")),
+        sel_registerName("initWithDisplay:excludingApplications:exceptingWindows:"),
+        display,
+        @[],
+        @[]
+    );
+    if (filter == nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:12
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Unable to create an SCContentFilter for the timing trace."
+                                     }];
+        }
+        return nil;
+    }
+
+    id configuration = ((id (*)(id, SEL)) objc_msgSend)(
+        ((id (*)(id, SEL)) objc_msgSend)(configClass, sel_registerName("alloc")),
+        sel_registerName("init")
+    );
+    ((void (*)(id, SEL, NSUInteger)) objc_msgSend)(configuration, sel_registerName("setWidth:"), width);
+    ((void (*)(id, SEL, NSUInteger)) objc_msgSend)(configuration, sel_registerName("setHeight:"), height);
+    ((void (*)(id, SEL, NSInteger)) objc_msgSend)(configuration, sel_registerName("setQueueDepth:"), 3);
+    ((void (*)(id, SEL, BOOL)) objc_msgSend)(configuration, sel_registerName("setShowsCursor:"), NO);
+    ((void (*)(id, SEL, unsigned int)) objc_msgSend)(configuration, sel_registerName("setPixelFormat:"), kCVPixelFormatType_32BGRA);
+    const CMTime frameInterval = CMTimeMake(1, 120);
+    ((void (*)(id, SEL, CMTime)) objc_msgSend)(configuration, sel_registerName("setMinimumFrameInterval:"), frameInterval);
+
+    id stream = ((id (*)(id, SEL, id, id, id)) objc_msgSend)(
+        ((id (*)(id, SEL)) objc_msgSend)(streamClass, sel_registerName("alloc")),
+        sel_registerName("initWithFilter:configuration:delegate:"),
+        filter,
+        configuration,
+        nil
+    );
+    if (stream == nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:13
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Unable to create an SCStream for the timing trace."
+                                     }];
+        }
+        return nil;
+    }
+
+    MDKRecordSCKTraceEvent(
+        @"initial-state",
+        @{
+            @"contentFilter": MDKSummarizeObject(filter),
+            @"display": MDKSummarizeObject(display),
+            @"configuration": MDKSummarizeObject(configuration),
+            @"stream": MDKSummarizeObject(stream),
+            @"streamState": MDKCopySCStreamInternalState(stream),
+        }
+    );
+
+    dispatch_queue_t sampleQueue = dispatch_queue_create("com.skyline23.MacDisplayKit.sck-public-timing", DISPATCH_QUEUE_SERIAL);
+    id outputCollector = [[MDKShimStreamOutputCollector alloc] init];
+    NSError *outputError = nil;
+    const BOOL addedOutput = ((BOOL (*)(id, SEL, id, NSInteger, id, NSError **)) objc_msgSend)(
+        stream,
+        sel_registerName("addStreamOutput:type:sampleHandlerQueue:error:"),
+        outputCollector,
+        0,
+        sampleQueue,
+        &outputError
+    );
+    MDKRecordSCKTraceEvent(
+        @"add-stream-output",
+        @{
+            @"outputAdded": @(addedOutput),
+            @"errorDomain": outputError.domain ?: [NSNull null],
+            @"errorCode": @(outputError.code),
+            @"streamState": MDKCopySCStreamInternalState(stream),
+        }
+    );
+    if (!addedOutput) {
+        if (error != nullptr) {
+            *error = outputError ?: [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                                        code:14
+                                                    userInfo:@{
+                                                        NSLocalizedDescriptionKey: @"Unable to add a screen stream output before timing collection."
+                                                    }];
+        }
+        return nil;
+    }
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        MDKActiveSCKScreenSampleHandlerQueue =
+            reinterpret_cast<dispatch_queue_t>(MDKCopyObjectIvar(stream, "_screenSampleHandlerQueue"));
+        if (MDKActiveSCKTraceState != nil) {
+            MDKActiveSCKTraceState[@"screenSampleHandlerQueueCaptured"] = @(MDKActiveSCKScreenSampleHandlerQueue != nil);
+            if (MDKActiveSCKScreenSampleHandlerQueue != nil) {
+                MDKActiveSCKTraceState[@"screenSampleHandlerQueueLabel"] =
+                    [NSString stringWithUTF8String:dispatch_queue_get_label(MDKActiveSCKScreenSampleHandlerQueue)] ?: @"";
+            }
+        }
+    }
+
+    __block NSError *startError = nil;
+    __block BOOL startCompletionObserved = NO;
+    ((void (*)(id, SEL, id)) objc_msgSend)(
+        stream,
+        sel_registerName("startCaptureWithCompletionHandler:"),
+        ^(NSError * _Nullable completionError) {
+            @synchronized(MDKActiveSCKTraceLock) {
+                if (MDKActiveSCKTraceState != nil) {
+                    MDKActiveSCKTraceState[@"startCaptureCompletionObserved"] = @YES;
+                    MDKActiveSCKTraceState[@"startCaptureCompletionSucceeded"] = @(completionError == nil);
+                    if (completionError != nil) {
+                        MDKActiveSCKTraceState[@"startCaptureCompletionErrorDomain"] = completionError.domain ?: @"";
+                        MDKActiveSCKTraceState[@"startCaptureCompletionErrorCode"] = @(completionError.code);
+                        MDKActiveSCKTraceState[@"startCaptureCompletionErrorDescription"] =
+                            completionError.localizedDescription ?: @"";
+                    }
+                }
+            }
+            startError = completionError;
+            startCompletionObserved = YES;
+        }
+    );
+
+    const NSDate *startDeadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+    while (!startCompletionObserved && [startDeadline timeIntervalSinceNow] > 0) {
+        @autoreleasepool {
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, false);
+        }
+    }
+
+    const NSDate *captureDeadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+    while ([captureDeadline timeIntervalSinceNow] > 0) {
+        @autoreleasepool {
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, false);
+        }
+    }
+
+    MDKRecordSCKTraceEvent(
+        @"post-start-stream-state",
+        @{
+            @"streamState": MDKCopySCStreamInternalState(stream),
+            @"startErrorDomain": startError.domain ?: [NSNull null],
+            @"startErrorCode": @(startError.code),
+            @"startCompletionObserved": @(startCompletionObserved),
+        }
+    );
+
+    NSDictionary<NSString *, id> *snapshot = MDKCopySCKTraceStateSnapshot();
+    if (snapshot == nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:15
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Unable to snapshot the ScreenCaptureKit timing trace."
+                                     }];
+        }
+        return nil;
+    }
+
+    NSMutableArray<NSDictionary<NSString *, id> *> *steps = [NSMutableArray array];
+    NSMutableSet<NSString *> *selectors = [NSMutableSet set];
+    NSMutableSet<NSString *> *symbols = [NSMutableSet setWithObject:@"ScreenCaptureKit"];
+
+    NSArray *events = snapshot[@"events"] ?: @[];
+    for (NSDictionary *event in events) {
+        NSString *kind = event[@"kind"] ?: @"unknown";
+        if ([kind isEqualToString:@"initial-state"]) {
+            [selectors addObject:@"getShareableContentExcludingDesktopWindows:onScreenWindowsOnly:completionHandler:"];
+            [selectors addObject:@"initWithDisplay:excludingApplications:exceptingWindows:"];
+            [selectors addObject:@"initWithFilter:configuration:delegate:"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"display=%@", MDKDescribeTraceValue(event[@"display"])],
+                [NSString stringWithFormat:@"stream=%@", MDKDescribeTraceValue(event[@"stream"])],
+                [NSString stringWithFormat:@"filter=%@", MDKDescribeTraceValue(event[@"contentFilter"])],
+                [NSString stringWithFormat:@"configuration=%@", MDKDescribeTraceValue(event[@"configuration"])],
+                [NSString stringWithFormat:@"streamState=%@", MDKDescribeTraceValue(event[@"streamState"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(@"initial-state", @"initWithFilter:configuration:delegate:", @"ScreenCaptureKit", nil, @YES, notes)];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"add-stream-output"]) {
+            [selectors addObject:@"addStreamOutput:type:sampleHandlerQueue:error:"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"errorDomain=%@", MDKDescribeTraceValue(event[@"errorDomain"])],
+                [NSString stringWithFormat:@"errorCode=%@", MDKDescribeTraceValue(event[@"errorCode"])],
+                [NSString stringWithFormat:@"streamState=%@", MDKDescribeTraceValue(event[@"streamState"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(@"add-stream-output", @"addStreamOutput:type:sampleHandlerQueue:error:", @"ScreenCaptureKit", nil, event[@"outputAdded"], notes)];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"stream-output-sample-buffer"]) {
+            [selectors addObject:@"stream:didOutputSampleBuffer:ofType:"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"type=%@", MDKDescribeTraceValue(event[@"type"])],
+                [NSString stringWithFormat:@"sampleBuffer=%@", MDKDescribeTraceValue(event[@"sampleBuffer"])],
+                [NSString stringWithFormat:@"streamState=%@", MDKDescribeTraceValue(event[@"streamState"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(@"stream-output-sample-buffer", @"stream:didOutputSampleBuffer:ofType:", @"ScreenCaptureKit", nil, @YES, notes)];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"post-start-stream-state"]) {
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"streamState=%@", MDKDescribeTraceValue(event[@"streamState"])],
+                [NSString stringWithFormat:@"startErrorDomain=%@", MDKDescribeTraceValue(event[@"startErrorDomain"])],
+                [NSString stringWithFormat:@"startErrorCode=%@", MDKDescribeTraceValue(event[@"startErrorCode"])],
+                [NSString stringWithFormat:@"startCompletionObserved=%@", MDKDescribeTraceValue(event[@"startCompletionObserved"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(@"post-start-stream-state", @"startCaptureWithCompletionHandler:", @"ScreenCaptureKit", nil, @YES, notes)];
+            continue;
+        }
+    }
+
+    NSString *streamID = MDKPerformObjectGetter(stream, sel_registerName("streamID")) ?: @"";
+    NSDictionary *serializedStreamProperties = MDKSummarizeObject(
+        MDKPerformObjectGetter(stream, sel_registerName("serializeStreamProperties"))
+    );
+    NSDictionary *serializedFilter = MDKSummarizeObject(
+        MDKPerformObjectGetter(filter, sel_registerName("serialize"))
+    );
+
+    NSMutableArray<NSString *> *notes = [snapshot[@"notes"] mutableCopy] ?: [NSMutableArray array];
+    [notes addObject:[NSString stringWithFormat:@"serializedStreamProperties=%@", MDKDescribeTraceValue(serializedStreamProperties)]];
+    [notes addObject:[NSString stringWithFormat:@"serializedFilter=%@", MDKDescribeTraceValue(serializedFilter)]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferEventCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalDeltaCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferArrivalDeltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalDeltaMinMilliseconds=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferArrivalDeltaMinMilliseconds"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalDeltaMaxMilliseconds=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferArrivalDeltaMaxMilliseconds"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalDeltaHistogram=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferArrivalDeltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationDeltaCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferPresentationDeltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationDeltaMinMilliseconds=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferPresentationDeltaMinMilliseconds"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationDeltaMaxMilliseconds=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferPresentationDeltaMaxMilliseconds"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationDeltaHistogram=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferPresentationDeltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferUniqueSurfaceCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferUniqueSurfaceCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferConsecutiveSurfaceReuseCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferConsecutiveSurfaceReuseCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferSurfaceUseCountMax=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferSurfaceUseCountMax"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferSurfaceUseCountHistogram=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferSurfaceUseCountHistogram"])]];
+    [notes addObject:@"privateQueueProbesEnabled=false"];
+
+    const NSUInteger sampleBufferEventCount = [snapshot[@"sampleBufferEventCount"] unsignedIntegerValue];
+    const BOOL succeeded = startCompletionObserved && startError == nil && sampleBufferEventCount > 0;
+    const std::int32_t status = startError != nil ? static_cast<std::int32_t>(startError.code) : (succeeded ? 0 : 1);
+    if (startError != nil) {
+        [notes addObject:[NSString stringWithFormat:@"Public SCStream timing trace start failed: %@", startError.localizedDescription ?: @"<unknown>"]];
+    } else if (!startCompletionObserved) {
+        [notes addObject:@"Public SCStream timing trace timed out waiting for startCaptureWithCompletionHandler: completion on the main run loop."];
+    } else if (sampleBufferEventCount == 0) {
+        [notes addObject:@"Public SCStream timing trace started successfully but did not deliver any sample buffers during the capture window."];
+    } else {
+        [notes addObject:@"Public SCStream timing trace collected sample buffers successfully."];
     }
 
     NSMutableDictionary<NSString *, id> *result = [@{
@@ -4079,7 +4653,15 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoTraceScreenCaptureKitProxyH
     NSTimeInterval timeout,
     NSError * _Nullable * _Nullable error
 ) {
-    return MDKCreateSCKProxyHandshakeTrace(displayID, timeout, error);
+    return MDKCreateSCKProxyHandshakeTrace(displayID, timeout, YES, error);
+}
+
+NSDictionary<NSString *, id> * _Nullable MDKShimVideoTraceScreenCaptureKitTiming(
+    NSUInteger displayID,
+    NSTimeInterval timeout,
+    NSError * _Nullable * _Nullable error
+) {
+    return MDKCreateSCKPublicTimingTrace(displayID, timeout, error);
 }
 
 NSArray<NSString *> *MDKShimMicrophoneNames(void) {

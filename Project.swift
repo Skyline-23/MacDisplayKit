@@ -71,6 +71,7 @@ let project = Project(
                     "CFBundleDisplayName": "MacDisplayKitLegacyHost",
                     "LSMinimumSystemVersion": "13.0",
                     "INFOPLIST_KEY_NSHighResolutionCapable": "YES",
+                    "NSScreenCaptureUsageDescription": "MacDisplayKitLegacyHost captures display frames for runtime diagnostics and benchmarking.",
                     "NSPrincipalClass": "NSApplication"
                 ]
             ),
@@ -165,6 +166,7 @@ let project = Project(
                     "CFBundleDisplayName": "MacDisplayKitHost",
                     "LSMinimumSystemVersion": "13.0",
                     "INFOPLIST_KEY_NSHighResolutionCapable": "YES",
+                    "NSScreenCaptureUsageDescription": "MacDisplayKitHost captures display frames for runtime diagnostics and benchmarking.",
                     "NSPrincipalClass": "NSApplication"
                 ]
             ),
