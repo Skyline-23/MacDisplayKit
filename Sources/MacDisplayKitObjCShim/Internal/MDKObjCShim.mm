@@ -3816,6 +3816,81 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             static_cast<long double>(firstPublicSamplePrecedingStateTimestampNanos.unsignedLongLongValue);
         firstPublicSamplePrecedingStateLeadMilliseconds = @(static_cast<double>(deltaNanos / 1.0e6L));
     }
+
+    auto isVideoRelatedTraceEvent = ^BOOL(NSDictionary<NSString *, id> *event) {
+        NSString *kind = [event[@"kind"] isKindOfClass:[NSString class]] ? event[@"kind"] : nil;
+        if (kind == nil) {
+            return NO;
+        }
+
+        if ([kind isEqualToString:@"stream-start-remote-video-receive-queue"] ||
+            [kind isEqualToString:@"stream-post-start-remote-video-state"] ||
+            [kind isEqualToString:@"post-start-stream-state"]) {
+            return YES;
+        }
+
+        if ([kind isEqualToString:@"stream-start-remote-receive-queue"]) {
+            NSDictionary<NSString *, id> *queue = [event[@"queue"] isKindOfClass:[NSDictionary class]] ? event[@"queue"] : nil;
+            NSNumber *queueType = [queue[@"queueType"] isKindOfClass:[NSNumber class]] ? queue[@"queueType"] : nil;
+            return queueType != nil && queueType.unsignedCharValue == 1;
+        }
+
+        if ([kind isEqualToString:@"sc-remote-queue-set-queue-type"]) {
+            NSNumber *queueType = [event[@"queueType"] isKindOfClass:[NSNumber class]] ? event[@"queueType"] : nil;
+            return queueType != nil && queueType.unsignedCharValue == 1;
+        }
+
+        if ([kind isEqualToString:@"sc-remote-queue-set-remote-queue"]) {
+            NSDictionary<NSString *, id> *queueObject =
+                [event[@"queueObject"] isKindOfClass:[NSDictionary class]] ? event[@"queueObject"] : nil;
+            NSNumber *queueType = [queueObject[@"queueType"] isKindOfClass:[NSNumber class]] ? queueObject[@"queueType"] : nil;
+            return queueType != nil && queueType.unsignedCharValue == 1;
+        }
+
+        return NO;
+    };
+
+    NSDictionary<NSString *, id> *firstPublicSampleLastVideoEvent = nil;
+    NSNumber *firstPublicSampleLastVideoEventIndexNumber = nil;
+    if (firstPublicSampleEventIndex != NSNotFound) {
+        for (NSInteger idx = static_cast<NSInteger>(firstPublicSampleEventIndex) - 1; idx >= 0; --idx) {
+            NSDictionary<NSString *, id> *event = traceEvents[static_cast<NSUInteger>(idx)];
+            if (!isVideoRelatedTraceEvent(event)) {
+                continue;
+            }
+
+            firstPublicSampleLastVideoEvent = event;
+            firstPublicSampleLastVideoEventIndexNumber = @(idx);
+            break;
+        }
+    }
+    NSString *firstPublicSampleLastVideoEventKind =
+        [firstPublicSampleLastVideoEvent[@"kind"] isKindOfClass:[NSString class]] ? firstPublicSampleLastVideoEvent[@"kind"] : nil;
+    NSString *firstPublicSampleLastVideoEventSelector =
+        [firstPublicSampleLastVideoEvent[@"selector"] isKindOfClass:[NSString class]] ? firstPublicSampleLastVideoEvent[@"selector"] : nil;
+    NSString *firstPublicSampleLastVideoEventSymbol =
+        [firstPublicSampleLastVideoEvent[@"symbol"] isKindOfClass:[NSString class]] ? firstPublicSampleLastVideoEvent[@"symbol"] : nil;
+    NSNumber *firstPublicSampleLastVideoEventTimestampNanos =
+        [firstPublicSampleLastVideoEvent[@"timestampNanos"] isKindOfClass:[NSNumber class]] ? firstPublicSampleLastVideoEvent[@"timestampNanos"] : nil;
+    NSNumber *firstPublicSampleLastVideoEventLeadMilliseconds = nil;
+    if ([firstPublicSampleLastVideoEventTimestampNanos isKindOfClass:[NSNumber class]] &&
+        [firstPublicSampleTimestampNanos isKindOfClass:[NSNumber class]]) {
+        const long double deltaNanos =
+            static_cast<long double>(firstPublicSampleTimestampNanos.unsignedLongLongValue) -
+            static_cast<long double>(firstPublicSampleLastVideoEventTimestampNanos.unsignedLongLongValue);
+        firstPublicSampleLastVideoEventLeadMilliseconds = @(static_cast<double>(deltaNanos / 1.0e6L));
+    }
+    NSMutableArray<NSString *> *firstPublicSampleInterveningEventKinds = [NSMutableArray array];
+    if ([firstPublicSampleLastVideoEventIndexNumber isKindOfClass:[NSNumber class]] && firstPublicSampleEventIndex != NSNotFound) {
+        NSUInteger lastVideoEventIndex = firstPublicSampleLastVideoEventIndexNumber.unsignedIntegerValue;
+        for (NSUInteger idx = lastVideoEventIndex + 1; idx < firstPublicSampleEventIndex; ++idx) {
+            NSDictionary<NSString *, id> *event = traceEvents[idx];
+            NSString *kind = [event[@"kind"] isKindOfClass:[NSString class]] ? event[@"kind"] : nil;
+            if (kind != nil) {
+                [firstPublicSampleInterveningEventKinds addObject:kind];
+            }
+        }
+    }
     NSString *firstPrivateQueueSurfacePointer =
         [firstPrivateQueueSurface[@"pointer"] isKindOfClass:[NSString class]] ? firstPrivateQueueSurface[@"pointer"] : nil;
     NSNumber *privateQueueLeadMilliseconds = nil;
@@ -3895,6 +3970,13 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingStateTimestampNanos=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingStateTimestampNanos)]];
     [notes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingStateLeadMilliseconds=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingStateLeadMilliseconds)]];
     [notes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingState=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingState)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSampleLastVideoEventIndex=%@", MDKDescribeTraceValue(firstPublicSampleLastVideoEventIndexNumber)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSampleLastVideoEventKind=%@", MDKDescribeTraceValue(firstPublicSampleLastVideoEventKind)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSampleLastVideoEventSelector=%@", MDKDescribeTraceValue(firstPublicSampleLastVideoEventSelector)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSampleLastVideoEventSymbol=%@", MDKDescribeTraceValue(firstPublicSampleLastVideoEventSymbol)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSampleLastVideoEventTimestampNanos=%@", MDKDescribeTraceValue(firstPublicSampleLastVideoEventTimestampNanos)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSampleLastVideoEventLeadMilliseconds=%@", MDKDescribeTraceValue(firstPublicSampleLastVideoEventLeadMilliseconds)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSampleInterveningEventKinds=%@", MDKDescribeTraceValue(firstPublicSampleInterveningEventKinds)]];
     [notes addObject:[NSString stringWithFormat:@"firstPrivateQueueTimestampNanos=%@", MDKDescribeTraceValue(firstPrivateQueueTimestampNanos)]];
     [notes addObject:[NSString stringWithFormat:@"firstPrivateQueueSource=%@", MDKDescribeTraceValue(firstPrivateQueueSource)]];
     [notes addObject:[NSString stringWithFormat:@"privateQueueLeadMilliseconds=%@", MDKDescribeTraceValue(privateQueueLeadMilliseconds)]];
@@ -3935,6 +4017,13 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingStateTimestampNanos=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingStateTimestampNanos)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingStateLeadMilliseconds=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingStateLeadMilliseconds)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingState=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingState)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSampleLastVideoEventIndex=%@", MDKDescribeTraceValue(firstPublicSampleLastVideoEventIndexNumber)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSampleLastVideoEventKind=%@", MDKDescribeTraceValue(firstPublicSampleLastVideoEventKind)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSampleLastVideoEventSelector=%@", MDKDescribeTraceValue(firstPublicSampleLastVideoEventSelector)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSampleLastVideoEventSymbol=%@", MDKDescribeTraceValue(firstPublicSampleLastVideoEventSymbol)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSampleLastVideoEventTimestampNanos=%@", MDKDescribeTraceValue(firstPublicSampleLastVideoEventTimestampNanos)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSampleLastVideoEventLeadMilliseconds=%@", MDKDescribeTraceValue(firstPublicSampleLastVideoEventLeadMilliseconds)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSampleInterveningEventKinds=%@", MDKDescribeTraceValue(firstPublicSampleInterveningEventKinds)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPrivateQueueTimestampNanos=%@", MDKDescribeTraceValue(firstPrivateQueueTimestampNanos)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPrivateQueueSource=%@", MDKDescribeTraceValue(firstPrivateQueueSource)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"privateQueueLeadMilliseconds=%@", MDKDescribeTraceValue(privateQueueLeadMilliseconds)]];

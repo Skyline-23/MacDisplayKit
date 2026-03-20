@@ -358,14 +358,18 @@ final class MacDisplayKitTests: XCTestCase {
                     "succeeded": NSNumber(value: true),
                     "notes": [
                         "firstPublicSamplePrecedingEventKind=post-start-stream-state",
-                        "firstPublicSamplePrecedingEventLeadMilliseconds=1.25"
+                        "firstPublicSamplePrecedingEventLeadMilliseconds=1.25",
+                        "firstPublicSampleLastVideoEventKind=stream-post-start-remote-video-state",
+                        "firstPublicSampleInterveningEventKinds=[\"stream-start-remote-audio-receive-queue\",\"stream-start-remote-microphone-receive-queue\"]"
                     ]
                 ]
             ],
             "notes": [
                 "Handshake trace payload parsed.",
                 "firstPublicSamplePrecedingEventKind=post-start-stream-state",
-                "firstPublicSamplePrecedingEventLeadMilliseconds=1.25"
+                "firstPublicSamplePrecedingEventLeadMilliseconds=1.25",
+                "firstPublicSampleLastVideoEventKind=stream-post-start-remote-video-state",
+                "firstPublicSampleInterveningEventKinds=[\"stream-start-remote-audio-receive-queue\",\"stream-start-remote-microphone-receive-queue\"]"
             ]
         ]
 
@@ -401,12 +405,16 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(trace.steps[2].selector, "stream:didOutputSampleBuffer:ofType:")
         XCTAssertTrue(trace.steps[2].notes.contains("firstPublicSamplePrecedingEventKind=post-start-stream-state"))
         XCTAssertTrue(trace.steps[2].notes.contains("firstPublicSamplePrecedingEventLeadMilliseconds=1.25"))
+        XCTAssertTrue(trace.steps[2].notes.contains("firstPublicSampleLastVideoEventKind=stream-post-start-remote-video-state"))
+        XCTAssertTrue(trace.steps[2].notes.contains("firstPublicSampleInterveningEventKinds=[\"stream-start-remote-audio-receive-queue\",\"stream-start-remote-microphone-receive-queue\"]"))
         XCTAssertEqual(
             trace.notes,
             [
                 "Handshake trace payload parsed.",
                 "firstPublicSamplePrecedingEventKind=post-start-stream-state",
-                "firstPublicSamplePrecedingEventLeadMilliseconds=1.25"
+                "firstPublicSamplePrecedingEventLeadMilliseconds=1.25",
+                "firstPublicSampleLastVideoEventKind=stream-post-start-remote-video-state",
+                "firstPublicSampleInterveningEventKinds=[\"stream-start-remote-audio-receive-queue\",\"stream-start-remote-microphone-receive-queue\"]"
             ]
         )
     }

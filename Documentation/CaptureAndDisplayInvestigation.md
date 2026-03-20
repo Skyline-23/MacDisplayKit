@@ -274,10 +274,13 @@ The current host-only proxy trace records:
   - `firstPrivateQueueSource`
   - `firstPrivateQueueTimestampNanos`
   - `firstPublicSampleTimestampNanos`
-  - `firstPublicSamplePrecedingEventKind`
-  - `firstPublicSamplePrecedingEventLeadMilliseconds`
-  - `firstPublicSamplePrecedingStateSourceKind`
-  - `firstPublicSamplePrecedingStateLeadMilliseconds`
+- `firstPublicSamplePrecedingEventKind`
+- `firstPublicSamplePrecedingEventLeadMilliseconds`
+- `firstPublicSamplePrecedingStateSourceKind`
+- `firstPublicSamplePrecedingStateLeadMilliseconds`
+- `firstPublicSampleLastVideoEventKind`
+- `firstPublicSampleLastVideoEventLeadMilliseconds`
+- `firstPublicSampleInterveningEventKinds`
   - `privateQueueLeadMilliseconds`
   - `surfacePointerMatched`
 
@@ -328,18 +331,31 @@ Recent passive-handshake sample on display `2`:
 
 Recent passive-handshake sample after adding predecessor derivation on display `2`:
 
-- `sampleBufferEventCount=40`
+- `sampleBufferEventCount=39`
 - immediate predecessor event kind: `stream-start-remote-microphone-receive-queue`
-- immediate predecessor lead: `84.754791 ms`
+- immediate predecessor lead: `16.5595 ms`
+- last video-path event kind: `stream-post-start-remote-video-state`
+- last video-path lead: `16.898625 ms`
 - nearest earlier state source: `stream-post-start-remote-video-state`
-- nearest earlier state lead: `85.075125 ms`
+- nearest earlier state lead: `16.898625 ms`
+- intervening event kinds:
+  - `sc-remote-queue-set-remote-queue`
+  - `start-remote-queue`
+  - `manager-start-remote-queue`
+  - `stream-start-remote-receive-queue`
+  - `stream-start-remote-audio-receive-queue`
+  - `sc-remote-queue-set-remote-queue`
+  - `start-remote-queue`
+  - `manager-start-remote-queue`
+  - `stream-start-remote-receive-queue`
+  - `stream-start-remote-microphone-receive-queue`
 
 Interpretation:
 
 - queue setup and public sample delivery can be correlated in one healthy session without consuming the queue
 - `proxyCoreGraphicsWithMethodType:config:machPort:completionHandler:` is not required for the public sample path we are currently observing
 - the next useful split is no longer “can we keep public samples alive,” but “which earlier queue/setup transition best predicts the first healthy sample”
-- in the current trace, the first public sample lands about `85 ms` after the last queue-start event and the nearest earlier `streamState` snapshot
+- in the current trace, the first public sample lands about `16.9 ms` after the last video-path event, with audio and microphone remote-queue startup noise interleaved in between
 
 ## External clues worth keeping in mind
 
