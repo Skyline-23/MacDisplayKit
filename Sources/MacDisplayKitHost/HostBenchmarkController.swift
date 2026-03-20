@@ -57,4 +57,8 @@ final class MDKHostBenchmarkController {
             sampleDuration: Self.benchmarkSampleDuration
         )
     }
+
+    func privateCapturePrototypePlan() -> MDKPrivateCapturePrototypePlan {
+        MDKCapabilityMatrix.privateCapturePrototypePlan()
+    }
 }

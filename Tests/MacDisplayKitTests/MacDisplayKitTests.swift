@@ -54,6 +54,63 @@ final class MacDisplayKitTests: XCTestCase {
         }
     }
 
+    func testPrivateCapturePrototypePlannerPrefersIOSurfacePathWithOptionsWhenAvailable() {
+        let plan = MDKPrivateCapturePrototypePlanner.plan(
+            for: MDKPrivateCaptureCapabilities(
+                desktopCaptureAvailable: true,
+                displayIOSurfaceCaptureAvailable: true,
+                displayIOSurfaceCaptureWithOptionsAvailable: true,
+                extendedRangeOptionAvailable: true
+            )
+        )
+
+        XCTAssertEqual(plan.recommendedEntryPoint, .displayIOSurfaceWithOptions)
+        XCTAssertTrue(plan.readyForIOSurfacePrototype)
+        XCTAssertEqual(plan.capabilities.supportsHDRHardwareCaptureHints, true)
+    }
+
+    func testPrivateCapturePrototypePlannerFallsBackToPlainIOSurface() {
+        let plan = MDKPrivateCapturePrototypePlanner.plan(
+            for: MDKPrivateCaptureCapabilities(
+                desktopCaptureAvailable: true,
+                displayIOSurfaceCaptureAvailable: true,
+                displayIOSurfaceCaptureWithOptionsAvailable: false,
+                extendedRangeOptionAvailable: false
+            )
+        )
+
+        XCTAssertEqual(plan.recommendedEntryPoint, .displayIOSurface)
+        XCTAssertTrue(plan.readyForIOSurfacePrototype)
+    }
+
+    func testPrivateCapturePrototypePlannerFallsBackToDesktopCaptureWhenNeeded() {
+        let plan = MDKPrivateCapturePrototypePlanner.plan(
+            for: MDKPrivateCaptureCapabilities(
+                desktopCaptureAvailable: true,
+                displayIOSurfaceCaptureAvailable: false,
+                displayIOSurfaceCaptureWithOptionsAvailable: false,
+                extendedRangeOptionAvailable: false
+            )
+        )
+
+        XCTAssertEqual(plan.recommendedEntryPoint, .desktopCapture)
+        XCTAssertFalse(plan.readyForIOSurfacePrototype)
+    }
+
+    func testPrivateCapturePrototypePlannerReportsUnavailableWhenNoPrivateSurfaceExists() {
+        let plan = MDKPrivateCapturePrototypePlanner.plan(
+            for: MDKPrivateCaptureCapabilities(
+                desktopCaptureAvailable: false,
+                displayIOSurfaceCaptureAvailable: false,
+                displayIOSurfaceCaptureWithOptionsAvailable: false,
+                extendedRangeOptionAvailable: false
+            )
+        )
+
+        XCTAssertEqual(plan.recommendedEntryPoint, .unavailable)
+        XCTAssertFalse(plan.readyForIOSurfacePrototype)
+    }
+
     func testOptimizationTargetsInclude4KHDR120CaptureOnlyBaseline() {
         let target = MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly
 

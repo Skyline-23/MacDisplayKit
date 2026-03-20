@@ -12,4 +12,8 @@ public enum MDKCapabilityMatrix {
     public static func privateCaptureCapabilities() -> MDKPrivateCaptureCapabilities {
         MDKPrivateCaptureCapabilityProbe.current()
     }
+
+    public static func privateCapturePrototypePlan() -> MDKPrivateCapturePrototypePlan {
+        MDKPrivateCapturePrototypePlanner.current()
+    }
 }

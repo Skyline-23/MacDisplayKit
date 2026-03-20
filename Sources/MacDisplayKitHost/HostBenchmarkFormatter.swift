@@ -2,6 +2,25 @@ import Foundation
 import MacDisplayKit
 
 enum MDKHostBenchmarkFormatter {
+    static func formatPrivateCapturePrototypePlan(
+        _ plan: MDKPrivateCapturePrototypePlan
+    ) -> String {
+        var lines: [String] = []
+        lines.append("Private hardware capture prototype plan")
+        lines.append("Recommended entry point: \(plan.recommendedEntryPoint.displayName)")
+        lines.append("Ready for IOSurface prototype: \(plan.readyForIOSurfacePrototype ? "yes" : "no")")
+        lines.append("Desktop capture available: \(plan.capabilities.desktopCaptureAvailable ? "yes" : "no")")
+        lines.append("Display->IOSurface available: \(plan.capabilities.displayIOSurfaceCaptureAvailable ? "yes" : "no")")
+        lines.append("Display->IOSurface+options available: \(plan.capabilities.displayIOSurfaceCaptureWithOptionsAvailable ? "yes" : "no")")
+        lines.append("Extended range option available: \(plan.capabilities.extendedRangeOptionAvailable ? "yes" : "no")")
+        lines.append("")
+        lines.append("Notes:")
+        for note in plan.recommendedNotes {
+            lines.append("  - \(note)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     static func formatReport(for suite: MDKCaptureBenchmarkSuiteResult) -> String {
         let assessment = suite.assessment
         var lines: [String] = []

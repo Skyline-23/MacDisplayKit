@@ -1,7 +1,7 @@
 import Foundation
 import MacDisplayKitObjCShim
 
-public struct MDKPrivateCaptureCapabilities: Equatable, Sendable {
+public struct MDKPrivateCaptureCapabilities: Codable, Equatable, Sendable {
     public let desktopCaptureAvailable: Bool
     public let displayIOSurfaceCaptureAvailable: Bool
     public let displayIOSurfaceCaptureWithOptionsAvailable: Bool

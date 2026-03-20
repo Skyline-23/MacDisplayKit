@@ -4,6 +4,7 @@ import MacDisplayKit
 private enum MDKHostCLICommand {
     case listDisplays
     case listTargets
+    case privateCapturePlan(json: Bool)
     case benchmark(
         displayID: UInt32,
         targetIdentifier: String,
@@ -34,6 +35,24 @@ enum MDKHostCommandLine {
         case .listTargets:
             for target in controller.availableTargets() {
                 print("\(target.identifier)\t\(target.name)")
+            }
+            return 0
+        case .privateCapturePlan(let json):
+            let plan = controller.privateCapturePrototypePlan()
+            if json {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                do {
+                    let data = try encoder.encode(plan)
+                    if let text = String(data: data, encoding: .utf8) {
+                        print(text)
+                    }
+                } catch {
+                    fputs("Failed to encode private capture prototype plan: \(error)\n", stderr)
+                    return 1
+                }
+            } else {
+                print(MDKHostBenchmarkFormatter.formatPrivateCapturePrototypePlan(plan))
             }
             return 0
         case .benchmark(let displayID, let targetIdentifier, let intent, let processingMode, let json):
@@ -111,6 +130,10 @@ enum MDKHostCommandLine {
 
         if tokens.contains("--list-targets") {
             return .listTargets
+        }
+
+        if tokens.contains("--experimental-private-hw-capture-plan") {
+            return .privateCapturePlan(json: tokens.contains("--json"))
         }
 
         if let matrixDisplayIndex = tokens.firstIndex(of: "--benchmark-matrix-display"),
