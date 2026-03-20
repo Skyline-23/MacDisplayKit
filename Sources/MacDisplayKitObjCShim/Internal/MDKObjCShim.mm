@@ -5,6 +5,7 @@
 #import <IOSurface/IOSurface.h>
 #import <dlfcn.h>
 #import <mach/mach.h>
+#import <pthread.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <unistd.h>
@@ -223,17 +224,45 @@ static NSDictionary<NSString *, id> *MDKCreateMachPortSnapshot(mach_port_t port)
 @interface MDKShimStreamOutputCollector : NSObject
 @end
 
+static NSMutableDictionary<NSString *, id> *MDKActiveSCKTraceState = nil;
+static NSObject *MDKActiveSCKTraceLock = nil;
+
+static void MDKRecordSCKTraceEvent(NSString *kind, NSDictionary<NSString *, id> *payload);
+static NSDictionary<NSString *, id> *MDKSummarizeSampleBuffer(CMSampleBufferRef sampleBuffer);
+static NSDictionary<NSString *, id> *MDKCopySCStreamInternalState(id stream);
+
 @implementation MDKShimStreamOutputCollector
 
-- (void)stream:(__unused id)stream
-didOutputSampleBuffer:(__unused id)sampleBuffer
-        ofType:(__unused NSInteger)type {
+- (void)stream:(id)stream
+didOutputSampleBuffer:(id)sampleBuffer
+        ofType:(NSInteger)type {
+    if (sampleBuffer == nil || ![sampleBuffer isKindOfClass:[NSObject class]]) {
+        return;
+    }
+
+    BOOL shouldRecord = NO;
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            NSUInteger sampleBufferEventCount = [MDKActiveSCKTraceState[@"sampleBufferEventCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"sampleBufferEventCount"] = @(sampleBufferEventCount);
+            shouldRecord = sampleBufferEventCount <= 4;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    MDKRecordSCKTraceEvent(
+        @"stream-output-sample-buffer",
+        @{
+            @"type": @(type),
+            @"sampleBuffer": MDKSummarizeSampleBuffer((__bridge CMSampleBufferRef) sampleBuffer),
+            @"streamState": MDKCopySCStreamInternalState(stream),
+        }
+    );
 }
 
 @end
-
-static NSMutableDictionary<NSString *, id> *MDKActiveSCKTraceState = nil;
-static NSObject *MDKActiveSCKTraceLock = nil;
 
 using MDKProxyCoreGraphicsFn = void (*)(id, SEL, unsigned char, id, id, id);
 using MDKStartRemoteQueueFn = void (*)(id, SEL, id, id);
@@ -241,7 +270,10 @@ using MDKStartCaptureProxyFn = void (*)(id, SEL, id, id, id, id, id, id, id);
 using MDKFetchDisplayFn = void (*)(id, SEL, unsigned int, id);
 using MDKUpdateStreamConfigurationFn = void (*)(id, SEL, id, id, id, id, id);
 using MDKUpdateStreamContentFilterFn = void (*)(id, SEL, id, id, id, id, id, id);
+using MDKStreamDidStartFn = void (*)(id, SEL, id, id);
+using MDKStreamOutputEffectDidStartFn = void (*)(id, SEL, id, id);
 using MDKStartRemoteReceiveQueueConsumerFn = void (*)(id, SEL, id);
+using MDKCollectStreamDataFn = void (*)(id, SEL);
 
 static MDKProxyCoreGraphicsFn MDKOriginalProxyCoreGraphics = nullptr;
 static MDKStartRemoteQueueFn MDKOriginalStartRemoteQueue = nullptr;
@@ -249,10 +281,32 @@ static MDKStartCaptureProxyFn MDKOriginalStartCaptureProxy = nullptr;
 static MDKFetchDisplayFn MDKOriginalFetchDisplay = nullptr;
 static MDKUpdateStreamConfigurationFn MDKOriginalUpdateStreamConfiguration = nullptr;
 static MDKUpdateStreamContentFilterFn MDKOriginalUpdateStreamContentFilter = nullptr;
+static MDKStreamDidStartFn MDKOriginalStreamDidStart = nullptr;
+static MDKStreamOutputEffectDidStartFn MDKOriginalStreamOutputEffectDidStart = nullptr;
 static MDKStartRemoteReceiveQueueConsumerFn MDKOriginalStartRemoteReceiveQueue = nullptr;
 static MDKStartRemoteReceiveQueueConsumerFn MDKOriginalStartRemoteVideoReceiveQueue = nullptr;
 static MDKStartRemoteReceiveQueueConsumerFn MDKOriginalStartRemoteAudioReceiveQueue = nullptr;
 static MDKStartRemoteReceiveQueueConsumerFn MDKOriginalStartRemoteMicrophoneReceiveQueue = nullptr;
+static MDKCollectStreamDataFn MDKOriginalCollectStreamData = nullptr;
+
+static uint64_t MDKCurrentTraceTimestampNanos(void) {
+    return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+}
+
+static uint64_t MDKCurrentTraceThreadID(void) {
+    uint64_t threadID = 0;
+    pthread_threadid_np(nullptr, &threadID);
+    return threadID;
+}
+
+static NSString *MDKCurrentTraceQueueLabel(void) {
+    const char *label = dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL);
+    if (label == nullptr || label[0] == '\0') {
+        return @"";
+    }
+
+    return [NSString stringWithUTF8String:label] ?: @"";
+}
 
 static id MDKPerformObjectGetter(id object, SEL selector) {
     if (object == nil || selector == nullptr || ![object respondsToSelector:selector]) {
@@ -349,6 +403,119 @@ static NSDictionary<NSString *, id> *MDKSummarizeObject(id object) {
     return summary;
 }
 
+static NSValue * _Nullable MDKCopyRawPointerIvar(id object, const char *name) {
+    if (object == nil || name == nullptr) {
+        return nil;
+    }
+
+    Ivar ivar = class_getInstanceVariable([object class], name);
+    if (ivar == nullptr) {
+        return nil;
+    }
+
+    const ptrdiff_t offset = ivar_getOffset(ivar);
+    void *value = nullptr;
+    const uint8_t *base = reinterpret_cast<const uint8_t *>((__bridge const void *)object);
+    memcpy(&value, base + offset, sizeof(value));
+    if (value == nullptr) {
+        return nil;
+    }
+
+    return [NSValue valueWithPointer:value];
+}
+
+static id MDKCopyObjectIvar(id object, const char *name) {
+    if (object == nil || name == nullptr) {
+        return nil;
+    }
+
+    Ivar ivar = class_getInstanceVariable([object class], name);
+    if (ivar == nullptr) {
+        return nil;
+    }
+
+    return object_getIvar(object, ivar);
+}
+
+static NSDictionary<NSString *, id> *MDKSummarizeSampleBuffer(CMSampleBufferRef sampleBuffer) {
+    if (sampleBuffer == nullptr) {
+        return @{
+            @"present": @NO
+        };
+    }
+
+    NSMutableDictionary<NSString *, id> *summary = [@{
+        @"present": @YES,
+        @"numSamples": @(CMSampleBufferGetNumSamples(sampleBuffer)),
+        @"isValid": @(CMSampleBufferIsValid(sampleBuffer)),
+    } mutableCopy];
+
+    const CMTime presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+    if (CMTIME_IS_NUMERIC(presentationTimeStamp)) {
+        summary[@"presentationTimeSeconds"] = @(CMTimeGetSeconds(presentationTimeStamp));
+    }
+
+    CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+    if (imageBuffer != nullptr && CFGetTypeID(imageBuffer) == CVPixelBufferGetTypeID()) {
+        CVPixelBufferRef pixelBuffer = reinterpret_cast<CVPixelBufferRef>(imageBuffer);
+        summary[@"pixelWidth"] = @(CVPixelBufferGetWidth(pixelBuffer));
+        summary[@"pixelHeight"] = @(CVPixelBufferGetHeight(pixelBuffer));
+        summary[@"pixelFormat"] = @(CVPixelBufferGetPixelFormatType(pixelBuffer));
+        IOSurfaceRef surface = CVPixelBufferGetIOSurface(pixelBuffer);
+        summary[@"hasIOSurface"] = @(surface != nullptr);
+    } else {
+        summary[@"hasIOSurface"] = @NO;
+    }
+
+    CMFormatDescriptionRef formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer);
+    if (formatDescription != nullptr) {
+        summary[@"mediaSubType"] = @(CMFormatDescriptionGetMediaSubType(formatDescription));
+    }
+
+    return summary;
+}
+
+static NSDictionary<NSString *, id> *MDKCopySCStreamInternalState(id stream) {
+    if (stream == nil) {
+        return @{
+            @"present": @NO
+        };
+    }
+
+    NSMutableDictionary<NSString *, id> *summary = [@{
+        @"present": @YES,
+        @"stream": MDKSummarizeObject(stream),
+    } mutableCopy];
+
+    id screenStreamOutput = MDKCopyObjectIvar(stream, "_screenStreamOutput");
+    if (screenStreamOutput != nil) {
+        summary[@"screenStreamOutput"] = MDKSummarizeObject(screenStreamOutput);
+    }
+
+    id sharingSession = MDKCopyObjectIvar(stream, "_sharingSession");
+    if (sharingSession != nil) {
+        summary[@"sharingSession"] = MDKSummarizeObject(sharingSession);
+    }
+
+    dispatch_queue_t sampleHandlerQueue = reinterpret_cast<dispatch_queue_t>(MDKCopyObjectIvar(stream, "_screenSampleHandlerQueue"));
+    if (sampleHandlerQueue != nullptr) {
+        summary[@"screenSampleHandlerQueueLabel"] =
+            [NSString stringWithUTF8String:dispatch_queue_get_label(sampleHandlerQueue)] ?: @"";
+    }
+
+    NSDictionary<NSString *, NSString *> *pointerIvarNames = @{
+        @"videoReceiveQueuePointer": @"_videoReceiveQueue",
+        @"audioReceiveQueuePointer": @"_audioReceiveQueue",
+        @"microphoneReceiveQueuePointer": @"_microphoneReceiveQueue",
+    };
+    [pointerIvarNames enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *ivarName, __unused BOOL *stop) {
+        NSValue *value = MDKCopyRawPointerIvar(stream, ivarName.UTF8String);
+        summary[key] = value != nil ? [NSString stringWithFormat:@"%p", value.pointerValue] : @"";
+    }];
+
+    return summary;
+}
+
 static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -366,6 +533,8 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"sawProxyCoreGraphics": @NO,
             @"startCaptureCompletionObserved": @NO,
             @"startCaptureCompletionSucceeded": @NO,
+            @"collectStreamDataCallCount": @0,
+            @"sampleBufferEventCount": @0,
         } mutableCopy];
     }
 }
@@ -380,6 +549,12 @@ static void MDKRecordSCKTraceEvent(NSString *kind, NSDictionary<NSString *, id> 
         NSMutableDictionary<NSString *, id> *event = [payload mutableCopy];
         event[@"kind"] = kind;
         event[@"index"] = @(events.count);
+        event[@"timestampNanos"] = @(MDKCurrentTraceTimestampNanos());
+        event[@"threadID"] = @(MDKCurrentTraceThreadID());
+        NSString *queueLabel = MDKCurrentTraceQueueLabel();
+        if (queueLabel.length > 0) {
+            event[@"queueLabel"] = queueLabel;
+        }
         [events addObject:event];
     }
 }
@@ -416,6 +591,20 @@ static NSString *MDKDescribeTraceValue(id value) {
     return [value description] ?: @"<unknown>";
 }
 
+static NSArray<NSString *> *MDKTraceDiagnosticNotes(NSDictionary *event) {
+    NSMutableArray<NSString *> *notes = [NSMutableArray array];
+    if (event[@"timestampNanos"] != nil) {
+        [notes addObject:[NSString stringWithFormat:@"timestampNanos=%@", MDKDescribeTraceValue(event[@"timestampNanos"])]];
+    }
+    if (event[@"threadID"] != nil) {
+        [notes addObject:[NSString stringWithFormat:@"threadID=%@", MDKDescribeTraceValue(event[@"threadID"])]];
+    }
+    if (event[@"queueLabel"] != nil) {
+        [notes addObject:[NSString stringWithFormat:@"queueLabel=%@", MDKDescribeTraceValue(event[@"queueLabel"])]];
+    }
+    return notes;
+}
+
 static NSDictionary<NSString *, id> *MDKMakeTraceStep(
     NSString *name,
     NSString *selector,
@@ -426,9 +615,11 @@ static NSDictionary<NSString *, id> *MDKMakeTraceStep(
 ) {
     NSMutableDictionary<NSString *, id> *step = [@{
         @"name": name,
-        @"selector": selector,
         @"notes": notes,
     } mutableCopy];
+    if (selector != nil) {
+        step[@"selector"] = selector;
+    }
     if (symbol != nil) {
         step[@"symbol"] = symbol;
     }
@@ -609,6 +800,30 @@ static void MDKSwizzledUpdateStreamContentFilter(
     );
 }
 
+static void MDKSwizzledStreamDidStart(id self, SEL _cmd, id configuration, id contentFilter) {
+    MDKRecordSCKTraceEvent(
+        @"stream-did-start",
+        @{
+            @"configuration": MDKSummarizeObject(configuration),
+            @"contentFilter": MDKSummarizeObject(contentFilter),
+        }
+    );
+
+    MDKOriginalStreamDidStart(self, _cmd, configuration, contentFilter);
+}
+
+static void MDKSwizzledStreamOutputEffectDidStart(id self, SEL _cmd, id effect, id streamID) {
+    MDKRecordSCKTraceEvent(
+        @"stream-output-effect-did-start",
+        @{
+            @"effect": MDKSummarizeObject(effect),
+            @"streamID": MDKSummarizeObject(streamID),
+        }
+    );
+
+    MDKOriginalStreamOutputEffectDidStart(self, _cmd, effect, streamID);
+}
+
 static void MDKRecordRemoteQueueConsumerEvent(NSString *kind, id queue) {
     MDKRecordSCKTraceEvent(
         kind,
@@ -636,6 +851,26 @@ static void MDKSwizzledStartRemoteAudioReceiveQueue(id self, SEL _cmd, id queue)
 static void MDKSwizzledStartRemoteMicrophoneReceiveQueue(id self, SEL _cmd, id queue) {
     MDKRecordRemoteQueueConsumerEvent(@"stream-start-remote-microphone-receive-queue", queue);
     MDKOriginalStartRemoteMicrophoneReceiveQueue(self, _cmd, queue);
+}
+
+static void MDKSwizzledCollectStreamData(id self, SEL _cmd) {
+    BOOL shouldRecord = NO;
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            NSUInteger collectCount = [MDKActiveSCKTraceState[@"collectStreamDataCallCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"collectStreamDataCallCount"] = @(collectCount);
+            shouldRecord = collectCount <= 4;
+        }
+    }
+    if (shouldRecord) {
+        MDKRecordSCKTraceEvent(
+            @"collect-stream-data",
+            @{
+                @"streamState": MDKCopySCStreamInternalState(self),
+            }
+        );
+    }
+    MDKOriginalCollectStreamData(self, _cmd);
 }
 
 static void MDKInstallSCKProxyTraceHooks(void) {
@@ -709,6 +944,32 @@ static void MDKInstallSCKProxyTraceHooks(void) {
             );
         }
 
+        Method streamDidStartMethod = class_getInstanceMethod(
+            daemonProxyClass,
+            sel_registerName("streamDidStartWithConfiguration:contentFilter:")
+        );
+        if (streamDidStartMethod != nullptr) {
+            MDKOriginalStreamDidStart =
+                reinterpret_cast<MDKStreamDidStartFn>(method_getImplementation(streamDidStartMethod));
+            method_setImplementation(
+                streamDidStartMethod,
+                reinterpret_cast<IMP>(MDKSwizzledStreamDidStart)
+            );
+        }
+
+        Method streamOutputEffectDidStartMethod = class_getInstanceMethod(
+            daemonProxyClass,
+            sel_registerName("streamOutputEffectDidStart:withStreamID:")
+        );
+        if (streamOutputEffectDidStartMethod != nullptr) {
+            MDKOriginalStreamOutputEffectDidStart =
+                reinterpret_cast<MDKStreamOutputEffectDidStartFn>(method_getImplementation(streamOutputEffectDidStartMethod));
+            method_setImplementation(
+                streamOutputEffectDidStartMethod,
+                reinterpret_cast<IMP>(MDKSwizzledStreamOutputEffectDidStart)
+            );
+        }
+
         Class streamClass = NSClassFromString(@"SCStream");
         if (streamClass == Nil) {
             return;
@@ -763,6 +1024,19 @@ static void MDKInstallSCKProxyTraceHooks(void) {
             method_setImplementation(
                 startRemoteMicrophoneReceiveQueueMethod,
                 reinterpret_cast<IMP>(MDKSwizzledStartRemoteMicrophoneReceiveQueue)
+            );
+        }
+
+        Method collectStreamDataMethod = class_getInstanceMethod(
+            streamClass,
+            sel_registerName("collectStreamData")
+        );
+        if (collectStreamDataMethod != nullptr) {
+            MDKOriginalCollectStreamData =
+                reinterpret_cast<MDKCollectStreamDataFn>(method_getImplementation(collectStreamDataMethod));
+            method_setImplementation(
+                collectStreamDataMethod,
+                reinterpret_cast<IMP>(MDKSwizzledCollectStreamData)
             );
         }
     });
@@ -947,6 +1221,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             @"display": MDKSummarizeObject(display),
             @"configuration": MDKSummarizeObject(configuration),
             @"stream": MDKSummarizeObject(stream),
+            @"streamState": MDKCopySCStreamInternalState(stream),
         }
     );
 
@@ -967,6 +1242,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             @"outputAdded": @(addedOutput),
             @"errorDomain": outputError.domain ?: [NSNull null],
             @"errorCode": @(outputError.code),
+            @"streamState": MDKCopySCStreamInternalState(stream),
         }
     );
     if (!addedOutput) {
@@ -1009,14 +1285,14 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     );
     usleep(250 * 1000);
 
-    if ([stream respondsToSelector:sel_registerName("stopCaptureWithCompletionHandler:")]) {
-        ((void (*)(id, SEL, id)) objc_msgSend)(
-            stream,
-            sel_registerName("stopCaptureWithCompletionHandler:"),
-            ^(__unused NSError * _Nullable stopError) {
-            }
-        );
-    }
+    MDKRecordSCKTraceEvent(
+        @"post-start-stream-state",
+        @{
+            @"streamState": MDKCopySCStreamInternalState(stream),
+            @"startErrorDomain": startError.domain ?: [NSNull null],
+            @"startErrorCode": @(startError.code),
+        }
+    );
 
     NSDictionary<NSString *, id> *snapshot = MDKCopySCKTraceStateSnapshot();
     if (snapshot == nil) {
@@ -1045,18 +1321,21 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             NSDictionary *streamSummary = event[@"stream"];
             NSDictionary *filterSummary = event[@"contentFilter"];
             NSDictionary *configSummary = event[@"configuration"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"display=%@", MDKDescribeTraceValue(displaySummary)],
+                [NSString stringWithFormat:@"stream=%@", MDKDescribeTraceValue(streamSummary)],
+                [NSString stringWithFormat:@"filter=%@", MDKDescribeTraceValue(filterSummary)],
+                [NSString stringWithFormat:@"configuration=%@", MDKDescribeTraceValue(configSummary)],
+                [NSString stringWithFormat:@"streamState=%@", MDKDescribeTraceValue(event[@"streamState"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
             [steps addObject:MDKMakeTraceStep(
                 @"initial-state",
                 @"initWithFilter:configuration:delegate:",
                 @"ScreenCaptureKit",
                 nil,
                 @YES,
-                @[
-                    [NSString stringWithFormat:@"display=%@", MDKDescribeTraceValue(displaySummary)],
-                    [NSString stringWithFormat:@"stream=%@", MDKDescribeTraceValue(streamSummary)],
-                    [NSString stringWithFormat:@"filter=%@", MDKDescribeTraceValue(filterSummary)],
-                    [NSString stringWithFormat:@"configuration=%@", MDKDescribeTraceValue(configSummary)],
-                ]
+                notes
             )];
             continue;
         }
@@ -1064,16 +1343,19 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         if ([kind isEqualToString:@"add-stream-output"]) {
             [selectors addObject:@"addStreamOutput:type:sampleHandlerQueue:error:"];
             NSNumber *succeeded = event[@"outputAdded"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"errorDomain=%@", MDKDescribeTraceValue(event[@"errorDomain"])],
+                [NSString stringWithFormat:@"errorCode=%@", MDKDescribeTraceValue(event[@"errorCode"])],
+                [NSString stringWithFormat:@"streamState=%@", MDKDescribeTraceValue(event[@"streamState"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
             [steps addObject:MDKMakeTraceStep(
                 @"add-stream-output",
                 @"addStreamOutput:type:sampleHandlerQueue:error:",
                 @"ScreenCaptureKit",
                 nil,
                 succeeded,
-                @[
-                    [NSString stringWithFormat:@"errorDomain=%@", MDKDescribeTraceValue(event[@"errorDomain"])],
-                    [NSString stringWithFormat:@"errorCode=%@", MDKDescribeTraceValue(event[@"errorCode"])],
-                ]
+                notes
             )];
             continue;
         }
@@ -1102,16 +1384,18 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         if ([kind isEqualToString:@"start-remote-queue"]) {
             [selectors addObject:@"startRemoteQueue:streamID:"];
             [symbols addObject:@"RPDaemonProxy"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"queue=%@", MDKDescribeTraceValue(event[@"queue"])],
+                [NSString stringWithFormat:@"streamID=%@", MDKDescribeTraceValue(event[@"streamID"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
             [steps addObject:MDKMakeTraceStep(
                 @"start-remote-queue",
                 @"startRemoteQueue:streamID:",
                 @"RPDaemonProxy",
                 nil,
                 @YES,
-                @[
-                    [NSString stringWithFormat:@"queue=%@", MDKDescribeTraceValue(event[@"queue"])],
-                    [NSString stringWithFormat:@"streamID=%@", MDKDescribeTraceValue(event[@"streamID"])],
-                ]
+                notes
             )];
             continue;
         }
@@ -1190,18 +1474,58 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             continue;
         }
 
+        if ([kind isEqualToString:@"stream-did-start"]) {
+            [selectors addObject:@"streamDidStartWithConfiguration:contentFilter:"];
+            [symbols addObject:@"RPDaemonProxy"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"configuration=%@", MDKDescribeTraceValue(event[@"configuration"])],
+                [NSString stringWithFormat:@"contentFilter=%@", MDKDescribeTraceValue(event[@"contentFilter"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(
+                @"stream-did-start",
+                @"streamDidStartWithConfiguration:contentFilter:",
+                @"RPDaemonProxy",
+                nil,
+                @YES,
+                notes
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"stream-output-effect-did-start"]) {
+            [selectors addObject:@"streamOutputEffectDidStart:withStreamID:"];
+            [symbols addObject:@"RPDaemonProxy"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"effect=%@", MDKDescribeTraceValue(event[@"effect"])],
+                [NSString stringWithFormat:@"streamID=%@", MDKDescribeTraceValue(event[@"streamID"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(
+                @"stream-output-effect-did-start",
+                @"streamOutputEffectDidStart:withStreamID:",
+                @"RPDaemonProxy",
+                nil,
+                @YES,
+                notes
+            )];
+            continue;
+        }
+
         if ([kind isEqualToString:@"stream-start-remote-receive-queue"]) {
             [selectors addObject:@"startRemoteReceiveQueue:"];
             [symbols addObject:@"SCStream"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"queue=%@", MDKDescribeTraceValue(event[@"queue"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
             [steps addObject:MDKMakeTraceStep(
                 @"stream-start-remote-receive-queue",
                 @"startRemoteReceiveQueue:",
                 @"SCStream",
                 nil,
                 @YES,
-                @[
-                    [NSString stringWithFormat:@"queue=%@", MDKDescribeTraceValue(event[@"queue"])],
-                ]
+                notes
             )];
             continue;
         }
@@ -1209,15 +1533,17 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         if ([kind isEqualToString:@"stream-start-remote-video-receive-queue"]) {
             [selectors addObject:@"startRemoteVideoReceiveQueue:"];
             [symbols addObject:@"SCStream"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"queue=%@", MDKDescribeTraceValue(event[@"queue"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
             [steps addObject:MDKMakeTraceStep(
                 @"stream-start-remote-video-receive-queue",
                 @"startRemoteVideoReceiveQueue:",
                 @"SCStream",
                 nil,
                 @YES,
-                @[
-                    [NSString stringWithFormat:@"queue=%@", MDKDescribeTraceValue(event[@"queue"])],
-                ]
+                notes
             )];
             continue;
         }
@@ -1225,15 +1551,17 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         if ([kind isEqualToString:@"stream-start-remote-audio-receive-queue"]) {
             [selectors addObject:@"startRemoteAudioReceiveQueue:"];
             [symbols addObject:@"SCStream"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"queue=%@", MDKDescribeTraceValue(event[@"queue"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
             [steps addObject:MDKMakeTraceStep(
                 @"stream-start-remote-audio-receive-queue",
                 @"startRemoteAudioReceiveQueue:",
                 @"SCStream",
                 nil,
                 @YES,
-                @[
-                    [NSString stringWithFormat:@"queue=%@", MDKDescribeTraceValue(event[@"queue"])],
-                ]
+                notes
             )];
             continue;
         }
@@ -1241,15 +1569,71 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         if ([kind isEqualToString:@"stream-start-remote-microphone-receive-queue"]) {
             [selectors addObject:@"startRemoteMicrophoneReceiveQueue:"];
             [symbols addObject:@"SCStream"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"queue=%@", MDKDescribeTraceValue(event[@"queue"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
             [steps addObject:MDKMakeTraceStep(
                 @"stream-start-remote-microphone-receive-queue",
                 @"startRemoteMicrophoneReceiveQueue:",
                 @"SCStream",
                 nil,
                 @YES,
-                @[
-                    [NSString stringWithFormat:@"queue=%@", MDKDescribeTraceValue(event[@"queue"])],
-                ]
+                notes
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"collect-stream-data"]) {
+            [selectors addObject:@"collectStreamData"];
+            [symbols addObject:@"SCStream"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"streamState=%@", MDKDescribeTraceValue(event[@"streamState"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(
+                @"collect-stream-data",
+                @"collectStreamData",
+                @"SCStream",
+                nil,
+                @YES,
+                notes
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"stream-output-sample-buffer"]) {
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"type=%@", MDKDescribeTraceValue(event[@"type"])],
+                [NSString stringWithFormat:@"sampleBuffer=%@", MDKDescribeTraceValue(event[@"sampleBuffer"])],
+                [NSString stringWithFormat:@"streamState=%@", MDKDescribeTraceValue(event[@"streamState"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(
+                @"stream-output-sample-buffer",
+                @"stream:didOutputSampleBuffer:ofType:",
+                @"SCStreamOutput",
+                nil,
+                @YES,
+                notes
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"post-start-stream-state"]) {
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"streamState=%@", MDKDescribeTraceValue(event[@"streamState"])],
+                [NSString stringWithFormat:@"startErrorDomain=%@", MDKDescribeTraceValue(event[@"startErrorDomain"])],
+                [NSString stringWithFormat:@"startErrorCode=%@", MDKDescribeTraceValue(event[@"startErrorCode"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(
+                @"post-start-stream-state",
+                nil,
+                @"SCStream",
+                nil,
+                @YES,
+                notes
             )];
             continue;
         }
@@ -1266,6 +1650,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     NSMutableArray<NSString *> *notes = [snapshot[@"notes"] mutableCopy] ?: [NSMutableArray array];
     [notes addObject:[NSString stringWithFormat:@"serializedStreamProperties=%@", MDKDescribeTraceValue(serializedStreamProperties)]];
     [notes addObject:[NSString stringWithFormat:@"serializedFilter=%@", MDKDescribeTraceValue(serializedFilter)]];
+    [notes addObject:[NSString stringWithFormat:@"collectStreamDataCallCount=%@", MDKDescribeTraceValue(snapshot[@"collectStreamDataCallCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferEventCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferEventCount"])]];
+    [notes addObject:@"stopCaptureWithCompletionHandler was intentionally skipped in the host-only trace to avoid an RPDaemonProxy stop-path NSXPCEncoder exception."];
     const BOOL succeeded = [snapshot[@"sawProxyCoreGraphics"] boolValue] && startError == nil;
     const std::int32_t status = startError != nil ? static_cast<std::int32_t>(startError.code) : (succeeded ? 0 : 1);
     if (startError != nil) {
