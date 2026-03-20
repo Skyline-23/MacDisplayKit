@@ -43,11 +43,8 @@ func makeMDKAVFoundationVideoOutputConfiguration(
     return MDKAVFoundationVideoOutputConfiguration(
         videoSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: configuration.pixelFormat),
-            kCVPixelBufferWidthKey as String: NSNumber(value: configuration.width),
-            kCVPixelBufferHeightKey as String: NSNumber(value: configuration.height),
             kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: AnyHashable],
             kCVPixelBufferMetalCompatibilityKey as String: true,
-            AVVideoScalingModeKey: AVVideoScalingModeResizeAspect,
         ],
         alwaysDiscardsLateVideoFrames: true
     )

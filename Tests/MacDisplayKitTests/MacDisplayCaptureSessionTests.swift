@@ -92,14 +92,8 @@ final class MacDisplayCaptureSessionTests: XCTestCase {
             outputConfiguration.videoSettings[kCVPixelBufferPixelFormatTypeKey as String] as? NSNumber,
             NSNumber(value: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
         )
-        XCTAssertEqual(
-            outputConfiguration.videoSettings[kCVPixelBufferWidthKey as String] as? NSNumber,
-            NSNumber(value: 3840)
-        )
-        XCTAssertEqual(
-            outputConfiguration.videoSettings[kCVPixelBufferHeightKey as String] as? NSNumber,
-            NSNumber(value: 2160)
-        )
+        XCTAssertNil(outputConfiguration.videoSettings[kCVPixelBufferWidthKey as String])
+        XCTAssertNil(outputConfiguration.videoSettings[kCVPixelBufferHeightKey as String])
         XCTAssertEqual(
             outputConfiguration.videoSettings[kCVPixelBufferMetalCompatibilityKey as String] as? Bool,
             true
