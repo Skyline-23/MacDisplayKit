@@ -228,6 +228,42 @@ Interpretation:
 - that weakens the simple “static scenes are the only problem” reading
 - it strengthens the reading that the limiting policy sits closer to WindowServer / compositor cadence than to a pure change-detection heuristic in the public trace consumer
 
+### Public timing cadence classification
+
+The public timing trace now derives coarse cadence classifications directly from the
+arrival and presentation delta histograms:
+
+- `120hz-like`
+- `60hz-like`
+- `coalesced-or-mixed`
+- `mixed-or-transitional`
+- `insufficient-data`
+
+Recent `3`-second run on display `2`:
+
+#### Idle public timing trace
+
+- `sampleBufferEventCount=86`
+- `sampleBufferArrivalDelta120HzEquivalentCount=35 / 85`
+- `sampleBufferArrivalCadenceClassification=coalesced-or-mixed`
+- `sampleBufferPresentationDelta120HzEquivalentCount=31 / 85`
+- `sampleBufferPresentationCadenceClassification=coalesced-or-mixed`
+
+#### Full-screen Metal stimulus public timing trace
+
+- `sampleBufferEventCount=87`
+- `sampleBufferArrivalDelta120HzEquivalentCount=33 / 86`
+- `sampleBufferArrivalCadenceClassification=coalesced-or-mixed`
+- `sampleBufferPresentationDelta120HzEquivalentCount=35 / 86`
+- `sampleBufferPresentationCadenceClassification=coalesced-or-mixed`
+
+Interpretation:
+
+- the public `SCStream` path does produce some `~8.3ms`-class deltas
+- however those deltas are not dominant under either idle or continuous visible motion
+- the path does not sustain a `120hz-like` cadence classification in this configuration
+- the remaining work should target the handoff below public sample delivery rather than more tuning of the public callback path
+
 ## Private capture findings
 
 ### One-shot private hardware capture

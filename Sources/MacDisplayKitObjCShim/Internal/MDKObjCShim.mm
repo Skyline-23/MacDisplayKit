@@ -1230,6 +1230,69 @@ static NSString *MDKBucketMilliseconds(double milliseconds) {
     return [NSString stringWithFormat:@"%.1fms", rounded];
 }
 
+static double MDKParseHistogramBucketMilliseconds(NSString *bucket) {
+    if (![bucket isKindOfClass:[NSString class]] || ![bucket hasSuffix:@"ms"]) {
+        return NAN;
+    }
+
+    NSString *numericPortion = [bucket substringToIndex:bucket.length - 2];
+    return numericPortion.doubleValue;
+}
+
+static NSUInteger MDKHistogramCountInRange(
+    NSDictionary<NSString *, NSNumber *> *histogram,
+    double lowerInclusiveMilliseconds,
+    double upperExclusiveMilliseconds
+) {
+    if (![histogram isKindOfClass:[NSDictionary class]]) {
+        return 0;
+    }
+
+    NSUInteger total = 0;
+    for (NSString *bucket in histogram) {
+        NSNumber *count = histogram[bucket];
+        const double bucketMilliseconds = MDKParseHistogramBucketMilliseconds(bucket);
+        if (!std::isfinite(bucketMilliseconds)) {
+            continue;
+        }
+        if (bucketMilliseconds < lowerInclusiveMilliseconds) {
+            continue;
+        }
+        if (bucketMilliseconds >= upperExclusiveMilliseconds) {
+            continue;
+        }
+        total += count.unsignedIntegerValue;
+    }
+    return total;
+}
+
+static NSString *MDKClassifyCadenceHistogram(NSDictionary<NSString *, NSNumber *> *histogram, NSUInteger deltaCount) {
+    if (deltaCount < 20) {
+        return @"insufficient-data";
+    }
+
+    const NSUInteger fastCount = MDKHistogramCountInRange(histogram, 0.0, 12.5);
+    const NSUInteger sixtyLikeCount = MDKHistogramCountInRange(histogram, 12.5, 20.0);
+    const NSUInteger longGapCount = MDKHistogramCountInRange(histogram, 20.0, DBL_MAX);
+    const double fastRatio = static_cast<double>(fastCount) / static_cast<double>(deltaCount);
+    const double sixtyLikeRatio = static_cast<double>(sixtyLikeCount) / static_cast<double>(deltaCount);
+    const double longGapRatio = static_cast<double>(longGapCount) / static_cast<double>(deltaCount);
+
+    if (fastRatio >= 0.7) {
+        return @"120hz-like";
+    }
+
+    if (sixtyLikeRatio >= 0.7) {
+        return @"60hz-like";
+    }
+
+    if (longGapRatio >= 0.2) {
+        return @"coalesced-or-mixed";
+    }
+
+    return @"mixed-or-transitional";
+}
+
 static void MDKIncrementMutableHistogram(NSMutableDictionary<NSString *, NSNumber *> *histogram, NSString *bucket) {
     if (histogram == nil || bucket == nil) {
         return;
@@ -4422,19 +4485,45 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKPublicTimingTrace(
     NSDictionary *serializedFilter = MDKSummarizeObject(
         MDKPerformObjectGetter(filter, sel_registerName("serialize"))
     );
+    NSDictionary<NSString *, NSNumber *> *sampleBufferArrivalDeltaHistogram =
+        [snapshot[@"sampleBufferArrivalDeltaHistogram"] isKindOfClass:[NSDictionary class]] ? snapshot[@"sampleBufferArrivalDeltaHistogram"] : nil;
+    NSDictionary<NSString *, NSNumber *> *sampleBufferPresentationDeltaHistogram =
+        [snapshot[@"sampleBufferPresentationDeltaHistogram"] isKindOfClass:[NSDictionary class]] ? snapshot[@"sampleBufferPresentationDeltaHistogram"] : nil;
+    const NSUInteger sampleBufferArrivalDeltaCount = [snapshot[@"sampleBufferArrivalDeltaCount"] unsignedIntegerValue];
+    const NSUInteger sampleBufferPresentationDeltaCount = [snapshot[@"sampleBufferPresentationDeltaCount"] unsignedIntegerValue];
+    NSUInteger sampleBufferArrival120HzEquivalentCount = MDKHistogramCountInRange(sampleBufferArrivalDeltaHistogram, 0.0, 10.0);
+    NSUInteger sampleBufferArrivalFastCount = MDKHistogramCountInRange(sampleBufferArrivalDeltaHistogram, 0.0, 12.5);
+    NSUInteger sampleBufferArrivalSixtyLikeCount = MDKHistogramCountInRange(sampleBufferArrivalDeltaHistogram, 12.5, 20.0);
+    NSUInteger sampleBufferArrivalLongGapCount = MDKHistogramCountInRange(sampleBufferArrivalDeltaHistogram, 20.0, DBL_MAX);
+    NSString *sampleBufferArrivalCadenceClassification = MDKClassifyCadenceHistogram(sampleBufferArrivalDeltaHistogram, sampleBufferArrivalDeltaCount);
+    NSUInteger sampleBufferPresentation120HzEquivalentCount = MDKHistogramCountInRange(sampleBufferPresentationDeltaHistogram, 0.0, 10.0);
+    NSUInteger sampleBufferPresentationFastCount = MDKHistogramCountInRange(sampleBufferPresentationDeltaHistogram, 0.0, 12.5);
+    NSUInteger sampleBufferPresentationSixtyLikeCount = MDKHistogramCountInRange(sampleBufferPresentationDeltaHistogram, 12.5, 20.0);
+    NSUInteger sampleBufferPresentationLongGapCount = MDKHistogramCountInRange(sampleBufferPresentationDeltaHistogram, 20.0, DBL_MAX);
+    NSString *sampleBufferPresentationCadenceClassification = MDKClassifyCadenceHistogram(sampleBufferPresentationDeltaHistogram, sampleBufferPresentationDeltaCount);
 
     NSMutableArray<NSString *> *notes = [snapshot[@"notes"] mutableCopy] ?: [NSMutableArray array];
     [notes addObject:[NSString stringWithFormat:@"serializedStreamProperties=%@", MDKDescribeTraceValue(serializedStreamProperties)]];
     [notes addObject:[NSString stringWithFormat:@"serializedFilter=%@", MDKDescribeTraceValue(serializedFilter)]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferEventCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferEventCount"])]];
-    [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalDeltaCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferArrivalDeltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalDeltaCount=%@", MDKDescribeTraceValue(@(sampleBufferArrivalDeltaCount))]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalDeltaMinMilliseconds=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferArrivalDeltaMinMilliseconds"])]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalDeltaMaxMilliseconds=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferArrivalDeltaMaxMilliseconds"])]];
-    [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalDeltaHistogram=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferArrivalDeltaHistogram"])]];
-    [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationDeltaCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferPresentationDeltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalDeltaHistogram=%@", MDKDescribeTraceValue(sampleBufferArrivalDeltaHistogram)]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalDelta120HzEquivalentCount=%lu", (unsigned long) sampleBufferArrival120HzEquivalentCount]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalFastCount=%lu", (unsigned long) sampleBufferArrivalFastCount]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalSixtyLikeCount=%lu", (unsigned long) sampleBufferArrivalSixtyLikeCount]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalLongGapCount=%lu", (unsigned long) sampleBufferArrivalLongGapCount]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferArrivalCadenceClassification=%@", MDKDescribeTraceValue(sampleBufferArrivalCadenceClassification)]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationDeltaCount=%@", MDKDescribeTraceValue(@(sampleBufferPresentationDeltaCount))]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationDeltaMinMilliseconds=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferPresentationDeltaMinMilliseconds"])]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationDeltaMaxMilliseconds=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferPresentationDeltaMaxMilliseconds"])]];
-    [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationDeltaHistogram=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferPresentationDeltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationDeltaHistogram=%@", MDKDescribeTraceValue(sampleBufferPresentationDeltaHistogram)]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationDelta120HzEquivalentCount=%lu", (unsigned long) sampleBufferPresentation120HzEquivalentCount]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationFastCount=%lu", (unsigned long) sampleBufferPresentationFastCount]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationSixtyLikeCount=%lu", (unsigned long) sampleBufferPresentationSixtyLikeCount]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationLongGapCount=%lu", (unsigned long) sampleBufferPresentationLongGapCount]];
+    [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationCadenceClassification=%@", MDKDescribeTraceValue(sampleBufferPresentationCadenceClassification)]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferUniqueSurfaceCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferUniqueSurfaceCount"])]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferConsecutiveSurfaceReuseCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferConsecutiveSurfaceReuseCount"])]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferSurfaceUseCountMax=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferSurfaceUseCountMax"])]];

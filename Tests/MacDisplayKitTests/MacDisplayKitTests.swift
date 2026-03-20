@@ -369,7 +369,11 @@ final class MacDisplayKitTests: XCTestCase {
                 "firstPublicSamplePrecedingEventKind=post-start-stream-state",
                 "firstPublicSamplePrecedingEventLeadMilliseconds=1.25",
                 "firstPublicSampleLastVideoEventKind=stream-post-start-remote-video-state",
-                "firstPublicSampleInterveningEventKinds=[\"stream-start-remote-audio-receive-queue\",\"stream-start-remote-microphone-receive-queue\"]"
+                "firstPublicSampleInterveningEventKinds=[\"stream-start-remote-audio-receive-queue\",\"stream-start-remote-microphone-receive-queue\"]",
+                "sampleBufferArrivalDelta120HzEquivalentCount=35",
+                "sampleBufferArrivalCadenceClassification=coalesced-or-mixed",
+                "sampleBufferPresentationDelta120HzEquivalentCount=31",
+                "sampleBufferPresentationCadenceClassification=coalesced-or-mixed"
             ]
         ]
 
@@ -414,7 +418,11 @@ final class MacDisplayKitTests: XCTestCase {
                 "firstPublicSamplePrecedingEventKind=post-start-stream-state",
                 "firstPublicSamplePrecedingEventLeadMilliseconds=1.25",
                 "firstPublicSampleLastVideoEventKind=stream-post-start-remote-video-state",
-                "firstPublicSampleInterveningEventKinds=[\"stream-start-remote-audio-receive-queue\",\"stream-start-remote-microphone-receive-queue\"]"
+                "firstPublicSampleInterveningEventKinds=[\"stream-start-remote-audio-receive-queue\",\"stream-start-remote-microphone-receive-queue\"]",
+                "sampleBufferArrivalDelta120HzEquivalentCount=35",
+                "sampleBufferArrivalCadenceClassification=coalesced-or-mixed",
+                "sampleBufferPresentationDelta120HzEquivalentCount=31",
+                "sampleBufferPresentationCadenceClassification=coalesced-or-mixed"
             ]
         )
     }
