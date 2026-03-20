@@ -113,6 +113,81 @@ public enum MDKCaptureOptimizationTargets {
         )
     }
 
+    public static var uhdHDR60CaptureOnly: MDKCaptureOptimizationTarget {
+        MDKCaptureOptimizationTarget(
+            identifier: "uhd-hdr-60-capture-only",
+            name: "UHD HDR 60 Capture Only",
+            topology: .captureOnly,
+            width: 3840,
+            height: 2160,
+            frameRate: 60,
+            dynamicRangeMode: .hdrCanonical,
+            recommendedBackend: .avFoundation,
+            acceptanceThresholds: MDKCaptureBenchmarkThresholds(
+                minimumObservedFrameRateRatio: 0.95,
+                minimumDeliveryRatio: 0.96,
+                maximumFirstFrameLatency: 0.080
+            ),
+            notes: [
+                "Control target for isolating refresh-rate pressure from HDR throughput.",
+                "Use this when validating whether a backend can sustain UHD HDR without the 120 Hz target."
+            ]
+        )
+    }
+
+    public static var uhdSDR120CaptureOnly: MDKCaptureOptimizationTarget {
+        MDKCaptureOptimizationTarget(
+            identifier: "uhd-sdr-120-capture-only",
+            name: "UHD SDR 120 Capture Only",
+            topology: .captureOnly,
+            width: 3840,
+            height: 2160,
+            frameRate: 120,
+            dynamicRangeMode: .sdr,
+            recommendedBackend: .avFoundation,
+            acceptanceThresholds: MDKCaptureBenchmarkThresholds(
+                minimumObservedFrameRateRatio: 0.92,
+                minimumDeliveryRatio: 0.94,
+                maximumFirstFrameLatency: 0.070
+            ),
+            notes: [
+                "Control target for isolating HDR processing cost from UHD 120 capture.",
+                "Use this before changing capture APIs when only SDR throughput is under test."
+            ]
+        )
+    }
+
+    public static var qhdHDR120CaptureOnly: MDKCaptureOptimizationTarget {
+        MDKCaptureOptimizationTarget(
+            identifier: "qhd-hdr-120-capture-only",
+            name: "QHD HDR 120 Capture Only",
+            topology: .captureOnly,
+            width: 2560,
+            height: 1440,
+            frameRate: 120,
+            dynamicRangeMode: .hdrCanonical,
+            recommendedBackend: .avFoundation,
+            acceptanceThresholds: MDKCaptureBenchmarkThresholds(
+                minimumObservedFrameRateRatio: 0.94,
+                minimumDeliveryRatio: 0.95,
+                maximumFirstFrameLatency: 0.070
+            ),
+            notes: [
+                "Resolution step-down target for checking whether the capture API scales before UHD is reached.",
+                "Use this target to separate bandwidth pressure from HDR cadence issues."
+            ]
+        )
+    }
+
+    public static var captureOnlyValidationTargets: [MDKCaptureOptimizationTarget] {
+        [
+            uhdHDR120CaptureOnly,
+            uhdHDR60CaptureOnly,
+            uhdSDR120CaptureOnly,
+            qhdHDR120CaptureOnly
+        ]
+    }
+
     public static var uhdHDR120VirtualDisplay: MDKCaptureOptimizationTarget {
         MDKCaptureOptimizationTarget(
             identifier: "uhd-hdr-120-virtual-display",
@@ -158,8 +233,7 @@ public enum MDKCaptureOptimizationTargets {
     }
 
     public static func allTargets() -> [MDKCaptureOptimizationTarget] {
-        [
-            uhdHDR120CaptureOnly,
+        captureOnlyValidationTargets + [
             uhdHDR120VirtualDisplay,
             qhdHDR120VirtualDisplay
         ]

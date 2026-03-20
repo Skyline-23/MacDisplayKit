@@ -21,6 +21,10 @@ public struct MDKCaptureBenchmarkMeasurementReport: Codable, Equatable, Sendable
     public let processingFailureCount: UInt64?
     public let processedFrameRate: Double?
     public let processedFrameRatio: Double?
+    public let deliveredFrameWidth: Int?
+    public let deliveredFrameHeight: Int?
+    public let deliveredPixelFormat: UInt32?
+    public let deliveredFrameMatchesRequest: Bool?
 }
 
 public struct MDKCaptureBenchmarkSuiteReport: Codable, Equatable, Sendable {
@@ -39,6 +43,14 @@ public struct MDKCaptureBenchmarkSuiteReport: Codable, Equatable, Sendable {
     public let minimumDeliveryRatio: Double
     public let maximumFirstFrameLatency: TimeInterval
     public let measurements: [MDKCaptureBenchmarkMeasurementReport]
+}
+
+public struct MDKCaptureBenchmarkMatrixReport: Codable, Equatable, Sendable {
+    public let displayID: UInt32
+    public let displayName: String
+    public let intent: String
+    public let matrixPassed: Bool
+    public let suites: [MDKCaptureBenchmarkSuiteReport]
 }
 
 public enum MDKCaptureBenchmarkReport {
@@ -68,7 +80,11 @@ public enum MDKCaptureBenchmarkReport {
                 processedFrameCount: result?.processedFrameCount,
                 processingFailureCount: result?.processingFailureCount,
                 processedFrameRate: result?.processedFrameRate,
-                processedFrameRatio: result?.processedFrameRatio
+                processedFrameRatio: result?.processedFrameRatio,
+                deliveredFrameWidth: result?.deliveredFrameWidth,
+                deliveredFrameHeight: result?.deliveredFrameHeight,
+                deliveredPixelFormat: result?.deliveredPixelFormat,
+                deliveredFrameMatchesRequest: result?.deliveredFrameMatchesRequest
             )
         }
 
@@ -104,6 +120,31 @@ public enum MDKCaptureBenchmarkReport {
             encoder.outputFormatting.insert(.sortedKeys)
         }
         return try encoder.encode(make(from: suite))
+    }
+
+    public static func make(from matrix: MDKCaptureBenchmarkMatrixResult) -> MDKCaptureBenchmarkMatrixReport {
+        MDKCaptureBenchmarkMatrixReport(
+            displayID: matrix.display.id,
+            displayName: matrix.display.localizedName,
+            intent: intentName(matrix.intent),
+            matrixPassed: matrix.passed,
+            suites: matrix.suites.map(make(from:))
+        )
+    }
+
+    public static func jsonData(
+        for matrix: MDKCaptureBenchmarkMatrixResult,
+        prettyPrinted: Bool = true,
+        sortedKeys: Bool = true
+    ) throws -> Data {
+        let encoder = JSONEncoder()
+        if prettyPrinted {
+            encoder.outputFormatting.insert(.prettyPrinted)
+        }
+        if sortedKeys {
+            encoder.outputFormatting.insert(.sortedKeys)
+        }
+        return try encoder.encode(make(from: matrix))
     }
 
     private static func backendName(_ backend: MDKCaptureBackend) -> String {

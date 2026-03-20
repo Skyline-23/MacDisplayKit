@@ -16,6 +16,10 @@ public final class MDKCaptureBenchmarkResult: NSObject {
     public let processingFailureCount: UInt64
     public let processedFrameRate: Double
     public let processedFrameRatio: Double
+    public let deliveredFrameWidth: Int?
+    public let deliveredFrameHeight: Int?
+    public let deliveredPixelFormat: UInt32?
+    public let deliveredFrameMatchesRequest: Bool?
 
     public init(
         backend: MDKCaptureBackend,
@@ -31,7 +35,11 @@ public final class MDKCaptureBenchmarkResult: NSObject {
         processedFrameCount: UInt64,
         processingFailureCount: UInt64,
         processedFrameRate: Double,
-        processedFrameRatio: Double
+        processedFrameRatio: Double,
+        deliveredFrameWidth: Int?,
+        deliveredFrameHeight: Int?,
+        deliveredPixelFormat: UInt32?,
+        deliveredFrameMatchesRequest: Bool?
     ) {
         self.backend = backend
         self.requestedFrameRate = requestedFrameRate
@@ -47,6 +55,10 @@ public final class MDKCaptureBenchmarkResult: NSObject {
         self.processingFailureCount = processingFailureCount
         self.processedFrameRate = processedFrameRate
         self.processedFrameRatio = processedFrameRatio
+        self.deliveredFrameWidth = deliveredFrameWidth
+        self.deliveredFrameHeight = deliveredFrameHeight
+        self.deliveredPixelFormat = deliveredPixelFormat
+        self.deliveredFrameMatchesRequest = deliveredFrameMatchesRequest
         super.init()
     }
 }
@@ -109,6 +121,12 @@ struct MDKCaptureBenchmarkProcessingSnapshot {
     let processingFailureCount: UInt64
 }
 
+struct MDKCaptureBenchmarkFrameSnapshot {
+    let width: Int?
+    let height: Int?
+    let pixelFormat: UInt32?
+}
+
 private final class MDKCaptureBenchmarkProcessingBox: @unchecked Sendable {
     private let lock = NSLock()
     private var processedFrameCount: UInt64 = 0
@@ -161,11 +179,51 @@ private final class MDKCaptureBenchmarkProcessingBox: @unchecked Sendable {
     }
 }
 
+private final class MDKCaptureBenchmarkFrameBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var width: Int?
+    private var height: Int?
+    private var pixelFormat: UInt32?
+    private var isRecording = false
+
+    func record(frame: MDKCaptureFrame) {
+        lock.lock()
+        if isRecording, width == nil {
+            width = frame.width
+            height = frame.height
+            pixelFormat = frame.pixelFormat
+        }
+        lock.unlock()
+    }
+
+    func beginRecording() {
+        lock.lock()
+        width = nil
+        height = nil
+        pixelFormat = nil
+        isRecording = true
+        lock.unlock()
+    }
+
+    func endRecording() -> MDKCaptureBenchmarkFrameSnapshot {
+        lock.lock()
+        isRecording = false
+        let snapshot = MDKCaptureBenchmarkFrameSnapshot(
+            width: width,
+            height: height,
+            pixelFormat: pixelFormat
+        )
+        lock.unlock()
+        return snapshot
+    }
+}
+
 enum MDKCaptureBenchmarkAnalyzer {
     static func result(
         configuration: MDKCaptureConfiguration,
         stats: MDKCaptureSessionStatistics,
         processing: MDKCaptureBenchmarkProcessingSnapshot,
+        deliveredFrame: MDKCaptureBenchmarkFrameSnapshot,
         sampleDuration: TimeInterval,
         measuredDuration: TimeInterval,
         timeline: MDKCaptureBenchmarkTimeline,
@@ -206,6 +264,12 @@ enum MDKCaptureBenchmarkAnalyzer {
             processedFrameRatio = 0
         }
 
+        let deliveredFrameMatchesRequest = deliveredFrame.width.map { width in
+            width == configuration.width &&
+            deliveredFrame.height == configuration.height &&
+            deliveredFrame.pixelFormat == configuration.pixelFormat
+        }
+
         return MDKCaptureBenchmarkResult(
             backend: configuration.backend,
             requestedFrameRate: configuration.frameRate,
@@ -220,7 +284,11 @@ enum MDKCaptureBenchmarkAnalyzer {
             processedFrameCount: processing.processedFrameCount,
             processingFailureCount: processing.processingFailureCount,
             processedFrameRate: processedFrameRate,
-            processedFrameRatio: processedFrameRatio
+            processedFrameRatio: processedFrameRatio,
+            deliveredFrameWidth: deliveredFrame.width,
+            deliveredFrameHeight: deliveredFrame.height,
+            deliveredPixelFormat: deliveredFrame.pixelFormat,
+            deliveredFrameMatchesRequest: deliveredFrameMatchesRequest
         )
     }
 }
@@ -266,10 +334,12 @@ public enum MDKCaptureBenchmarkRunner {
         let session = try makeSession(configuration)
         let timeline = MDKCaptureBenchmarkTimelineBox(timeSource: timeSource)
         let processing = MDKCaptureBenchmarkProcessingBox()
+        let deliveredFrame = MDKCaptureBenchmarkFrameBox()
         let processor = try makeProcessor()
 
         try session.start { frame in
             timeline.recordFrame()
+            deliveredFrame.record(frame: frame)
             do {
                 try processor.process(frame: frame)
                 processing.recordSuccess()
@@ -286,9 +356,11 @@ public enum MDKCaptureBenchmarkRunner {
         let baselineStats = session.statistics
         timeline.beginRecording()
         processing.beginRecording()
+        deliveredFrame.beginRecording()
         sleeper(clampedSampleDuration)
         let measuredTimeline = timeline.endRecording()
         let measuredProcessing = processing.endRecording()
+        let measuredDeliveredFrame = deliveredFrame.endRecording()
         let measuredStats = session.statistics.delta(since: baselineStats)
         session.stop()
 
@@ -297,6 +369,7 @@ public enum MDKCaptureBenchmarkRunner {
             configuration: configuration,
             stats: measuredStats,
             processing: measuredProcessing,
+            deliveredFrame: measuredDeliveredFrame,
             sampleDuration: clampedSampleDuration,
             measuredDuration: measuredDuration,
             timeline: measuredTimeline,

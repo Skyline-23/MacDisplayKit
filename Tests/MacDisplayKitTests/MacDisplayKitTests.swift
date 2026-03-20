@@ -32,6 +32,24 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertFalse(target.requiresVirtualDisplay)
     }
 
+    func testCaptureOnlyValidationTargetsCoverRefreshRangeAndDynamicRangeDiagnostics() {
+        let targets = MDKCaptureOptimizationTargets.captureOnlyValidationTargets
+
+        XCTAssertEqual(
+            targets.map(\.identifier),
+            [
+                "uhd-hdr-120-capture-only",
+                "uhd-hdr-60-capture-only",
+                "uhd-sdr-120-capture-only",
+                "qhd-hdr-120-capture-only",
+            ]
+        )
+        XCTAssertEqual(targets[1].frameRate, 60)
+        XCTAssertEqual(targets[2].dynamicRangeMode, .sdr)
+        XCTAssertEqual(targets[3].width, 2560)
+        XCTAssertFalse(targets.contains(where: \.requiresVirtualDisplay))
+    }
+
     func testOptimizationTargetsIncludeVirtualDisplayVariants() {
         let uhdVirtual = MDKCaptureOptimizationTargets.uhdHDR120VirtualDisplay
         let qhdVirtual = MDKCaptureOptimizationTargets.qhdHDR120VirtualDisplay
@@ -61,6 +79,10 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(
             MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly.benchmarkPixelFormat,
             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        )
+        XCTAssertEqual(
+            MDKCaptureOptimizationTargets.uhdSDR120CaptureOnly.benchmarkPixelFormat,
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         )
     }
 

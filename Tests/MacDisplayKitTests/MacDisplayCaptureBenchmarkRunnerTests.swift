@@ -29,6 +29,11 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 processedFrameCount: 120,
                 processingFailureCount: 0
             ),
+            deliveredFrame: MDKCaptureBenchmarkFrameSnapshot(
+                width: 3840,
+                height: 2160,
+                pixelFormat: 0x78343230
+            ),
             sampleDuration: 1.0,
             measuredDuration: 1.2,
             timeline: timeline,
@@ -50,6 +55,10 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
             accuracy: 0.001
         )
         XCTAssertEqual(result.processedFrameRatio, 1.0, accuracy: 0.001)
+        XCTAssertEqual(result.deliveredFrameWidth, 3840)
+        XCTAssertEqual(result.deliveredFrameHeight, 2160)
+        XCTAssertEqual(result.deliveredPixelFormat, 0x78343230)
+        XCTAssertEqual(result.deliveredFrameMatchesRequest, true)
     }
 
     func testAnalyzerFallsBackToMeasuredDurationWithoutFrameTimeline() {
@@ -75,6 +84,11 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
             processing: MDKCaptureBenchmarkProcessingSnapshot(
                 processedFrameCount: 1,
                 processingFailureCount: 0
+            ),
+            deliveredFrame: MDKCaptureBenchmarkFrameSnapshot(
+                width: nil,
+                height: nil,
+                pixelFormat: nil
             ),
             sampleDuration: 1.0,
             measuredDuration: 1.5,
@@ -178,7 +192,11 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                     processedFrameCount: 118,
                     processingFailureCount: 0,
                     processedFrameRate: 117.7,
-                    processedFrameRatio: 1.0
+                    processedFrameRatio: 1.0,
+                    deliveredFrameWidth: configuration.width,
+                    deliveredFrameHeight: configuration.height,
+                    deliveredPixelFormat: configuration.pixelFormat,
+                    deliveredFrameMatchesRequest: true
                 )
             }
         )
@@ -191,6 +209,62 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
         XCTAssertEqual(suite.measurements[1].backend, .avFoundation)
         XCTAssertNil(suite.measurements[1].result)
         XCTAssertFalse(suite.measurements[1].available)
+    }
+
+    func testCaptureOnlyValidationMatrixRunsTargetsInCatalogOrder() {
+        let display = MDKDisplayDescriptor(id: 77, name: "77", localizedName: "Test Display")
+        let targetIDs = MDKCaptureOptimizationTargets.captureOnlyValidationTargets.map(\.identifier)
+        var observedTargetIDs: [String] = []
+
+        let matrix = MDKCaptureBenchmarkMatrixRunner.run(
+            display: display,
+            targets: MDKCaptureOptimizationTargets.captureOnlyValidationTargets,
+            intent: .compareBackends,
+            warmupDuration: 0,
+            sampleDuration: 1.0
+        ) { configuration, warmupDuration, sampleDuration in
+            let target = MDKCaptureOptimizationTargets.captureOnlyValidationTargets.first {
+                $0.width == configuration.width &&
+                $0.height == configuration.height &&
+                $0.frameRate == configuration.frameRate &&
+                $0.dynamicRangeMode == configuration.dynamicRangeMode
+            }
+            observedTargetIDs.append(target?.identifier ?? "unknown")
+            XCTAssertEqual(warmupDuration, 0, accuracy: 0.0001)
+            XCTAssertEqual(sampleDuration, 1.0, accuracy: 0.0001)
+
+            return MDKCaptureBenchmarkResult(
+                backend: configuration.backend,
+                requestedFrameRate: configuration.frameRate,
+                requestedSampleDuration: sampleDuration,
+                measuredDuration: 1.0,
+                callbackCount: UInt64(configuration.frameRate),
+                deliveredFrameCount: UInt64(configuration.frameRate),
+                skippedFrameCount: 0,
+                observedFrameRate: Double(configuration.frameRate),
+                deliveryRatio: 1.0,
+                firstFrameLatency: 0.01,
+                processedFrameCount: UInt64(configuration.frameRate),
+                processingFailureCount: 0,
+                processedFrameRate: Double(configuration.frameRate),
+                processedFrameRatio: 1.0,
+                deliveredFrameWidth: configuration.width,
+                deliveredFrameHeight: configuration.height,
+                deliveredPixelFormat: configuration.pixelFormat,
+                deliveredFrameMatchesRequest: true
+            )
+        } availabilityProvider: { _, _ in
+            MDKCaptureBackendAvailability(
+                screenCaptureAccessAuthorized: true,
+                avFoundationAvailable: true,
+                cgDisplayStreamAvailable: false
+            )
+        }
+
+        XCTAssertEqual(matrix.suites.count, targetIDs.count)
+        XCTAssertEqual(matrix.suites.map(\.plan.target.identifier), targetIDs)
+        XCTAssertEqual(observedTargetIDs, targetIDs)
+        XCTAssertTrue(matrix.passed)
     }
 
     func testJudgePassesMeasurementThatMeetsTargetThresholds() {
@@ -213,7 +287,11 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 processedFrameCount: 119,
                 processingFailureCount: 0,
                 processedFrameRate: 114.0,
-                processedFrameRatio: 1.0
+                processedFrameRatio: 1.0,
+                deliveredFrameWidth: 3840,
+                deliveredFrameHeight: 2160,
+                deliveredPixelFormat: 0x78343230,
+                deliveredFrameMatchesRequest: true
             ),
             errorDescription: nil
         )
@@ -245,7 +323,11 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 processedFrameCount: 76,
                 processingFailureCount: 4,
                 processedFrameRate: 76.0,
-                processedFrameRatio: 0.95
+                processedFrameRatio: 0.95,
+                deliveredFrameWidth: 3840,
+                deliveredFrameHeight: 2160,
+                deliveredPixelFormat: 0x78343230,
+                deliveredFrameMatchesRequest: true
             ),
             errorDescription: nil
         )
@@ -278,7 +360,11 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 processedFrameCount: 60,
                 processingFailureCount: 0,
                 processedFrameRate: 60.0,
-                processedFrameRatio: 1.0
+                processedFrameRatio: 1.0,
+                deliveredFrameWidth: 3840,
+                deliveredFrameHeight: 2160,
+                deliveredPixelFormat: 0x78343230,
+                deliveredFrameMatchesRequest: true
             ),
             errorDescription: nil
         )
@@ -300,7 +386,11 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 processedFrameCount: 118,
                 processingFailureCount: 0,
                 processedFrameRate: 114.0,
-                processedFrameRatio: 1.0
+                processedFrameRatio: 1.0,
+                deliveredFrameWidth: 3840,
+                deliveredFrameHeight: 2160,
+                deliveredPixelFormat: 0x78343230,
+                deliveredFrameMatchesRequest: true
             ),
             errorDescription: nil
         )
@@ -380,7 +470,11 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                         processedFrameCount: 119,
                         processingFailureCount: 0,
                         processedFrameRate: 114.0,
-                        processedFrameRatio: 1.0
+                        processedFrameRatio: 1.0,
+                        deliveredFrameWidth: 3840,
+                        deliveredFrameHeight: 2160,
+                        deliveredPixelFormat: 0x78343230,
+                        deliveredFrameMatchesRequest: true
                     ),
                     errorDescription: nil
                 )
@@ -399,6 +493,69 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
         XCTAssertEqual(report.measurements[0].backend, "cgdisplaystream")
         XCTAssertEqual(report.measurements[0].observedFrameRate ?? -1, 114.0, accuracy: 0.001)
         XCTAssertEqual(report.measurements[0].processedFrameCount, 119)
+        XCTAssertEqual(report.measurements[0].deliveredFrameWidth, 3840)
+        XCTAssertEqual(report.measurements[0].deliveredFrameMatchesRequest, true)
+        XCTAssertEqual(decoded, report)
+    }
+
+    func testMatrixReportEncodesGroupedSuiteReports() throws {
+        let display = MDKDisplayDescriptor(id: 77, name: "77", localizedName: "Test Display")
+        let target = MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly
+        let suite = MDKCaptureBenchmarkSuiteResult(
+            plan: MDKCaptureBenchmarkPlan(
+                target: target,
+                display: display,
+                intent: .compareBackends,
+                screenCaptureAccessAuthorized: true,
+                candidates: []
+            ),
+            pixelFormat: target.benchmarkPixelFormat,
+            warmupDuration: 1.0,
+            sampleDuration: 1.0,
+            measurements: [
+                MDKCaptureBenchmarkMeasurement(
+                    backend: .avFoundation,
+                    available: true,
+                    reason: "Primary backend available.",
+                    result: MDKCaptureBenchmarkResult(
+                        backend: .avFoundation,
+                        requestedFrameRate: 120,
+                        requestedSampleDuration: 1.0,
+                        measuredDuration: 1.02,
+                        callbackCount: 120,
+                        deliveredFrameCount: 118,
+                        skippedFrameCount: 2,
+                        observedFrameRate: 114.0,
+                        deliveryRatio: 0.95,
+                        firstFrameLatency: 0.03,
+                        processedFrameCount: 118,
+                        processingFailureCount: 0,
+                        processedFrameRate: 114.0,
+                        processedFrameRatio: 1.0,
+                        deliveredFrameWidth: 3840,
+                        deliveredFrameHeight: 2160,
+                        deliveredPixelFormat: target.benchmarkPixelFormat,
+                        deliveredFrameMatchesRequest: true
+                    ),
+                    errorDescription: nil
+                )
+            ]
+        )
+        let matrix = MDKCaptureBenchmarkMatrixResult(
+            display: display,
+            intent: .compareBackends,
+            suites: [suite]
+        )
+
+        let report = MDKCaptureBenchmarkReport.make(from: matrix)
+        let jsonData = try MDKCaptureBenchmarkReport.jsonData(for: matrix)
+        let decoded = try JSONDecoder().decode(MDKCaptureBenchmarkMatrixReport.self, from: jsonData)
+
+        XCTAssertEqual(report.displayID, 77)
+        XCTAssertEqual(report.intent, "compare-backends")
+        XCTAssertEqual(report.suites.count, 1)
+        XCTAssertEqual(report.suites[0].targetIdentifier, "uhd-hdr-120-capture-only")
+        XCTAssertTrue(report.matrixPassed)
         XCTAssertEqual(decoded, report)
     }
 

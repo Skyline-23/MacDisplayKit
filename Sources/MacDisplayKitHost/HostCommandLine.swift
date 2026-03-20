@@ -5,6 +5,7 @@ private enum MDKHostCLICommand {
     case listDisplays
     case listTargets
     case benchmark(displayID: UInt32, targetIdentifier: String, intent: MDKCapturePlanIntent, json: Bool)
+    case benchmarkMatrix(displayID: UInt32, intent: MDKCapturePlanIntent, json: Bool)
 }
 
 enum MDKHostCommandLine {
@@ -50,6 +51,31 @@ enum MDKHostCommandLine {
             }
 
             return suite.assessment.passed ? 0 : 2
+        case .benchmarkMatrix(let displayID, let intent, let json):
+            guard let display = controller.display(id: displayID) else {
+                fputs("Unknown display id: \(displayID)\n", stderr)
+                return 64
+            }
+
+            let matrix = controller.runCaptureOnlyValidationMatrix(display: display, intent: intent)
+            if json {
+                do {
+                    let data = try MDKCaptureBenchmarkReport.jsonData(for: matrix)
+                    if let text = String(data: data, encoding: .utf8) {
+                        print(text)
+                    }
+                } catch {
+                    fputs("Failed to encode benchmark matrix report: \(error)\n", stderr)
+                    return 1
+                }
+            } else {
+                for suite in matrix.suites {
+                    print(MDKHostBenchmarkFormatter.formatReport(for: suite))
+                    print("")
+                }
+            }
+
+            return matrix.passed ? 0 : 2
         }
     }
 
@@ -65,6 +91,16 @@ enum MDKHostCommandLine {
 
         if tokens.contains("--list-targets") {
             return .listTargets
+        }
+
+        if let matrixDisplayIndex = tokens.firstIndex(of: "--benchmark-matrix-display"),
+           tokens.indices.contains(matrixDisplayIndex + 1),
+           let displayID = UInt32(tokens[matrixDisplayIndex + 1]) {
+            let intent: MDKCapturePlanIntent = tokens.contains("--compare-backends")
+                ? .compareBackends
+                : .validateDefaultBackend
+            let json = tokens.contains("--json")
+            return .benchmarkMatrix(displayID: displayID, intent: intent, json: json)
         }
 
         guard let displayIndex = tokens.firstIndex(of: "--benchmark-display"),

@@ -41,4 +41,16 @@ final class MDKHostBenchmarkController {
             sampleDuration: Self.benchmarkSampleDuration
         )
     }
+
+    func runCaptureOnlyValidationMatrix(
+        display: MDKDisplayDescriptor,
+        intent: MDKCapturePlanIntent
+    ) -> MDKCaptureBenchmarkMatrixResult {
+        MDKCaptureBenchmarkMatrixRunner.runCaptureOnlyValidationMatrix(
+            display: display,
+            intent: intent,
+            warmupDuration: Self.benchmarkWarmupDuration,
+            sampleDuration: Self.benchmarkSampleDuration
+        )
+    }
 }
