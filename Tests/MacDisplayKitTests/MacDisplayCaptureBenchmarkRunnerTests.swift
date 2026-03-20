@@ -24,6 +24,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
 
         let result = MDKCaptureBenchmarkAnalyzer.result(
             configuration: configuration,
+            processingMode: .metalCopy,
             stats: stats,
             processing: MDKCaptureBenchmarkProcessingSnapshot(
                 processedFrameCount: 120,
@@ -40,7 +41,8 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
             runStartedAt: 10.0
         )
 
-        XCTAssertEqual(result.backend, .cgDisplayStream)
+        XCTAssertEqual(result.backend, MDKCaptureBackend.cgDisplayStream)
+        XCTAssertEqual(result.processingMode, MDKCaptureBenchmarkProcessingMode.metalCopy)
         XCTAssertEqual(result.callbackCount, 132)
         XCTAssertEqual(result.deliveredFrameCount, 120)
         XCTAssertEqual(result.skippedFrameCount, 12)
@@ -80,6 +82,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
 
         let result = MDKCaptureBenchmarkAnalyzer.result(
             configuration: configuration,
+            processingMode: .metalCopy,
             stats: stats,
             processing: MDKCaptureBenchmarkProcessingSnapshot(
                 processedFrameCount: 1,
@@ -117,6 +120,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
 
         let result = try MDKCaptureBenchmarkRunner.run(
             configuration: configuration,
+            processingMode: .metalCopy,
             warmupDuration: 0,
             sampleDuration: 1.0,
             makeSession: { _ in session },
@@ -171,6 +175,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
 
         let suite = MDKCaptureBenchmarkSuiteRunner.run(
             plan: plan,
+            processingMode: .metalCopy,
             pixelFormat: 0x78343230,
             warmupDuration: 0,
             sampleDuration: 1.0,
@@ -180,6 +185,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 XCTAssertEqual(sampleDuration, 1.0, accuracy: 0.0001)
                 return MDKCaptureBenchmarkResult(
                     backend: configuration.backend,
+                    processingMode: .metalCopy,
                     requestedFrameRate: configuration.frameRate,
                     requestedSampleDuration: sampleDuration,
                     measuredDuration: 1.05,
@@ -203,10 +209,10 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
 
         XCTAssertEqual(suite.measurements.count, 2)
         XCTAssertEqual(suite.successfulMeasurements.count, 1)
-        XCTAssertEqual(suite.measurements[0].backend, .cgDisplayStream)
+        XCTAssertEqual(suite.measurements[0].backend, MDKCaptureBackend.cgDisplayStream)
         XCTAssertNotNil(suite.measurements[0].result)
         XCTAssertNil(suite.measurements[0].errorDescription)
-        XCTAssertEqual(suite.measurements[1].backend, .avFoundation)
+        XCTAssertEqual(suite.measurements[1].backend, MDKCaptureBackend.avFoundation)
         XCTAssertNil(suite.measurements[1].result)
         XCTAssertFalse(suite.measurements[1].available)
     }
@@ -220,6 +226,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
             display: display,
             targets: MDKCaptureOptimizationTargets.captureOnlyValidationTargets,
             intent: .compareBackends,
+            processingMode: .metalCopy,
             warmupDuration: 0,
             sampleDuration: 1.0
         ) { configuration, warmupDuration, sampleDuration in
@@ -235,6 +242,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
 
             return MDKCaptureBenchmarkResult(
                 backend: configuration.backend,
+                processingMode: .metalCopy,
                 requestedFrameRate: configuration.frameRate,
                 requestedSampleDuration: sampleDuration,
                 measuredDuration: 1.0,
@@ -262,6 +270,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
         }
 
         XCTAssertEqual(matrix.suites.count, targetIDs.count)
+        XCTAssertEqual(matrix.processingMode, .metalCopy)
         XCTAssertEqual(matrix.suites.map(\.plan.target.identifier), targetIDs)
         XCTAssertEqual(observedTargetIDs, targetIDs)
         XCTAssertTrue(matrix.passed)
@@ -275,6 +284,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
             reason: "Primary backend available.",
             result: MDKCaptureBenchmarkResult(
                 backend: .cgDisplayStream,
+                processingMode: .metalCopy,
                 requestedFrameRate: 120,
                 requestedSampleDuration: 1.0,
                 measuredDuration: 1.02,
@@ -311,6 +321,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
             reason: "Primary backend available.",
             result: MDKCaptureBenchmarkResult(
                 backend: .cgDisplayStream,
+                processingMode: .metalCopy,
                 requestedFrameRate: 120,
                 requestedSampleDuration: 1.0,
                 measuredDuration: 1.20,
@@ -348,6 +359,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
             reason: "Primary backend available.",
             result: MDKCaptureBenchmarkResult(
                 backend: .cgDisplayStream,
+                processingMode: .metalCopy,
                 requestedFrameRate: 120,
                 requestedSampleDuration: 1.0,
                 measuredDuration: 1.0,
@@ -374,6 +386,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
             reason: "Fallback available.",
             result: MDKCaptureBenchmarkResult(
                 backend: .avFoundation,
+                processingMode: .metalCopy,
                 requestedFrameRate: 120,
                 requestedSampleDuration: 1.0,
                 measuredDuration: 1.0,
@@ -403,6 +416,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 screenCaptureAccessAuthorized: true,
                 candidates: []
             ),
+            processingMode: .metalCopy,
             pixelFormat: 0x78343230,
             warmupDuration: 1.0,
             sampleDuration: 1.0,
@@ -416,6 +430,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 screenCaptureAccessAuthorized: true,
                 candidates: []
             ),
+            processingMode: .metalCopy,
             pixelFormat: 0x78343230,
             warmupDuration: 1.0,
             sampleDuration: 1.0,
@@ -448,6 +463,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 screenCaptureAccessAuthorized: true,
                 candidates: []
             ),
+            processingMode: .metalCopy,
             pixelFormat: 0x78343230,
             warmupDuration: 1.0,
             sampleDuration: 1.0,
@@ -458,6 +474,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                     reason: "Primary backend available.",
                     result: MDKCaptureBenchmarkResult(
                         backend: .cgDisplayStream,
+                        processingMode: .metalCopy,
                         requestedFrameRate: 120,
                         requestedSampleDuration: 1.0,
                         measuredDuration: 1.02,
@@ -486,11 +503,13 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
         let decoded = try JSONDecoder().decode(MDKCaptureBenchmarkSuiteReport.self, from: jsonData)
 
         XCTAssertEqual(report.targetIdentifier, "uhd-hdr-120-capture-only")
+        XCTAssertEqual(report.processingMode, "metal-copy")
         XCTAssertTrue(report.screenCaptureAccessAuthorized)
         XCTAssertEqual(report.warmupDuration, 1.0, accuracy: 0.0001)
         XCTAssertTrue(report.suitePassed)
         XCTAssertEqual(report.measurements.count, 1)
         XCTAssertEqual(report.measurements[0].backend, "cgdisplaystream")
+        XCTAssertEqual(report.measurements[0].processingMode, "metal-copy")
         XCTAssertEqual(report.measurements[0].observedFrameRate ?? -1, 114.0, accuracy: 0.001)
         XCTAssertEqual(report.measurements[0].processedFrameCount, 119)
         XCTAssertEqual(report.measurements[0].deliveredFrameWidth, 3840)
@@ -509,6 +528,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 screenCaptureAccessAuthorized: true,
                 candidates: []
             ),
+            processingMode: .metalBind,
             pixelFormat: target.benchmarkPixelFormat,
             warmupDuration: 1.0,
             sampleDuration: 1.0,
@@ -519,6 +539,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                     reason: "Primary backend available.",
                     result: MDKCaptureBenchmarkResult(
                         backend: .avFoundation,
+                        processingMode: .metalBind,
                         requestedFrameRate: 120,
                         requestedSampleDuration: 1.0,
                         measuredDuration: 1.02,
@@ -544,6 +565,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
         let matrix = MDKCaptureBenchmarkMatrixResult(
             display: display,
             intent: .compareBackends,
+            processingMode: .metalBind,
             suites: [suite]
         )
 
@@ -553,6 +575,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
 
         XCTAssertEqual(report.displayID, 77)
         XCTAssertEqual(report.intent, "compare-backends")
+        XCTAssertEqual(report.processingMode, "metal-bind")
         XCTAssertEqual(report.suites.count, 1)
         XCTAssertEqual(report.suites[0].targetIdentifier, "uhd-hdr-120-capture-only")
         XCTAssertTrue(report.matrixPassed)
@@ -575,6 +598,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
 
         let result = try MDKCaptureBenchmarkRunner.run(
             configuration: configuration,
+            processingMode: .metalCopy,
             warmupDuration: 0.5,
             sampleDuration: 1.0,
             makeSession: { _ in session },
@@ -628,6 +652,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
 
         let result = try MDKCaptureBenchmarkRunner.run(
             configuration: configuration,
+            processingMode: .none,
             warmupDuration: 0,
             sampleDuration: 1.0,
             makeSession: { _ in session },

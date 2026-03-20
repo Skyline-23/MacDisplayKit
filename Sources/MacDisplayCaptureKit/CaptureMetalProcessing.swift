@@ -1,5 +1,22 @@
 import Metal
 
+public enum MDKCaptureBenchmarkProcessingMode: String, CaseIterable, Codable, Sendable {
+    case none
+    case metalBind = "metal-bind"
+    case metalCopy = "metal-copy"
+
+    public var localizedName: String {
+        switch self {
+        case .none:
+            return "none"
+        case .metalBind:
+            return "metal-bind"
+        case .metalCopy:
+            return "metal-copy"
+        }
+    }
+}
+
 public enum MDKCaptureFrameProcessingError: Error, LocalizedError, Equatable {
     case surfaceUnavailable
     case metalDeviceUnavailable
@@ -43,6 +60,14 @@ public final class MDKMetalBoundFrame: NSObject {
 
 protocol MDKCaptureFrameProcessing: AnyObject, Sendable {
     func process(frame: MDKCaptureFrame) throws
+}
+
+public final class MDKNoopCaptureFrameProcessor: MDKCaptureFrameProcessing, @unchecked Sendable {
+    public init() {}
+
+    public func process(frame: MDKCaptureFrame) throws {
+        _ = frame
+    }
 }
 
 private struct MDKMetalBoundPlane {

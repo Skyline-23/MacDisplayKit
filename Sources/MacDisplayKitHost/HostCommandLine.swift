@@ -4,8 +4,19 @@ import MacDisplayKit
 private enum MDKHostCLICommand {
     case listDisplays
     case listTargets
-    case benchmark(displayID: UInt32, targetIdentifier: String, intent: MDKCapturePlanIntent, json: Bool)
-    case benchmarkMatrix(displayID: UInt32, intent: MDKCapturePlanIntent, json: Bool)
+    case benchmark(
+        displayID: UInt32,
+        targetIdentifier: String,
+        intent: MDKCapturePlanIntent,
+        processingMode: MDKCaptureBenchmarkProcessingMode,
+        json: Bool
+    )
+    case benchmarkMatrix(
+        displayID: UInt32,
+        intent: MDKCapturePlanIntent,
+        processingMode: MDKCaptureBenchmarkProcessingMode,
+        json: Bool
+    )
 }
 
 enum MDKHostCommandLine {
@@ -25,7 +36,7 @@ enum MDKHostCommandLine {
                 print("\(target.identifier)\t\(target.name)")
             }
             return 0
-        case .benchmark(let displayID, let targetIdentifier, let intent, let json):
+        case .benchmark(let displayID, let targetIdentifier, let intent, let processingMode, let json):
             guard let display = controller.display(id: displayID) else {
                 fputs("Unknown display id: \(displayID)\n", stderr)
                 return 64
@@ -35,7 +46,12 @@ enum MDKHostCommandLine {
                 return 64
             }
 
-            let suite = controller.runBenchmark(display: display, target: target, intent: intent)
+            let suite = controller.runBenchmark(
+                display: display,
+                target: target,
+                intent: intent,
+                processingMode: processingMode
+            )
             if json {
                 do {
                     let data = try MDKCaptureBenchmarkReport.jsonData(for: suite)
@@ -51,13 +67,17 @@ enum MDKHostCommandLine {
             }
 
             return suite.assessment.passed ? 0 : 2
-        case .benchmarkMatrix(let displayID, let intent, let json):
+        case .benchmarkMatrix(let displayID, let intent, let processingMode, let json):
             guard let display = controller.display(id: displayID) else {
                 fputs("Unknown display id: \(displayID)\n", stderr)
                 return 64
             }
 
-            let matrix = controller.runCaptureOnlyValidationMatrix(display: display, intent: intent)
+            let matrix = controller.runCaptureOnlyValidationMatrix(
+                display: display,
+                intent: intent,
+                processingMode: processingMode
+            )
             if json {
                 do {
                     let data = try MDKCaptureBenchmarkReport.jsonData(for: matrix)
@@ -99,8 +119,14 @@ enum MDKHostCommandLine {
             let intent: MDKCapturePlanIntent = tokens.contains("--compare-backends")
                 ? .compareBackends
                 : .validateDefaultBackend
+            let processingMode = parseProcessingMode(tokens: tokens) ?? .metalCopy
             let json = tokens.contains("--json")
-            return .benchmarkMatrix(displayID: displayID, intent: intent, json: json)
+            return .benchmarkMatrix(
+                displayID: displayID,
+                intent: intent,
+                processingMode: processingMode,
+                json: json
+            )
         }
 
         guard let displayIndex = tokens.firstIndex(of: "--benchmark-display"),
@@ -115,12 +141,23 @@ enum MDKHostCommandLine {
         let intent: MDKCapturePlanIntent = tokens.contains("--compare-backends")
             ? .compareBackends
             : .validateDefaultBackend
+        let processingMode = parseProcessingMode(tokens: tokens) ?? .metalCopy
         let json = tokens.contains("--json")
         return .benchmark(
             displayID: displayID,
             targetIdentifier: targetIdentifier,
             intent: intent,
+            processingMode: processingMode,
             json: json
         )
+    }
+
+    private static func parseProcessingMode(tokens: [String]) -> MDKCaptureBenchmarkProcessingMode? {
+        guard let index = tokens.firstIndex(of: "--processing-mode"),
+              tokens.indices.contains(index + 1) else {
+            return nil
+        }
+
+        return MDKCaptureBenchmarkProcessingMode(rawValue: tokens[index + 1])
     }
 }

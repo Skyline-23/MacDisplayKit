@@ -157,7 +157,8 @@ final class HostAppDelegate: NSObject, NSApplicationDelegate {
             let suite = self.benchmarkController.runBenchmark(
                 display: display,
                 target: target,
-                intent: intent
+                intent: intent,
+                processingMode: .metalCopy
             )
             let report = MDKHostBenchmarkFormatter.formatReport(for: suite)
 

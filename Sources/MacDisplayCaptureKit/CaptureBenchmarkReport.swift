@@ -2,6 +2,7 @@ import Foundation
 
 public struct MDKCaptureBenchmarkMeasurementReport: Codable, Equatable, Sendable {
     public let backend: String
+    public let processingMode: String
     public let available: Bool
     public let passed: Bool
     public let reason: String
@@ -34,6 +35,7 @@ public struct MDKCaptureBenchmarkSuiteReport: Codable, Equatable, Sendable {
     public let targetName: String
     public let topology: String
     public let intent: String
+    public let processingMode: String
     public let screenCaptureAccessAuthorized: Bool
     public let pixelFormat: UInt32
     public let warmupDuration: TimeInterval
@@ -49,6 +51,7 @@ public struct MDKCaptureBenchmarkMatrixReport: Codable, Equatable, Sendable {
     public let displayID: UInt32
     public let displayName: String
     public let intent: String
+    public let processingMode: String
     public let matrixPassed: Bool
     public let suites: [MDKCaptureBenchmarkSuiteReport]
 }
@@ -62,6 +65,7 @@ public enum MDKCaptureBenchmarkReport {
             let result = measurement.result
             return MDKCaptureBenchmarkMeasurementReport(
                 backend: backendName(measurement.backend),
+                processingMode: processingModeName(suite.processingMode),
                 available: measurement.available,
                 passed: measurementAssessment.passed,
                 reason: measurement.reason,
@@ -95,6 +99,7 @@ public enum MDKCaptureBenchmarkReport {
             targetName: suite.plan.target.name,
             topology: topologyName(suite.plan.target.topology),
             intent: intentName(suite.plan.intent),
+            processingMode: processingModeName(suite.processingMode),
             screenCaptureAccessAuthorized: suite.plan.screenCaptureAccessAuthorized,
             pixelFormat: suite.pixelFormat,
             warmupDuration: suite.warmupDuration,
@@ -127,6 +132,7 @@ public enum MDKCaptureBenchmarkReport {
             displayID: matrix.display.id,
             displayName: matrix.display.localizedName,
             intent: intentName(matrix.intent),
+            processingMode: processingModeName(matrix.processingMode),
             matrixPassed: matrix.passed,
             suites: matrix.suites.map(make(from:))
         )
@@ -172,6 +178,10 @@ public enum MDKCaptureBenchmarkReport {
         case .compareBackends:
             return "compare-backends"
         }
+    }
+
+    private static func processingModeName(_ mode: MDKCaptureBenchmarkProcessingMode) -> String {
+        mode.rawValue
     }
 
 }

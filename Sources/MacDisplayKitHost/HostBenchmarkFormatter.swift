@@ -9,7 +9,7 @@ enum MDKHostBenchmarkFormatter {
         lines.append("Target: \(suite.plan.target.name)")
         lines.append("Target ID: \(suite.plan.target.identifier)")
         lines.append("Intent: \(suite.plan.intent == .compareBackends ? "compare-backends" : "validate-default-backend")")
-        lines.append("Processing path: metal-command-copy")
+        lines.append("Processing path: \(suite.processingMode.rawValue)")
         lines.append("Screen capture access: \(suite.plan.screenCaptureAccessAuthorized ? "authorized" : "not authorized")")
         lines.append("Warmup duration: \(String(format: "%.2fs", suite.warmupDuration))")
         lines.append("Sample duration: \(String(format: "%.2fs", suite.sampleDuration))")

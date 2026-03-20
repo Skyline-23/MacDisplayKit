@@ -24,7 +24,8 @@ final class MDKHostBenchmarkController {
     func runBenchmark(
         display: MDKDisplayDescriptor,
         target: MDKCaptureOptimizationTarget,
-        intent: MDKCapturePlanIntent
+        intent: MDKCapturePlanIntent,
+        processingMode: MDKCaptureBenchmarkProcessingMode
     ) -> MDKCaptureBenchmarkSuiteResult {
         let availability = MDKCaptureBackendProbe.availability(for: display, target: target)
         let plan = MDKCaptureBenchmarkPlanner.plan(
@@ -36,6 +37,7 @@ final class MDKHostBenchmarkController {
 
         return MDKCaptureBenchmarkSuiteRunner.run(
             plan: plan,
+            processingMode: processingMode,
             pixelFormat: target.benchmarkPixelFormat,
             warmupDuration: Self.benchmarkWarmupDuration,
             sampleDuration: Self.benchmarkSampleDuration
@@ -44,11 +46,13 @@ final class MDKHostBenchmarkController {
 
     func runCaptureOnlyValidationMatrix(
         display: MDKDisplayDescriptor,
-        intent: MDKCapturePlanIntent
+        intent: MDKCapturePlanIntent,
+        processingMode: MDKCaptureBenchmarkProcessingMode
     ) -> MDKCaptureBenchmarkMatrixResult {
         MDKCaptureBenchmarkMatrixRunner.runCaptureOnlyValidationMatrix(
             display: display,
             intent: intent,
+            processingMode: processingMode,
             warmupDuration: Self.benchmarkWarmupDuration,
             sampleDuration: Self.benchmarkSampleDuration
         )

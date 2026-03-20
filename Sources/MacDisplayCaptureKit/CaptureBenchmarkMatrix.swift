@@ -4,15 +4,18 @@ import Foundation
 public final class MDKCaptureBenchmarkMatrixResult: NSObject {
     public let display: MDKDisplayDescriptor
     public let intent: MDKCapturePlanIntent
+    public let processingMode: MDKCaptureBenchmarkProcessingMode
     public let suites: [MDKCaptureBenchmarkSuiteResult]
 
     public init(
         display: MDKDisplayDescriptor,
         intent: MDKCapturePlanIntent,
+        processingMode: MDKCaptureBenchmarkProcessingMode,
         suites: [MDKCaptureBenchmarkSuiteResult]
     ) {
         self.display = display
         self.intent = intent
+        self.processingMode = processingMode
         self.suites = suites
         super.init()
     }
@@ -26,6 +29,7 @@ public enum MDKCaptureBenchmarkMatrixRunner {
     public static func runCaptureOnlyValidationMatrix(
         display: MDKDisplayDescriptor,
         intent: MDKCapturePlanIntent,
+        processingMode: MDKCaptureBenchmarkProcessingMode = .metalCopy,
         warmupDuration: TimeInterval = 1.0,
         sampleDuration: TimeInterval = 1.0
     ) -> MDKCaptureBenchmarkMatrixResult {
@@ -33,6 +37,7 @@ public enum MDKCaptureBenchmarkMatrixRunner {
             display: display,
             targets: MDKCaptureOptimizationTargets.captureOnlyValidationTargets,
             intent: intent,
+            processingMode: processingMode,
             warmupDuration: warmupDuration,
             sampleDuration: sampleDuration
         )
@@ -42,6 +47,7 @@ public enum MDKCaptureBenchmarkMatrixRunner {
         display: MDKDisplayDescriptor,
         targets: [MDKCaptureOptimizationTarget],
         intent: MDKCapturePlanIntent,
+        processingMode: MDKCaptureBenchmarkProcessingMode = .metalCopy,
         warmupDuration: TimeInterval = 1.0,
         sampleDuration: TimeInterval = 1.0
     ) -> MDKCaptureBenchmarkMatrixResult {
@@ -49,11 +55,13 @@ public enum MDKCaptureBenchmarkMatrixRunner {
             display: display,
             targets: targets,
             intent: intent,
+            processingMode: processingMode,
             warmupDuration: warmupDuration,
             sampleDuration: sampleDuration,
             runBenchmark: { configuration, warmupDuration, sampleDuration in
                 try MDKCaptureBenchmarkRunner.run(
                     configuration: configuration,
+                    processingMode: processingMode,
                     warmupDuration: warmupDuration,
                     sampleDuration: sampleDuration
                 )
@@ -66,6 +74,7 @@ public enum MDKCaptureBenchmarkMatrixRunner {
         display: MDKDisplayDescriptor,
         targets: [MDKCaptureOptimizationTarget],
         intent: MDKCapturePlanIntent,
+        processingMode: MDKCaptureBenchmarkProcessingMode,
         warmupDuration: TimeInterval,
         sampleDuration: TimeInterval,
         runBenchmark: (MDKCaptureConfiguration, TimeInterval, TimeInterval) throws -> MDKCaptureBenchmarkResult,
@@ -82,6 +91,7 @@ public enum MDKCaptureBenchmarkMatrixRunner {
 
             return MDKCaptureBenchmarkSuiteRunner.run(
                 plan: plan,
+                processingMode: processingMode,
                 pixelFormat: target.benchmarkPixelFormat,
                 warmupDuration: warmupDuration,
                 sampleDuration: sampleDuration,
@@ -89,6 +99,11 @@ public enum MDKCaptureBenchmarkMatrixRunner {
             )
         }
 
-        return MDKCaptureBenchmarkMatrixResult(display: display, intent: intent, suites: suites)
+        return MDKCaptureBenchmarkMatrixResult(
+            display: display,
+            intent: intent,
+            processingMode: processingMode,
+            suites: suites
+        )
     }
 }

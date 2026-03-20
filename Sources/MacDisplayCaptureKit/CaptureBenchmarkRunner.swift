@@ -3,6 +3,7 @@ import Foundation
 @objcMembers
 public final class MDKCaptureBenchmarkResult: NSObject {
     public let backend: MDKCaptureBackend
+    public let processingMode: MDKCaptureBenchmarkProcessingMode
     public let requestedFrameRate: Int
     public let requestedSampleDuration: TimeInterval
     public let measuredDuration: TimeInterval
@@ -23,6 +24,7 @@ public final class MDKCaptureBenchmarkResult: NSObject {
 
     public init(
         backend: MDKCaptureBackend,
+        processingMode: MDKCaptureBenchmarkProcessingMode,
         requestedFrameRate: Int,
         requestedSampleDuration: TimeInterval,
         measuredDuration: TimeInterval,
@@ -42,6 +44,7 @@ public final class MDKCaptureBenchmarkResult: NSObject {
         deliveredFrameMatchesRequest: Bool?
     ) {
         self.backend = backend
+        self.processingMode = processingMode
         self.requestedFrameRate = requestedFrameRate
         self.requestedSampleDuration = requestedSampleDuration
         self.measuredDuration = measuredDuration
@@ -178,6 +181,7 @@ private enum MDKCaptureBenchmarkActorBridge {
 enum MDKCaptureBenchmarkAnalyzer {
     static func result(
         configuration: MDKCaptureConfiguration,
+        processingMode: MDKCaptureBenchmarkProcessingMode,
         stats: MDKCaptureSessionStatistics,
         processing: MDKCaptureBenchmarkProcessingSnapshot,
         deliveredFrame: MDKCaptureBenchmarkFrameSnapshot,
@@ -229,6 +233,7 @@ enum MDKCaptureBenchmarkAnalyzer {
 
         return MDKCaptureBenchmarkResult(
             backend: configuration.backend,
+            processingMode: processingMode,
             requestedFrameRate: configuration.frameRate,
             requestedSampleDuration: sampleDuration,
             measuredDuration: measuredDuration,
@@ -263,15 +268,26 @@ extension MDKCaptureSession: MDKCaptureSessionControlling {}
 public enum MDKCaptureBenchmarkRunner {
     public static func run(
         configuration: MDKCaptureConfiguration,
+        processingMode: MDKCaptureBenchmarkProcessingMode = .metalCopy,
         warmupDuration: TimeInterval = 1.0,
         sampleDuration: TimeInterval = 1.0
     ) throws -> MDKCaptureBenchmarkResult {
         try run(
             configuration: configuration,
+            processingMode: processingMode,
             warmupDuration: warmupDuration,
             sampleDuration: sampleDuration,
             makeSession: MDKCaptureSessionFactory.makeSession(configuration:),
-            makeProcessor: { try MDKMetalTextureCopyProcessor() },
+            makeProcessor: {
+                switch processingMode {
+                case .none:
+                    return MDKNoopCaptureFrameProcessor()
+                case .metalBind:
+                    return try MDKMetalTextureBindingProcessor()
+                case .metalCopy:
+                    return try MDKMetalTextureCopyProcessor()
+                }
+            },
             timeSource: { ProcessInfo.processInfo.systemUptime },
             sleeper: { Thread.sleep(forTimeInterval: $0) }
         )
@@ -279,6 +295,7 @@ public enum MDKCaptureBenchmarkRunner {
 
     static func run(
         configuration: MDKCaptureConfiguration,
+        processingMode: MDKCaptureBenchmarkProcessingMode,
         warmupDuration: TimeInterval,
         sampleDuration: TimeInterval,
         makeSession: (MDKCaptureConfiguration) throws -> MDKCaptureSessionControlling,
@@ -340,6 +357,7 @@ public enum MDKCaptureBenchmarkRunner {
         let measuredDuration = max(timeSource() - measurementStartedAt, 0)
         return MDKCaptureBenchmarkAnalyzer.result(
             configuration: configuration,
+            processingMode: processingMode,
             stats: measuredStats,
             processing: recording.processing,
             deliveredFrame: recording.deliveredFrame,

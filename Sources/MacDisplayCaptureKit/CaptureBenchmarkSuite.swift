@@ -27,6 +27,7 @@ public final class MDKCaptureBenchmarkMeasurement: NSObject {
 @objcMembers
 public final class MDKCaptureBenchmarkSuiteResult: NSObject {
     public let plan: MDKCaptureBenchmarkPlan
+    public let processingMode: MDKCaptureBenchmarkProcessingMode
     public let pixelFormat: UInt32
     public let warmupDuration: TimeInterval
     public let sampleDuration: TimeInterval
@@ -34,12 +35,14 @@ public final class MDKCaptureBenchmarkSuiteResult: NSObject {
 
     public init(
         plan: MDKCaptureBenchmarkPlan,
+        processingMode: MDKCaptureBenchmarkProcessingMode,
         pixelFormat: UInt32,
         warmupDuration: TimeInterval,
         sampleDuration: TimeInterval,
         measurements: [MDKCaptureBenchmarkMeasurement]
     ) {
         self.plan = plan
+        self.processingMode = processingMode
         self.pixelFormat = pixelFormat
         self.warmupDuration = warmupDuration
         self.sampleDuration = sampleDuration
@@ -55,18 +58,21 @@ public final class MDKCaptureBenchmarkSuiteResult: NSObject {
 public enum MDKCaptureBenchmarkSuiteRunner {
     public static func run(
         plan: MDKCaptureBenchmarkPlan,
+        processingMode: MDKCaptureBenchmarkProcessingMode = .metalCopy,
         pixelFormat: UInt32,
         warmupDuration: TimeInterval = 1.0,
         sampleDuration: TimeInterval = 1.0
     ) -> MDKCaptureBenchmarkSuiteResult {
         run(
             plan: plan,
+            processingMode: processingMode,
             pixelFormat: pixelFormat,
             warmupDuration: warmupDuration,
             sampleDuration: sampleDuration,
             runBenchmark: { configuration, warmupDuration, sampleDuration in
                 try MDKCaptureBenchmarkRunner.run(
                     configuration: configuration,
+                    processingMode: processingMode,
                     warmupDuration: warmupDuration,
                     sampleDuration: sampleDuration
                 )
@@ -76,6 +82,7 @@ public enum MDKCaptureBenchmarkSuiteRunner {
 
     static func run(
         plan: MDKCaptureBenchmarkPlan,
+        processingMode: MDKCaptureBenchmarkProcessingMode,
         pixelFormat: UInt32,
         warmupDuration: TimeInterval,
         sampleDuration: TimeInterval,
@@ -120,6 +127,7 @@ public enum MDKCaptureBenchmarkSuiteRunner {
 
         return MDKCaptureBenchmarkSuiteResult(
             plan: plan,
+            processingMode: processingMode,
             pixelFormat: pixelFormat,
             warmupDuration: warmupDuration,
             sampleDuration: sampleDuration,
