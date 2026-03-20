@@ -68,6 +68,7 @@ typedef bool (^FrameCallbackBlock)(CMSampleBufferRef);
 
 + (NSArray<NSDictionary *> *)displayNames;
 + (NSString *)getDisplayName:(CGDirectDisplayID)displayID;
++ (BOOL)shouldUseScreenCaptureKit;
 
 - (id)initWithDisplay:(CGDirectDisplayID)displayID frameRate:(int)frameRate;
 

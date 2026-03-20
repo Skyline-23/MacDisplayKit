@@ -34,22 +34,33 @@ let package = Package(
             cSettings: [
                 .headerSearchPath("Public"),
                 .headerSearchPath("Internal"),
+                .headerSearchPath("LegacyRuntime"),
+                .headerSearchPath("LegacyRuntime/Capture"),
+                .headerSearchPath("LegacyRuntime/third-party/TPCircularBuffer"),
                 .headerSearchPath("LegacyRuntime/VirtualDisplay")
             ],
             cxxSettings: [
                 .headerSearchPath("Public"),
                 .headerSearchPath("Internal"),
+                .headerSearchPath("LegacyRuntime"),
+                .headerSearchPath("LegacyRuntime/Capture"),
+                .headerSearchPath("LegacyRuntime/third-party/TPCircularBuffer"),
                 .headerSearchPath("LegacyRuntime/VirtualDisplay")
             ],
             linkerSettings: [
+                .linkedFramework("AVFoundation"),
                 .linkedFramework("AppKit"),
+                .linkedFramework("CoreAudio"),
+                .linkedFramework("CoreMedia"),
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("CoreVideo"),
-                .linkedFramework("Foundation")
+                .linkedFramework("Foundation"),
+                .linkedFramework("ScreenCaptureKit")
             ]
         ),
         .target(
             name: "MacDisplayCaptureKit",
+            dependencies: ["MacDisplayKitObjCShim"],
             path: "Sources/MacDisplayCaptureKit",
             linkerSettings: [
                 .linkedFramework("Foundation")

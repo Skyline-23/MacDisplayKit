@@ -2,6 +2,8 @@
 
 #import "MDKObjCShim.h"
 
+#import "../LegacyRuntime/Capture/av_audio.h"
+#import "../LegacyRuntime/Capture/av_video.h"
 #include "../LegacyRuntime/VirtualDisplay/virtual_display.h"
 
 NSString *MDKShimVersionString(void) {
@@ -26,6 +28,26 @@ NSArray<NSString *> *MDKShimPlannedModuleNames(void) {
         @"MacDisplayKit",
         @"MacDisplayKitObjCShim",
     ];
+}
+
+NSArray<NSDictionary<NSString *, id> *> *MDKShimListDisplays(void) {
+    return [AVVideo displayNames];
+}
+
+NSString * _Nullable MDKShimDisplayName(NSUInteger displayID) {
+    return [AVVideo getDisplayName:static_cast<CGDirectDisplayID>(displayID)];
+}
+
+BOOL MDKShimVideoScreenCaptureKitPreferred(void) {
+    return [AVVideo shouldUseScreenCaptureKit];
+}
+
+BOOL MDKShimSystemAudioScreenCaptureKitSupported(void) {
+    return [AVAudio shouldUseScreenCaptureKitAudio];
+}
+
+NSArray<NSString *> *MDKShimMicrophoneNames(void) {
+    return [AVAudio microphoneNames];
 }
 
 NSString * _Nullable MDKShimCreateVirtualDisplay(

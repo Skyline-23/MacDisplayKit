@@ -16,7 +16,7 @@
 #endif
 
 // lib includes
-#include "third-party/TPCircularBuffer/TPCircularBuffer.h"
+#include "../third-party/TPCircularBuffer/TPCircularBuffer.h"
 
 #define kBufferLength 4096
 
@@ -46,6 +46,7 @@
 
 + (NSArray *)microphoneNames;
 + (AVCaptureDevice *)findMicrophone:(NSString *)name;
++ (BOOL)shouldUseScreenCaptureKitAudio;
 
 - (int)setupMicrophone:(AVCaptureDevice *)device sampleRate:(UInt32)sampleRate frameSize:(UInt32)frameSize channels:(UInt8)channels;
 - (int)setupSystemAudioWithDisplayID:(CGDirectDisplayID)displayID sampleRate:(UInt32)sampleRate frameSize:(UInt32)frameSize channels:(UInt8)channels;

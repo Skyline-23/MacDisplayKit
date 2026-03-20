@@ -210,20 +210,18 @@ static dispatch_time_t ScreenCaptureKitWakeDeadline(AVVideo *video) {
   [SCShareableContent getShareableContentExcludingDesktopWindows:NO
                                             onScreenWindowsOnly:NO
                                               completionHandler:^(SCShareableContent *content, NSError *contentError) {
-                                                shareableContent = [content retain];
-                                                shareableContentError = [contentError retain];
+                                                shareableContent = content;
+                                                shareableContentError = contentError;
                                                 dispatch_semaphore_signal(signal);
                                               }];
 
   dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
 
   if (error != NULL) {
-    *error = [shareableContentError autorelease];
-  } else if (shareableContentError != nil) {
-    [shareableContentError release];
+    *error = shareableContentError;
   }
 
-  return [shareableContent autorelease];
+  return shareableContent;
 }
 
 + (SCDisplay *)shareableDisplayWithID:(CGDirectDisplayID)displayID error:(NSError **)error API_AVAILABLE(macos(12.3)) {
@@ -332,19 +330,17 @@ static dispatch_time_t ScreenCaptureKitWakeDeadline(AVVideo *video) {
   }
 #endif
 
-  self.session = [[[AVCaptureSession alloc] init] autorelease];
-  self.legacyVideoOutputs = [[[NSMapTable alloc] init] autorelease];
-  self.legacyCaptureCallbacks = [[[NSMapTable alloc] init] autorelease];
-  self.legacyCaptureSignals = [[[NSMapTable alloc] init] autorelease];
+  self.session = [[AVCaptureSession alloc] init];
+  self.legacyVideoOutputs = [[NSMapTable alloc] init];
+  self.legacyCaptureCallbacks = [[NSMapTable alloc] init];
+  self.legacyCaptureSignals = [[NSMapTable alloc] init];
 
   AVCaptureScreenInput *screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:self.displayID];
   [screenInput setMinFrameDuration:self.minFrameDuration];
 
   if ([self.session canAddInput:screenInput]) {
     [self.session addInput:screenInput];
-    [screenInput release];
   } else {
-    [screenInput release];
     return nil;
   }
 
@@ -358,21 +354,10 @@ static dispatch_time_t ScreenCaptureKitWakeDeadline(AVVideo *video) {
   if (self.stream != nil) {
     [self stopScreenCaptureKitStream];
   }
-
-  [self.shareableDisplay release];
-  [self.stream release];
-  [self.streamOutput release];
 #endif
 
   ScreenCaptureKitResetPendingBuffers(self);
-
-  [self.captureCallback release];
-  [self.legacyVideoOutputs release];
-  [self.legacyCaptureCallbacks release];
-  [self.legacyCaptureSignals release];
   [self.session stopRunning];
-  [self.session release];
-  [super dealloc];
 }
 
 - (void)setFrameWidth:(int)frameWidth frameHeight:(int)frameHeight {
@@ -469,8 +454,8 @@ static dispatch_time_t ScreenCaptureKitWakeDeadline(AVVideo *video) {
 
   dispatch_queue_attr_t captureQos = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0);
   self.sampleHandlerQueue = dispatch_queue_create(kSunshineVideoCaptureQueue.UTF8String, captureQos);
-  self.streamOutput = [[[AVVideoScreenStreamOutput alloc] initWithOwner:self] autorelease];
-  self.stream = [[[SCStream alloc] initWithFilter:filter configuration:configuration delegate:self] autorelease];
+  self.streamOutput = [[AVVideoScreenStreamOutput alloc] initWithOwner:self];
+  self.stream = [[SCStream alloc] initWithFilter:filter configuration:configuration delegate:self];
 
   NSError *streamError = nil;
   if (![self.stream addStreamOutput:self.streamOutput type:SCStreamOutputTypeScreen sampleHandlerQueue:self.sampleHandlerQueue error:&streamError]) {
@@ -480,27 +465,20 @@ static dispatch_time_t ScreenCaptureKitWakeDeadline(AVVideo *video) {
 
     self.stream = nil;
     self.streamOutput = nil;
-    [configuration release];
-    [filter release];
     return NO;
   }
 
   dispatch_semaphore_t signal = dispatch_semaphore_create(0);
   __block NSError *startError = nil;
   [self.stream startCaptureWithCompletionHandler:^(NSError *captureError) {
-    startError = [captureError retain];
+    startError = captureError;
     dispatch_semaphore_signal(signal);
   }];
   dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
 
-  [configuration release];
-  [filter release];
-
   if (startError != nil) {
     if (error != NULL) {
-      *error = [startError autorelease];
-    } else {
-      [startError release];
+      *error = startError;
     }
 
     [self.stream stopCaptureWithCompletionHandler:^(__unused NSError *stopError) {
@@ -543,8 +521,8 @@ static dispatch_time_t ScreenCaptureKitWakeDeadline(AVVideo *video) {
   }
 
   dispatch_semaphore_t signal = dispatch_semaphore_create(0);
-  SCStream *stream = [self.stream retain];
-  AVVideoScreenStreamOutput *streamOutput = [self.streamOutput retain];
+  SCStream *stream = self.stream;
+  AVVideoScreenStreamOutput *streamOutput = self.streamOutput;
   self.stream = nil;
   self.streamOutput = nil;
   self.sampleHandlerQueue = nil;
@@ -555,8 +533,6 @@ static dispatch_time_t ScreenCaptureKitWakeDeadline(AVVideo *video) {
   dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
 
   streamOutput.owner = nil;
-  [streamOutput release];
-  [stream release];
 }
 
 - (BOOL)beginScreenCaptureKitCapture:(NSError **)error API_AVAILABLE(macos(12.3)) {
@@ -727,7 +703,6 @@ static dispatch_time_t ScreenCaptureKitWakeDeadline(AVVideo *video) {
     if ([self.session canAddOutput:videoOutput]) {
       [self.session addOutput:videoOutput];
     } else {
-      [videoOutput release];
       return nil;
     }
 

@@ -105,20 +105,18 @@ static NSString *const kSunshineAudioCaptureQueue = @"dev.lizardbyte.sunshine.au
   [SCShareableContent getShareableContentExcludingDesktopWindows:NO
                                             onScreenWindowsOnly:NO
                                               completionHandler:^(SCShareableContent *content, NSError *contentError) {
-                                                shareableContent = [content retain];
-                                                shareableContentError = [contentError retain];
+                                                shareableContent = content;
+                                                shareableContentError = contentError;
                                                 dispatch_semaphore_signal(signal);
                                               }];
 
   dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
 
   if (error != NULL) {
-    *error = [shareableContentError autorelease];
-  } else if (shareableContentError != nil) {
-    [shareableContentError release];
+    *error = shareableContentError;
   }
 
-  return [shareableContent autorelease];
+  return shareableContent;
 }
 
 + (SCDisplay *)shareableDisplayWithID:(CGDirectDisplayID)displayID error:(NSError **)error API_AVAILABLE(macos(12.3)) {
@@ -138,7 +136,7 @@ static NSString *const kSunshineAudioCaptureQueue = @"dev.lizardbyte.sunshine.au
 #endif
 
 - (void)prepareAudioBuffer {
-  self.samplesArrivedSignal = [[[NSCondition alloc] init] autorelease];
+  self.samplesArrivedSignal = [[NSCondition alloc] init];
   self.captureStopped = NO;
   TPCircularBufferInit(&self->audioSampleBuffer, kBufferLength * self.channels * sizeof(float));
 }
@@ -153,8 +151,8 @@ static NSString *const kSunshineAudioCaptureQueue = @"dev.lizardbyte.sunshine.au
 #if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
   if (self.stream != nil) {
     dispatch_semaphore_t stopSignal = dispatch_semaphore_create(0);
-    SCStream *stream = [self.stream retain];
-    AVAudioStreamOutput *streamOutput = [self.streamOutput retain];
+    SCStream *stream = self.stream;
+    AVAudioStreamOutput *streamOutput = self.streamOutput;
     self.stream = nil;
     self.streamOutput = nil;
     self.sampleHandlerQueue = nil;
@@ -164,8 +162,6 @@ static NSString *const kSunshineAudioCaptureQueue = @"dev.lizardbyte.sunshine.au
     }];
     dispatch_semaphore_wait(stopSignal, DISPATCH_TIME_FOREVER);
     streamOutput.owner = nil;
-    [streamOutput release];
-    [stream release];
   }
 #endif
 
@@ -180,23 +176,17 @@ static NSString *const kSunshineAudioCaptureQueue = @"dev.lizardbyte.sunshine.au
   [self stopCapture];
 
 #if __has_include(<ScreenCaptureKit/ScreenCaptureKit.h>)
-  [self.streamOutput release];
-  [self.shareableDisplay release];
 #endif
 
-  [self.audioCaptureSession release];
-
   // make sure nothing gets stuck on this signal
-  [self.samplesArrivedSignal release];
   TPCircularBufferCleanup(&audioSampleBuffer);
-  [super dealloc];
 }
 
 - (int)setupMicrophone:(AVCaptureDevice *)device sampleRate:(UInt32)sampleRate frameSize:(UInt32)frameSize channels:(UInt8)channels {
   self.sampleRate = sampleRate;
   self.frameSize = frameSize;
   self.channels = channels;
-  self.audioCaptureSession = [[[AVCaptureSession alloc] init] autorelease];
+  self.audioCaptureSession = [[AVCaptureSession alloc] init];
 
   NSError *error;
   AVCaptureDeviceInput *audioInput = [AVCaptureDeviceInput deviceInputWithDevice:device error:&error];
@@ -207,7 +197,6 @@ static NSString *const kSunshineAudioCaptureQueue = @"dev.lizardbyte.sunshine.au
   if ([self.audioCaptureSession canAddInput:audioInput]) {
     [self.audioCaptureSession addInput:audioInput];
   } else {
-    [audioInput dealloc];
     return -1;
   }
 
@@ -230,17 +219,12 @@ static NSString *const kSunshineAudioCaptureQueue = @"dev.lizardbyte.sunshine.au
   if ([self.audioCaptureSession canAddOutput:audioOutput]) {
     [self.audioCaptureSession addOutput:audioOutput];
   } else {
-    [audioInput release];
-    [audioOutput release];
     return -1;
   }
 
   self.audioConnection = [audioOutput connectionWithMediaType:AVMediaTypeAudio];
 
   [self.audioCaptureSession startRunning];
-
-  [audioInput release];
-  [audioOutput release];
 
   [self prepareAudioBuffer];
 
@@ -360,42 +344,34 @@ static NSString *const kSunshineAudioCaptureQueue = @"dev.lizardbyte.sunshine.au
     configuration.excludesCurrentProcessAudio = YES;
 
     self.sampleHandlerQueue = dispatch_queue_create(kSunshineAudioCaptureQueue.UTF8String, DISPATCH_QUEUE_SERIAL);
-    self.streamOutput = [[[AVAudioStreamOutput alloc] initWithOwner:self] autorelease];
-    self.stream = [[[SCStream alloc] initWithFilter:filter configuration:configuration delegate:self] autorelease];
+    self.streamOutput = [[AVAudioStreamOutput alloc] initWithOwner:self];
+    self.stream = [[SCStream alloc] initWithFilter:filter configuration:configuration delegate:self];
 
     NSError *streamError = nil;
     if (![self.stream addStreamOutput:self.streamOutput type:SCStreamOutputTypeAudio sampleHandlerQueue:self.sampleHandlerQueue error:&streamError]) {
       self.stream = nil;
       self.streamOutput = nil;
-      [configuration release];
-      [filter release];
       return -1;
     }
     if (![self.stream addStreamOutput:self.streamOutput type:SCStreamOutputTypeScreen sampleHandlerQueue:self.sampleHandlerQueue error:&streamError]) {
       self.stream = nil;
       self.streamOutput = nil;
-      [configuration release];
-      [filter release];
       return -1;
     }
 
     dispatch_semaphore_t signal = dispatch_semaphore_create(0);
     __block NSError *startError = nil;
     [self.stream startCaptureWithCompletionHandler:^(NSError *captureError) {
-      startError = [captureError retain];
+      startError = captureError;
       dispatch_semaphore_signal(signal);
     }];
     dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
-
-    [configuration release];
-    [filter release];
 
     if (startError != nil) {
       [self.stream stopCaptureWithCompletionHandler:^(__unused NSError *stopError) {
       }];
       self.stream = nil;
       self.streamOutput = nil;
-      [startError release];
       return -1;
     }
 

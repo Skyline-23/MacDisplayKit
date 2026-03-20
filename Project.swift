@@ -26,6 +26,9 @@ let project = Project(
             sources: [
                 "Sources/MacDisplayCaptureKit/**"
             ],
+            dependencies: [
+                .target(name: "MacDisplayKitObjCShim")
+            ],
             settings: .settings(
                 base: [
                     "PRODUCT_NAME": "MacDisplayCaptureKit",
@@ -100,16 +103,23 @@ let project = Project(
                 private: "Sources/MacDisplayKitObjCShim/Internal/**"
             ),
             dependencies: [
+                .sdk(name: "AVFoundation", type: .framework),
                 .sdk(name: "AppKit", type: .framework),
+                .sdk(name: "CoreAudio", type: .framework),
+                .sdk(name: "CoreMedia", type: .framework),
                 .sdk(name: "CoreGraphics", type: .framework),
                 .sdk(name: "CoreVideo", type: .framework),
-                .sdk(name: "Foundation", type: .framework)
+                .sdk(name: "Foundation", type: .framework),
+                .sdk(name: "ScreenCaptureKit", type: .framework)
             ],
             settings: .settings(
                 base: [
                     "PRODUCT_NAME": "MacDisplayKitObjCShim",
                     "DEFINES_MODULE": "YES",
                     "HEADER_SEARCH_PATHS": [
+                        "$(SRCROOT)/Sources/MacDisplayKitObjCShim/LegacyRuntime",
+                        "$(SRCROOT)/Sources/MacDisplayKitObjCShim/LegacyRuntime/Capture",
+                        "$(SRCROOT)/Sources/MacDisplayKitObjCShim/LegacyRuntime/third-party/TPCircularBuffer",
                         "$(SRCROOT)/Sources/MacDisplayKitObjCShim/LegacyRuntime/VirtualDisplay"
                     ],
                     "SKIP_INSTALL": "YES"
