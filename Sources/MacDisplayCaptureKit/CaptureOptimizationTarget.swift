@@ -42,14 +42,18 @@ public final class MDKCaptureOptimizationTarget: NSObject, NSCopying {
         topology == .virtualDisplay
     }
 
-    public func makeConfiguration(displayID: UInt32, pixelFormat: UInt32) -> MDKCaptureConfiguration {
+    public func makeConfiguration(
+        displayID: UInt32,
+        pixelFormat: UInt32,
+        backend: MDKCaptureBackend? = nil
+    ) -> MDKCaptureConfiguration {
         MDKCaptureConfiguration(
             displayID: displayID,
             width: width,
             height: height,
             frameRate: frameRate,
             pixelFormat: pixelFormat,
-            backend: recommendedBackend,
+            backend: backend ?? recommendedBackend,
             dynamicRangeMode: dynamicRangeMode
         )
     }

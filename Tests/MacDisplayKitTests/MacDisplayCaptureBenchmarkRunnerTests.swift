@@ -109,6 +109,59 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
         XCTAssertEqual(result.firstFrameLatency ?? -1, 0.05, accuracy: 0.0001)
         XCTAssertFalse(session.isRunning)
     }
+
+    func testSuiteRunnerCollectsAvailableCandidatesAndSkipsUnavailableOnes() {
+        let display = MDKDisplayDescriptor(id: 77, name: "77", localizedName: "Test Display")
+        let target = MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly
+        let plan = MDKCaptureBenchmarkPlan(
+            target: target,
+            display: display,
+            intent: .compareBackends,
+            candidates: [
+                MDKCaptureBackendCandidate(
+                    backend: .cgDisplayStream,
+                    available: true,
+                    reason: "Primary backend available."
+                ),
+                MDKCaptureBackendCandidate(
+                    backend: .avFoundation,
+                    available: false,
+                    reason: "Fallback unavailable."
+                ),
+            ]
+        )
+
+        let suite = MDKCaptureBenchmarkSuiteRunner.run(
+            plan: plan,
+            pixelFormat: 0x78343230,
+            sampleDuration: 1.0,
+            runBenchmark: { configuration, sampleDuration in
+                XCTAssertEqual(configuration.backend, .cgDisplayStream)
+                XCTAssertEqual(sampleDuration, 1.0, accuracy: 0.0001)
+                return MDKCaptureBenchmarkResult(
+                    backend: configuration.backend,
+                    requestedFrameRate: configuration.frameRate,
+                    requestedSampleDuration: sampleDuration,
+                    measuredDuration: 1.05,
+                    callbackCount: 120,
+                    deliveredFrameCount: 118,
+                    skippedFrameCount: 2,
+                    observedFrameRate: 117.7,
+                    deliveryRatio: 117.7 / 120.0,
+                    firstFrameLatency: 0.02
+                )
+            }
+        )
+
+        XCTAssertEqual(suite.measurements.count, 2)
+        XCTAssertEqual(suite.successfulMeasurements.count, 1)
+        XCTAssertEqual(suite.measurements[0].backend, .cgDisplayStream)
+        XCTAssertNotNil(suite.measurements[0].result)
+        XCTAssertNil(suite.measurements[0].errorDescription)
+        XCTAssertEqual(suite.measurements[1].backend, .avFoundation)
+        XCTAssertNil(suite.measurements[1].result)
+        XCTAssertFalse(suite.measurements[1].available)
+    }
 }
 
 private final class FakeCaptureSession: MDKCaptureSessionControlling {
