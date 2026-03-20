@@ -535,6 +535,8 @@ using MDKManagerStreamOutputEffectDidStartFn = void (*)(id, SEL, BOOL, id);
 using MDKRPIOSurfaceSetFn = void (*)(id, SEL, IOSurfaceRef);
 using MDKRPIOSurfaceGetFn = IOSurfaceRef (*)(id, SEL);
 using MDKCaptureHandlerWithSampleFn = void (*)(id, SEL, id, id);
+using MDKFrameSenderSendSampleFn = void (*)(id, SEL, id);
+using MDKFrameSenderNewSampleBufferFn = id (*)(id, SEL, id);
 using MDKCAContentStreamProduceSurfaceFn = void (*)(id, SEL, unsigned int, const void *);
 using MDKCAContentStreamReleaseSurfaceFn = BOOL (*)(id, SEL, IOSurfaceRef, NSError **);
 using MDKCAContentStreamReleaseSurfaceWithIDFn = BOOL (*)(id, SEL, unsigned int, NSError **);
@@ -555,6 +557,7 @@ using MDKFigSetSinkNodeFn = void (*)(id, SEL, id);
 using MDKSCRemoteQueueSetRemoteQueueFn = void (*)(id, SEL, id);
 using MDKSCRemoteQueueSetQueueTypeFn = void (*)(id, SEL, unsigned char);
 using MDKVideoReceiveQueueCallbackBlock = void (^)(int, MDKFigRemoteQueueMessage *, void *);
+using MDKVideoReceiveQueueBlockInvokeFn = void (*)(void *, int, MDKFigRemoteQueueMessage *, void *);
 
 static MDKProxyCoreGraphicsFn MDKOriginalProxyCoreGraphics = nullptr;
 static MDKStartRemoteQueueFn MDKOriginalStartRemoteQueue = nullptr;
@@ -582,6 +585,9 @@ static MDKRPIOSurfaceSetFn MDKOriginalRPIOSurfaceSet = nullptr;
 static MDKRPIOSurfaceGetFn MDKOriginalRPIOSurfaceGet = nullptr;
 static MDKCaptureHandlerWithSampleFn MDKOriginalDaemonCaptureHandlerWithSample = nullptr;
 static MDKCaptureHandlerWithSampleFn MDKOriginalScreenRecorderCaptureHandlerWithSample = nullptr;
+static MDKFrameSenderSendSampleFn MDKOriginalFrameSenderClientSendXCPSampleBuffer = nullptr;
+static MDKFrameSenderSendSampleFn MDKOriginalFrameSenderServiceSendFrame = nullptr;
+static MDKFrameSenderNewSampleBufferFn MDKOriginalFrameSenderServiceNewSampleBuffer = nullptr;
 static MDKCAContentStreamProduceSurfaceFn MDKOriginalCAContentStreamProduceSurface = nullptr;
 static MDKCAContentStreamReleaseSurfaceFn MDKOriginalCAContentStreamReleaseSurface = nullptr;
 static MDKCAContentStreamReleaseSurfaceWithIDFn MDKOriginalCAContentStreamReleaseSurfaceWithID = nullptr;
@@ -1500,6 +1506,7 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"sampleBufferUniqueSurfaceCount": @0,
             @"rpIOSurfaceEventCount": @0,
             @"captureHandlerSampleEventCount": @0,
+            @"frameSenderEventCount": @0,
             @"contentStreamEventCount": @0,
             @"surfaceTransportEventCount": @0,
             @"frameReceiverEventCount": @0,
@@ -1518,6 +1525,7 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"videoRemoteQueueRecvFDAvailableBytesMax": @0,
             @"videoQueueWrapperCallbackEventCount": @0,
             @"videoQueueWrapperBlocks": [NSMutableDictionary dictionary],
+            @"videoQueueWrapperInvokes": [NSMutableDictionary dictionary],
             @"figRemoteQueueReceiverWrappedHandlers": [NSMutableDictionary dictionary],
         } mutableCopy];
         MDKActiveSCKRemoteQueues = [NSMutableArray array];
@@ -1594,13 +1602,55 @@ static void MDKRecordSCKTraceEvent(NSString *kind, NSDictionary<NSString *, id> 
     }
 }
 
+static id MDKDeepFreezeSCKTraceValue(id value) {
+    if (value == nil) {
+        return nil;
+    }
+
+    if ([value isKindOfClass:[NSDictionary class]]) {
+        NSMutableDictionary<id, id> *frozen = [NSMutableDictionary dictionary];
+        for (id key in (NSDictionary *) value) {
+            id frozenKey = MDKDeepFreezeSCKTraceValue(key);
+            id frozenValue = MDKDeepFreezeSCKTraceValue(((NSDictionary *) value)[key]);
+            if (frozenKey != nil && frozenValue != nil) {
+                frozen[frozenKey] = frozenValue;
+            }
+        }
+        return [frozen copy];
+    }
+
+    if ([value isKindOfClass:[NSArray class]]) {
+        NSMutableArray *frozen = [NSMutableArray arrayWithCapacity:[(NSArray *) value count]];
+        for (id element in (NSArray *) value) {
+            id frozenElement = MDKDeepFreezeSCKTraceValue(element);
+            [frozen addObject:frozenElement ?: [NSNull null]];
+        }
+        return [frozen copy];
+    }
+
+    if ([value isKindOfClass:[NSSet class]]) {
+        NSMutableArray *frozen = [NSMutableArray arrayWithCapacity:[(NSSet *) value count]];
+        for (id element in (NSSet *) value) {
+            id frozenElement = MDKDeepFreezeSCKTraceValue(element);
+            [frozen addObject:frozenElement ?: [NSNull null]];
+        }
+        return [frozen copy];
+    }
+
+    if ([value conformsToProtocol:@protocol(NSCopying)]) {
+        return [(id<NSCopying>) value copyWithZone:nil];
+    }
+
+    return value;
+}
+
 static NSDictionary<NSString *, id> * _Nullable MDKCopySCKTraceStateSnapshot(void) {
     @synchronized(MDKActiveSCKTraceLock) {
         if (MDKActiveSCKTraceState == nil) {
             return nil;
         }
 
-        return [MDKActiveSCKTraceState copy];
+        return MDKDeepFreezeSCKTraceValue(MDKActiveSCKTraceState);
     }
 }
 
@@ -2411,6 +2461,27 @@ static void MDKRecordCaptureHandlerSampleEvent(NSString *kind, id sample, id tim
     );
 }
 
+static void MDKRecordFrameSenderEvent(NSString *kind, id sample) {
+    BOOL shouldRecord = NO;
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            NSUInteger eventCount = [MDKActiveSCKTraceState[@"frameSenderEventCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"frameSenderEventCount"] = @(eventCount);
+            shouldRecord = eventCount <= 512;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    MDKRecordSCKTraceEvent(
+        kind,
+        @{
+            @"sample": MDKSummarizeSampleCarrier(sample),
+        }
+    );
+}
+
 static void MDKRecordCAContentStreamEvent(NSString *kind, NSDictionary<NSString *, id> *payload) {
     BOOL shouldRecord = NO;
     @synchronized(MDKActiveSCKTraceLock) {
@@ -2519,6 +2590,41 @@ static void MDKRecordVideoQueueWrapperCallbackEvent(
     MDKRecordSCKTraceEvent(@"video-queue-wrapper-callback", payload);
 }
 
+static NSString * _Nullable MDKCopyVideoQueueBlockDescriptorKey(const MDKBlockLiteral *literal) {
+    if (literal == nullptr || literal->descriptor == nullptr) {
+        return nil;
+    }
+
+    return [NSString stringWithFormat:@"%p", literal->descriptor];
+}
+
+static void MDKInterposedVideoQueueBlockInvoke(
+    void *blockLiteral,
+    int status,
+    MDKFigRemoteQueueMessage *message,
+    void *context
+) {
+    MDKRecordVideoQueueWrapperCallbackEvent(status, message, context);
+
+    MDKVideoReceiveQueueBlockInvokeFn originalInvoke = nullptr;
+    @synchronized(MDKActiveSCKTraceLock) {
+        NSDictionary<NSString *, id> *wrappedInvokes = MDKActiveSCKTraceState[@"videoQueueWrapperInvokes"];
+        NSString *blockKey = [NSString stringWithFormat:@"%p", blockLiteral];
+        NSValue *invokeValue = [wrappedInvokes[blockKey] isKindOfClass:[NSValue class]] ? wrappedInvokes[blockKey] : nil;
+        if (invokeValue == nil) {
+            NSString *descriptorKey = MDKCopyVideoQueueBlockDescriptorKey(reinterpret_cast<const MDKBlockLiteral *>(blockLiteral));
+            invokeValue = [wrappedInvokes[descriptorKey] isKindOfClass:[NSValue class]] ? wrappedInvokes[descriptorKey] : nil;
+        }
+        if (invokeValue != nil) {
+            originalInvoke = reinterpret_cast<MDKVideoReceiveQueueBlockInvokeFn>(invokeValue.pointerValue);
+        }
+    }
+
+    if (originalInvoke != nullptr) {
+        originalInvoke(blockLiteral, status, message, context);
+    }
+}
+
 static BOOL MDKInstallVideoQueueWrapperCallbackAtPointer(const void *wrapperPointer) {
     if (wrapperPointer == nullptr) {
         return NO;
@@ -2526,7 +2632,26 @@ static BOOL MDKInstallVideoQueueWrapperCallbackAtPointer(const void *wrapperPoin
 
     uint8_t *wrapperBase = reinterpret_cast<uint8_t *>(const_cast<void *>(wrapperPointer));
     void *callbackPointer = nullptr;
-    memcpy(&callbackPointer, wrapperBase + 0x28, sizeof(callbackPointer));
+    size_t callbackOffset = SIZE_MAX;
+    size_t wrapperAllocationSize = malloc_size(const_cast<void *>(wrapperPointer));
+    if (wrapperAllocationSize == 0) {
+        wrapperAllocationSize = 0x80;
+    }
+    const size_t maxInspectableBytes = std::min<size_t>(wrapperAllocationSize, 0x80);
+    const size_t lastOffset = maxInspectableBytes >= sizeof(void *) ? maxInspectableBytes - sizeof(void *) : 0;
+    for (size_t offset = 0; offset <= lastOffset; offset += sizeof(void *)) {
+        void *candidatePointer = nullptr;
+        memcpy(&candidatePointer, wrapperBase + offset, sizeof(candidatePointer));
+        if (candidatePointer == nullptr) {
+            continue;
+        }
+        NSString *candidateSignature = MDKCopyBlockSignatureString((__bridge id) candidatePointer);
+        if (candidateSignature != nil && [candidateSignature containsString:@"FigRemoteQueueMessage"]) {
+            callbackPointer = candidatePointer;
+            callbackOffset = offset;
+            break;
+        }
+    }
     if (callbackPointer == nullptr) {
         return NO;
     }
@@ -2538,22 +2663,27 @@ static BOOL MDKInstallVideoQueueWrapperCallbackAtPointer(const void *wrapperPoin
     }
 
     NSString *wrapperKey = [NSString stringWithFormat:@"%p", wrapperPointer];
+    NSString *blockKey = [NSString stringWithFormat:@"%p", callbackPointer];
+    auto *callbackLiteral = reinterpret_cast<MDKBlockLiteral *>(callbackPointer);
+    if (callbackLiteral == nullptr || callbackLiteral->invoke == nullptr) {
+        return NO;
+    }
+    NSString *descriptorKey = MDKCopyVideoQueueBlockDescriptorKey(callbackLiteral);
     @synchronized(MDKActiveSCKTraceLock) {
         NSMutableDictionary<NSString *, id> *wrappedBlocks = MDKActiveSCKTraceState[@"videoQueueWrapperBlocks"];
-        if (wrappedBlocks[wrapperKey] != nil) {
+        NSMutableDictionary<NSString *, id> *wrappedInvokes = MDKActiveSCKTraceState[@"videoQueueWrapperInvokes"];
+        if (wrappedInvokes[blockKey] != nil) {
             return YES;
         }
 
-        MDKVideoReceiveQueueCallbackBlock originalBlock =
-            (__bridge MDKVideoReceiveQueueCallbackBlock) callbackPointer;
-        MDKVideoReceiveQueueCallbackBlock wrappedBlock = [^(int status, MDKFigRemoteQueueMessage *message, void *context) {
-            MDKRecordVideoQueueWrapperCallbackEvent(status, message, context);
-            originalBlock(status, message, context);
-        } copy];
-        wrappedBlocks[wrapperKey] = wrappedBlock;
-
-        void *wrappedPointer = (__bridge void *) wrappedBlock;
-        memcpy(wrapperBase + 0x28, &wrappedPointer, sizeof(wrappedPointer));
+        MDKVideoReceiveQueueBlockInvokeFn originalInvoke =
+            reinterpret_cast<MDKVideoReceiveQueueBlockInvokeFn>(callbackLiteral->invoke);
+        wrappedBlocks[wrapperKey] = callbackObject;
+        wrappedInvokes[blockKey] = [NSValue valueWithPointer:reinterpret_cast<void *>(originalInvoke)];
+        if (descriptorKey != nil) {
+            wrappedInvokes[descriptorKey] = [NSValue valueWithPointer:reinterpret_cast<void *>(originalInvoke)];
+        }
+        callbackLiteral->invoke = reinterpret_cast<void (*)(void *, ...)>(MDKInterposedVideoQueueBlockInvoke);
     }
 
     MDKRecordSCKTraceEvent(
@@ -2561,7 +2691,9 @@ static BOOL MDKInstallVideoQueueWrapperCallbackAtPointer(const void *wrapperPoin
         @{
             @"wrapperPointer": [NSString stringWithFormat:@"%p", wrapperPointer],
             @"callbackPointer": [NSString stringWithFormat:@"%p", callbackPointer],
+            @"callbackOffset": @(callbackOffset),
             @"blockSignature": signature,
+            @"installationMode": @"invoke-pointer",
         }
     );
     return YES;
@@ -2807,6 +2939,22 @@ static void MDKSwizzledDaemonCaptureHandlerWithSample(id self, SEL _cmd, id samp
 static void MDKSwizzledScreenRecorderCaptureHandlerWithSample(id self, SEL _cmd, id sample, id timingData) {
     MDKRecordCaptureHandlerSampleEvent(@"screen-recorder-capture-handler-sample", sample, timingData);
     MDKOriginalScreenRecorderCaptureHandlerWithSample(self, _cmd, sample, timingData);
+}
+
+static void MDKSwizzledFrameSenderClientSendXCPSampleBuffer(id self, SEL _cmd, id sample) {
+    MDKRecordFrameSenderEvent(@"frame-sender-client-send-xcp-sample-buffer", sample);
+    MDKOriginalFrameSenderClientSendXCPSampleBuffer(self, _cmd, sample);
+}
+
+static void MDKSwizzledFrameSenderServiceSendFrame(id self, SEL _cmd, id sample) {
+    MDKRecordFrameSenderEvent(@"frame-sender-service-send-frame", sample);
+    MDKOriginalFrameSenderServiceSendFrame(self, _cmd, sample);
+}
+
+static id MDKSwizzledFrameSenderServiceNewSampleBuffer(id self, SEL _cmd, id sample) {
+    id convertedSample = MDKOriginalFrameSenderServiceNewSampleBuffer(self, _cmd, sample);
+    MDKRecordFrameSenderEvent(@"frame-sender-service-new-sample-buffer", convertedSample);
+    return convertedSample;
 }
 
 static void MDKSwizzledCAContentStreamProduceSurface(id self, SEL _cmd, unsigned int surfaceID, const void *frameInfo) {
@@ -3604,6 +3752,51 @@ static void MDKInstallSCKProxyTraceHooks(void) {
                 method_setImplementation(
                     screenRecorderCaptureHandlerWithSampleMethod,
                     reinterpret_cast<IMP>(MDKSwizzledScreenRecorderCaptureHandlerWithSample)
+                );
+            }
+        }
+
+        Class frameSenderClientClass = NSClassFromString(@"CMCaptureFrameSenderClient");
+        if (frameSenderClientClass != Nil) {
+            Method sendXCPSampleBufferMethod = class_getInstanceMethod(
+                frameSenderClientClass,
+                sel_registerName("sendXCPSampleBuffer:")
+            );
+            if (sendXCPSampleBufferMethod != nullptr) {
+                MDKOriginalFrameSenderClientSendXCPSampleBuffer =
+                    reinterpret_cast<MDKFrameSenderSendSampleFn>(method_getImplementation(sendXCPSampleBufferMethod));
+                method_setImplementation(
+                    sendXCPSampleBufferMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledFrameSenderClientSendXCPSampleBuffer)
+                );
+            }
+        }
+
+        Class frameSenderServiceClass = NSClassFromString(@"CMCaptureFrameSenderService");
+        if (frameSenderServiceClass != Nil) {
+            Method sendFrameMethod = class_getInstanceMethod(
+                frameSenderServiceClass,
+                sel_registerName("sendFrame:")
+            );
+            if (sendFrameMethod != nullptr) {
+                MDKOriginalFrameSenderServiceSendFrame =
+                    reinterpret_cast<MDKFrameSenderSendSampleFn>(method_getImplementation(sendFrameMethod));
+                method_setImplementation(
+                    sendFrameMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledFrameSenderServiceSendFrame)
+                );
+            }
+
+            Method newSampleBufferMethod = class_getInstanceMethod(
+                frameSenderServiceClass,
+                sel_registerName("_newSampleBufferToSendFromSampleBuffer:")
+            );
+            if (newSampleBufferMethod != nullptr) {
+                MDKOriginalFrameSenderServiceNewSampleBuffer =
+                    reinterpret_cast<MDKFrameSenderNewSampleBufferFn>(method_getImplementation(newSampleBufferMethod));
+                method_setImplementation(
+                    newSampleBufferMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledFrameSenderServiceNewSampleBuffer)
                 );
             }
         }
@@ -4467,6 +4660,10 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         return nil;
     }
 
+    @synchronized(MDKActiveSCKTraceLock) {
+        MDKActiveSCKTraceState = nil;
+    }
+
     NSMutableArray<NSDictionary<NSString *, id> *> *steps = [NSMutableArray array];
     NSMutableSet<NSString *> *selectors = [NSMutableSet set];
     NSMutableSet<NSString *> *symbols = [NSMutableSet set];
@@ -4885,6 +5082,38 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             NSMutableArray<NSString *> *notes = [@[
                 [NSString stringWithFormat:@"sample=%@", MDKDescribeTraceValue(event[@"sample"])],
                 [NSString stringWithFormat:@"timingData=%@", MDKDescribeTraceValue(event[@"timingData"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(
+                kind,
+                selector,
+                symbol,
+                nil,
+                @YES,
+                notes
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"frame-sender-client-send-xcp-sample-buffer"] ||
+            [kind isEqualToString:@"frame-sender-service-send-frame"] ||
+            [kind isEqualToString:@"frame-sender-service-new-sample-buffer"]) {
+            NSString *selector = nil;
+            NSString *symbol = nil;
+            if ([kind isEqualToString:@"frame-sender-client-send-xcp-sample-buffer"]) {
+                selector = @"sendXCPSampleBuffer:";
+                symbol = @"CMCaptureFrameSenderClient";
+            } else if ([kind isEqualToString:@"frame-sender-service-send-frame"]) {
+                selector = @"sendFrame:";
+                symbol = @"CMCaptureFrameSenderService";
+            } else {
+                selector = @"_newSampleBufferToSendFromSampleBuffer:";
+                symbol = @"CMCaptureFrameSenderService";
+            }
+            [selectors addObject:selector];
+            [symbols addObject:symbol];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"sample=%@", MDKDescribeTraceValue(event[@"sample"])],
             ] mutableCopy];
             [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
             [steps addObject:MDKMakeTraceStep(
@@ -5330,6 +5559,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     NSString *firstPrivateQueueSource = nil;
     NSDictionary<NSString *, id> *firstPrivateQueueSurface = nil;
     NSArray<NSString *> *privateQueueEventKinds = @[
+        @"video-queue-wrapper-callback",
         @"sc-remote-queue-wrapper-probe",
         @"fig-remote-queue-receiver-probe",
     ];
@@ -5339,7 +5569,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             continue;
         }
 
-        NSNumber *callbackTimestampNanos = event[@"callbackTimestampNanos"];
+        NSNumber *callbackTimestampNanos =
+            [event[@"callbackTimestampNanos"] isKindOfClass:[NSNumber class]] ? event[@"callbackTimestampNanos"] :
+            ([event[@"timestampNanos"] isKindOfClass:[NSNumber class]] ? event[@"timestampNanos"] : nil);
         if (![callbackTimestampNanos isKindOfClass:[NSNumber class]]) {
             continue;
         }
@@ -5350,6 +5582,8 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             firstPrivateQueueSource = kind;
             if ([event[@"callbackSurface"] isKindOfClass:[NSDictionary class]]) {
                 firstPrivateQueueSurface = event[@"callbackSurface"];
+            } else if ([event[@"surface"] isKindOfClass:[NSDictionary class]]) {
+                firstPrivateQueueSurface = event[@"surface"];
             }
         }
     }
@@ -5440,6 +5674,100 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
 
         return NO;
     };
+
+    NSDictionary<NSString *, id> *firstVideoQueueCallbackEvent = nil;
+    NSDictionary<NSString *, id> *firstVideoQueueCallbackPrecedingEvent = nil;
+    NSUInteger firstVideoQueueCallbackEventIndex = NSNotFound;
+    for (NSUInteger idx = 0; idx < traceEvents.count; ++idx) {
+        NSDictionary<NSString *, id> *event = traceEvents[idx];
+        if (![event[@"kind"] isEqualToString:@"video-queue-wrapper-callback"]) {
+            continue;
+        }
+
+        firstVideoQueueCallbackEvent = event;
+        firstVideoQueueCallbackEventIndex = idx;
+        if (idx > 0 && [traceEvents[idx - 1] isKindOfClass:[NSDictionary class]]) {
+            firstVideoQueueCallbackPrecedingEvent = traceEvents[idx - 1];
+        }
+        break;
+    }
+
+    NSNumber *firstVideoQueueCallbackTimestampNanos =
+        [firstVideoQueueCallbackEvent[@"timestampNanos"] isKindOfClass:[NSNumber class]] ? firstVideoQueueCallbackEvent[@"timestampNanos"] : nil;
+    NSDictionary<NSString *, id> *firstVideoQueueCallbackSurface =
+        [firstVideoQueueCallbackEvent[@"surface"] isKindOfClass:[NSDictionary class]] ? firstVideoQueueCallbackEvent[@"surface"] : nil;
+    NSString *firstVideoQueueCallbackSurfacePointer =
+        [firstVideoQueueCallbackSurface[@"pointer"] isKindOfClass:[NSString class]] ? firstVideoQueueCallbackSurface[@"pointer"] : nil;
+    NSNumber *firstVideoQueueCallbackPrecedingEventIndexNumber =
+        (firstVideoQueueCallbackEventIndex != NSNotFound && firstVideoQueueCallbackEventIndex > 0) ?
+            @(firstVideoQueueCallbackEventIndex - 1) : nil;
+    NSString *firstVideoQueueCallbackPrecedingEventKind =
+        [firstVideoQueueCallbackPrecedingEvent[@"kind"] isKindOfClass:[NSString class]] ? firstVideoQueueCallbackPrecedingEvent[@"kind"] : nil;
+    NSString *firstVideoQueueCallbackPrecedingEventSelector =
+        [firstVideoQueueCallbackPrecedingEvent[@"selector"] isKindOfClass:[NSString class]] ? firstVideoQueueCallbackPrecedingEvent[@"selector"] : nil;
+    NSString *firstVideoQueueCallbackPrecedingEventSymbol =
+        [firstVideoQueueCallbackPrecedingEvent[@"symbol"] isKindOfClass:[NSString class]] ? firstVideoQueueCallbackPrecedingEvent[@"symbol"] : nil;
+    NSNumber *firstVideoQueueCallbackPrecedingEventTimestampNanos =
+        [firstVideoQueueCallbackPrecedingEvent[@"timestampNanos"] isKindOfClass:[NSNumber class]] ?
+            firstVideoQueueCallbackPrecedingEvent[@"timestampNanos"] : nil;
+    NSDictionary<NSString *, id> *firstVideoQueueCallbackPrecedingEventStreamState =
+        [firstVideoQueueCallbackPrecedingEvent[@"streamState"] isKindOfClass:[NSDictionary class]] ?
+            firstVideoQueueCallbackPrecedingEvent[@"streamState"] : nil;
+    NSNumber *firstVideoQueueCallbackPrecedingEventLeadMilliseconds = nil;
+    if ([firstVideoQueueCallbackTimestampNanos isKindOfClass:[NSNumber class]] &&
+        [firstVideoQueueCallbackPrecedingEventTimestampNanos isKindOfClass:[NSNumber class]]) {
+        const long double deltaNanos =
+            static_cast<long double>(firstVideoQueueCallbackTimestampNanos.unsignedLongLongValue) -
+            static_cast<long double>(firstVideoQueueCallbackPrecedingEventTimestampNanos.unsignedLongLongValue);
+        firstVideoQueueCallbackPrecedingEventLeadMilliseconds = @(static_cast<double>(deltaNanos / 1.0e6L));
+    }
+
+    NSDictionary<NSString *, id> *firstVideoQueueCallbackLastSetupEvent = nil;
+    NSNumber *firstVideoQueueCallbackLastSetupEventIndexNumber = nil;
+    if (firstVideoQueueCallbackEventIndex != NSNotFound) {
+        for (NSInteger idx = static_cast<NSInteger>(firstVideoQueueCallbackEventIndex) - 1; idx >= 0; --idx) {
+            NSDictionary<NSString *, id> *event = traceEvents[static_cast<NSUInteger>(idx)];
+            if (!isVideoRelatedTraceEvent(event)) {
+                continue;
+            }
+
+            firstVideoQueueCallbackLastSetupEvent = event;
+            firstVideoQueueCallbackLastSetupEventIndexNumber = @(idx);
+            break;
+        }
+    }
+    NSString *firstVideoQueueCallbackLastSetupEventKind =
+        [firstVideoQueueCallbackLastSetupEvent[@"kind"] isKindOfClass:[NSString class]] ?
+            firstVideoQueueCallbackLastSetupEvent[@"kind"] : nil;
+    NSString *firstVideoQueueCallbackLastSetupEventSelector =
+        [firstVideoQueueCallbackLastSetupEvent[@"selector"] isKindOfClass:[NSString class]] ?
+            firstVideoQueueCallbackLastSetupEvent[@"selector"] : nil;
+    NSString *firstVideoQueueCallbackLastSetupEventSymbol =
+        [firstVideoQueueCallbackLastSetupEvent[@"symbol"] isKindOfClass:[NSString class]] ?
+            firstVideoQueueCallbackLastSetupEvent[@"symbol"] : nil;
+    NSNumber *firstVideoQueueCallbackLastSetupEventTimestampNanos =
+        [firstVideoQueueCallbackLastSetupEvent[@"timestampNanos"] isKindOfClass:[NSNumber class]] ?
+            firstVideoQueueCallbackLastSetupEvent[@"timestampNanos"] : nil;
+    NSNumber *firstVideoQueueCallbackLastSetupEventLeadMilliseconds = nil;
+    if ([firstVideoQueueCallbackTimestampNanos isKindOfClass:[NSNumber class]] &&
+        [firstVideoQueueCallbackLastSetupEventTimestampNanos isKindOfClass:[NSNumber class]]) {
+        const long double deltaNanos =
+            static_cast<long double>(firstVideoQueueCallbackTimestampNanos.unsignedLongLongValue) -
+            static_cast<long double>(firstVideoQueueCallbackLastSetupEventTimestampNanos.unsignedLongLongValue);
+        firstVideoQueueCallbackLastSetupEventLeadMilliseconds = @(static_cast<double>(deltaNanos / 1.0e6L));
+    }
+    NSMutableArray<NSString *> *firstVideoQueueCallbackInterveningEventKinds = [NSMutableArray array];
+    if ([firstVideoQueueCallbackLastSetupEventIndexNumber isKindOfClass:[NSNumber class]] &&
+        firstVideoQueueCallbackEventIndex != NSNotFound) {
+        NSUInteger lastSetupEventIndex = firstVideoQueueCallbackLastSetupEventIndexNumber.unsignedIntegerValue;
+        for (NSUInteger idx = lastSetupEventIndex + 1; idx < firstVideoQueueCallbackEventIndex; ++idx) {
+            NSDictionary<NSString *, id> *event = traceEvents[idx];
+            NSString *kind = [event[@"kind"] isKindOfClass:[NSString class]] ? event[@"kind"] : nil;
+            if (kind != nil) {
+                [firstVideoQueueCallbackInterveningEventKinds addObject:kind];
+            }
+        }
+    }
 
     NSDictionary<NSString *, id> *firstPublicSampleLastVideoEvent = nil;
     NSNumber *firstPublicSampleLastVideoEventIndexNumber = nil;
@@ -5669,6 +5997,22 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverDequeueCadenceClassification=%@", MDKDescribeTraceValue(figRemoteQueueReceiverDequeueSummary[@"cadenceClassification"])]];
     [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverUnsetHandlerEventCount=%@", MDKDescribeTraceValue(figRemoteQueueReceiverUnsetHandlerSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInstalledCount=%@", MDKDescribeTraceValue(videoQueueWrapperInstallSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackTimestampNanos=%@", MDKDescribeTraceValue(firstVideoQueueCallbackTimestampNanos)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackSurfacePointer=%@", MDKDescribeTraceValue(firstVideoQueueCallbackSurfacePointer)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventIndex=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventIndexNumber)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventKind=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventKind)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventSelector=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventSelector)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventSymbol=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventSymbol)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventTimestampNanos=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventTimestampNanos)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventLeadMilliseconds=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventLeadMilliseconds)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventStreamState=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventStreamState)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackLastSetupEventIndex=%@", MDKDescribeTraceValue(firstVideoQueueCallbackLastSetupEventIndexNumber)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackLastSetupEventKind=%@", MDKDescribeTraceValue(firstVideoQueueCallbackLastSetupEventKind)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackLastSetupEventSelector=%@", MDKDescribeTraceValue(firstVideoQueueCallbackLastSetupEventSelector)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackLastSetupEventSymbol=%@", MDKDescribeTraceValue(firstVideoQueueCallbackLastSetupEventSymbol)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackLastSetupEventTimestampNanos=%@", MDKDescribeTraceValue(firstVideoQueueCallbackLastSetupEventTimestampNanos)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackLastSetupEventLeadMilliseconds=%@", MDKDescribeTraceValue(firstVideoQueueCallbackLastSetupEventLeadMilliseconds)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackInterveningEventKinds=%@", MDKDescribeTraceValue(firstVideoQueueCallbackInterveningEventKinds)]];
     [notes addObject:[NSString stringWithFormat:@"videoSharedRegionPollCount=%@", MDKDescribeTraceValue(snapshot[@"videoSharedRegionPollCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoSharedRegionMappedSize=%@", MDKDescribeTraceValue(snapshot[@"videoSharedRegionMappedSize"])]];
     [notes addObject:[NSString stringWithFormat:@"videoSharedRegionQueueOffset=%@", MDKDescribeTraceValue(snapshot[@"videoSharedRegionQueueOffset"])]];
@@ -5744,6 +6088,22 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     }
 
     NSMutableArray<NSString *> *deliveryComparisonNotes = [NSMutableArray array];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackTimestampNanos=%@", MDKDescribeTraceValue(firstVideoQueueCallbackTimestampNanos)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackSurfacePointer=%@", MDKDescribeTraceValue(firstVideoQueueCallbackSurfacePointer)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventIndex=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventIndexNumber)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventKind=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventKind)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventSelector=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventSelector)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventSymbol=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventSymbol)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventTimestampNanos=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventTimestampNanos)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventLeadMilliseconds=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventLeadMilliseconds)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventStreamState=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventStreamState)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackLastSetupEventIndex=%@", MDKDescribeTraceValue(firstVideoQueueCallbackLastSetupEventIndexNumber)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackLastSetupEventKind=%@", MDKDescribeTraceValue(firstVideoQueueCallbackLastSetupEventKind)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackLastSetupEventSelector=%@", MDKDescribeTraceValue(firstVideoQueueCallbackLastSetupEventSelector)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackLastSetupEventSymbol=%@", MDKDescribeTraceValue(firstVideoQueueCallbackLastSetupEventSymbol)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackLastSetupEventTimestampNanos=%@", MDKDescribeTraceValue(firstVideoQueueCallbackLastSetupEventTimestampNanos)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackLastSetupEventLeadMilliseconds=%@", MDKDescribeTraceValue(firstVideoQueueCallbackLastSetupEventLeadMilliseconds)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackInterveningEventKinds=%@", MDKDescribeTraceValue(firstVideoQueueCallbackInterveningEventKinds)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSampleTimestampNanos=%@", MDKDescribeTraceValue(firstPublicSampleTimestampNanos)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingEventIndex=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingEventIndexNumber)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingEventKind=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingEventKind)]];
@@ -5774,6 +6134,14 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         [deliveryComparisonNotes addObject:@"surfacePointerMatched=<null>"];
     }
     [steps addObject:MDKMakeTraceStep(
+        @"first-video-queue-callback-predecessor",
+        firstVideoQueueCallbackPrecedingEventSelector,
+        firstVideoQueueCallbackPrecedingEventSymbol,
+        nil,
+        @([firstVideoQueueCallbackTimestampNanos isKindOfClass:[NSNumber class]]),
+        deliveryComparisonNotes
+    )];
+    [steps addObject:MDKMakeTraceStep(
         @"first-public-sample-predecessor",
         firstPublicSamplePrecedingEventSelector,
         firstPublicSamplePrecedingEventSymbol,
@@ -5802,10 +6170,6 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         @"steps": steps,
         @"notes": notes,
     } mutableCopy];
-
-    @synchronized(MDKActiveSCKTraceLock) {
-        MDKActiveSCKTraceState = nil;
-    }
 
     return result;
 }
@@ -6095,6 +6459,10 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKPublicTimingTrace(
         return nil;
     }
 
+    @synchronized(MDKActiveSCKTraceLock) {
+        MDKActiveSCKTraceState = nil;
+    }
+
     NSMutableArray<NSDictionary<NSString *, id> *> *steps = [NSMutableArray array];
     NSMutableSet<NSString *> *selectors = [NSMutableSet set];
     NSMutableSet<NSString *> *symbols = [NSMutableSet setWithObject:@"ScreenCaptureKit"];
@@ -6173,6 +6541,22 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKPublicTimingTrace(
         [NSSet setWithArray:@[
             @"daemon-capture-handler-sample",
             @"screen-recorder-capture-handler-sample",
+        ]]
+    );
+    NSDictionary<NSString *, id> *frameSenderCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"frame-sender-client-send-xcp-sample-buffer",
+            @"frame-sender-service-send-frame",
+            @"frame-sender-service-new-sample-buffer",
+        ]]
+    );
+    NSDictionary<NSString *, NSNumber *> *frameSenderKindHistogram = MDKCopyTraceEventKindHistogram(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"frame-sender-client-send-xcp-sample-buffer",
+            @"frame-sender-service-send-frame",
+            @"frame-sender-service-new-sample-buffer",
         ]]
     );
     NSDictionary<NSString *, id> *contentStreamCadenceSummary = MDKCopyTraceEventCadenceSummary(
@@ -6287,6 +6671,12 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKPublicTimingTrace(
     [notes addObject:[NSString stringWithFormat:@"captureHandlerDeltaHistogram=%@", MDKDescribeTraceValue(captureHandlerCadenceSummary[@"deltaHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"captureHandlerDelta120HzEquivalentCount=%@", MDKDescribeTraceValue(captureHandlerCadenceSummary[@"delta120HzEquivalentCount"])]];
     [notes addObject:[NSString stringWithFormat:@"captureHandlerCadenceClassification=%@", MDKDescribeTraceValue(captureHandlerCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"frameSenderEventCount=%@", MDKDescribeTraceValue(frameSenderCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"frameSenderDeltaCount=%@", MDKDescribeTraceValue(frameSenderCadenceSummary[@"deltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"frameSenderDeltaHistogram=%@", MDKDescribeTraceValue(frameSenderCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"frameSenderDelta120HzEquivalentCount=%@", MDKDescribeTraceValue(frameSenderCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"frameSenderCadenceClassification=%@", MDKDescribeTraceValue(frameSenderCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"frameSenderKindHistogram=%@", MDKDescribeTraceValue(frameSenderKindHistogram)]];
     [notes addObject:[NSString stringWithFormat:@"contentStreamEventCount=%@", MDKDescribeTraceValue(contentStreamCadenceSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"contentStreamDeltaCount=%@", MDKDescribeTraceValue(contentStreamCadenceSummary[@"deltaCount"])]];
     [notes addObject:[NSString stringWithFormat:@"contentStreamDeltaHistogram=%@", MDKDescribeTraceValue(contentStreamCadenceSummary[@"deltaHistogram"])]];
@@ -6355,10 +6745,6 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKPublicTimingTrace(
         @"steps": steps,
         @"notes": notes,
     } mutableCopy];
-
-    @synchronized(MDKActiveSCKTraceLock) {
-        MDKActiveSCKTraceState = nil;
-    }
 
     return result;
 }

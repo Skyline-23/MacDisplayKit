@@ -504,11 +504,23 @@ Recent passive traces on the current main display (`AW2725Q`, display `3`, `UI L
 - `sampleBufferEventCount=111` over `2s`
 - `sampleBufferPresentationDeltaHistogram={"8.3ms":1,"12.5ms":2,"16.7ms":83,"20.8ms":22,"25.0ms":2,"66.7ms":1}`
 
-Additional passive hooks that were tested and found inactive on this path:
+After replacing the `_videoReceiveQueue` block hook with an invoke-pointer patch, the previously silent wrapper callback became the first live lower-level consumer signal on this path:
 
-- `_videoReceiveQueue` wrapper callback
-  - `videoQueueWrapperInstalledCount=1`
-  - `videoQueueWrapperCallbackEventCount=0`
+- `videoQueueWrapperInstalledCount=1`
+- `videoQueueWrapperCallbackEventCount=109`
+- `videoQueueWrapperCallbackCadenceClassification=60hz-like`
+- `firstPrivateQueueSource=video-queue-wrapper-callback`
+- `privateQueueLeadMilliseconds=3.590375`
+- `surfacePointerMatched=true`
+
+Interpretation:
+
+- the local `_videoReceiveQueue` drain callback is live and sees the same `IOSurface` pointer that later reaches the public `stream:didOutputSampleBuffer:ofType:` callback
+- the lead from the first live queue callback to the first public sample is only about `3.6ms`, so the public callback layer is not the primary ceiling
+- the live local drain callback is itself `60hz-like`, which means the practical cadence ceiling already exists at or before that local consumer boundary
+
+Additional passive hooks that were tested and still appear inactive on this public display-capture path:
+
 - `IOSurfaceRemoteRemoteClient`
   - `surfaceTransportHandleMessageEventCount=0`
 - `CMCaptureFrameReceiver`
@@ -525,11 +537,10 @@ Additional passive hooks that were tested and found inactive on this path:
 
 Interpretation:
 
-- the wrapper installed on `_videoReceiveQueue` but never observed a callback, which strongly suggests that the currently visible wrapper slot is not the active hot consumer for public display capture
 - the generic `BW*` graph hooks that looked promising from runtime class discovery are also not part of the active consumer path in this specific `SCStream` display-capture flow
 - the remaining live path is therefore likely either:
-  - still inside `RPDaemonProxy` / an unhooked `SCStream` consumer transition, or
-  - in additional dynamically loaded classes that were not part of the earlier fixed runtime inventory set
+  - in the queue scheduling and setup transition immediately ahead of the `_videoReceiveQueue` local drain callback, or
+  - in additional dynamically loaded classes that are still upstream of that callback and not yet hooked
 
 ## External clues worth keeping in mind
 
@@ -643,7 +654,15 @@ Interpretation:
 The current best lower-level model is now:
 
 - `SCStreamManager startRemoteQueue:streamID:` and `SCRemoteQueueXPCObject setRemoteQueue:/setQueueType:` are still the cleanest control-plane anchors
-- the active drain is more likely inside `SCStream` local consumer logic than in exported `FigRemoteQueueReceiver*`
+- the active drain is inside `SCStream` local consumer logic rather than in exported `FigRemoteQueueReceiver*`
+- the first live `_videoReceiveQueue` callback arrives about `15.75ms` after `stream-post-start-remote-video-state`
+- the raw immediate predecessor of that first callback is still microphone queue startup noise:
+  - `firstVideoQueueCallbackPrecedingEventKind=stream-start-remote-microphone-receive-queue`
+  - `firstVideoQueueCallbackPrecedingEventLeadMilliseconds=15.409625`
+- the last video-specific setup milestone before the first callback remains:
+  - `firstVideoQueueCallbackLastSetupEventKind=stream-post-start-remote-video-state`
+  - `firstVideoQueueCallbackLastSetupEventLeadMilliseconds=15.75475`
+- this means the next remaining ceiling to inspect is the queue scheduling boundary between `stream-post-start-remote-video-state` and the first `_videoReceiveQueue` callback, not the public sample callback itself
 - the next most promising technical target is still the local video receive path around:
   - `SCStream startRemoteVideoReceiveQueue:`
   - `SCStream collectStreamData`
