@@ -22,6 +22,11 @@ struct MDKAVFoundationScreenInputConfiguration: Equatable {
     let capturesMouseClicks: Bool
 }
 
+struct MDKAVFoundationVideoOutputConfiguration: Equatable {
+    let videoSettings: [String: AnyHashable]
+    let alwaysDiscardsLateVideoFrames: Bool
+}
+
 func makeMDKAVFoundationScreenInputConfiguration(
     for configuration: MDKCaptureConfiguration
 ) -> MDKAVFoundationScreenInputConfiguration {
@@ -29,6 +34,22 @@ func makeMDKAVFoundationScreenInputConfiguration(
         minFrameDuration: MDKFrameDuration(for: configuration.frameRate),
         capturesCursor: false,
         capturesMouseClicks: false
+    )
+}
+
+func makeMDKAVFoundationVideoOutputConfiguration(
+    for configuration: MDKCaptureConfiguration
+) -> MDKAVFoundationVideoOutputConfiguration {
+    return MDKAVFoundationVideoOutputConfiguration(
+        videoSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: configuration.pixelFormat),
+            kCVPixelBufferWidthKey as String: NSNumber(value: configuration.width),
+            kCVPixelBufferHeightKey as String: NSNumber(value: configuration.height),
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: AnyHashable],
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            AVVideoScalingModeKey: AVVideoScalingModeResizeAspect,
+        ],
+        alwaysDiscardsLateVideoFrames: true
     )
 }
 
@@ -91,13 +112,9 @@ final class MDKAVFoundationCaptureDriver: NSObject, MDKCaptureSessionDriver {
         session.addInput(screenInput)
 
         let output = AVCaptureVideoDataOutput()
-        output.videoSettings = [
-            kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: configuration.pixelFormat),
-            kCVPixelBufferWidthKey as String: NSNumber(value: configuration.width),
-            kCVPixelBufferHeightKey as String: NSNumber(value: configuration.height),
-            AVVideoScalingModeKey: AVVideoScalingModeResizeAspect,
-        ]
-        output.alwaysDiscardsLateVideoFrames = true
+        let outputConfiguration = makeMDKAVFoundationVideoOutputConfiguration(for: configuration)
+        output.videoSettings = outputConfiguration.videoSettings
+        output.alwaysDiscardsLateVideoFrames = outputConfiguration.alwaysDiscardsLateVideoFrames
         output.setSampleBufferDelegate(self, queue: queue)
 
         guard session.canAddOutput(output) else {

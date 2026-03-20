@@ -1,5 +1,6 @@
 import XCTest
 import CoreMedia
+import CoreVideo
 @testable import MacDisplayKit
 @testable import MacDisplayCaptureKit
 
@@ -72,6 +73,39 @@ final class MacDisplayCaptureSessionTests: XCTestCase {
         let screenInputConfiguration = makeMDKAVFoundationScreenInputConfiguration(for: configuration)
 
         XCTAssertEqual(screenInputConfiguration.minFrameDuration, CMTime(value: 1, timescale: 60))
+    }
+
+    func testAVFoundationVideoOutputConfigurationRequestsIOSurfaceBackedMetalCompatibleFrames() {
+        let configuration = MDKCaptureConfiguration(
+            displayID: 77,
+            width: 3840,
+            height: 2160,
+            frameRate: 120,
+            pixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+            backend: .avFoundation,
+            dynamicRangeMode: .hdrCanonical
+        )
+
+        let outputConfiguration = makeMDKAVFoundationVideoOutputConfiguration(for: configuration)
+
+        XCTAssertEqual(
+            outputConfiguration.videoSettings[kCVPixelBufferPixelFormatTypeKey as String] as? NSNumber,
+            NSNumber(value: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
+        )
+        XCTAssertEqual(
+            outputConfiguration.videoSettings[kCVPixelBufferWidthKey as String] as? NSNumber,
+            NSNumber(value: 3840)
+        )
+        XCTAssertEqual(
+            outputConfiguration.videoSettings[kCVPixelBufferHeightKey as String] as? NSNumber,
+            NSNumber(value: 2160)
+        )
+        XCTAssertEqual(
+            outputConfiguration.videoSettings[kCVPixelBufferMetalCompatibilityKey as String] as? Bool,
+            true
+        )
+        XCTAssertNotNil(outputConfiguration.videoSettings[kCVPixelBufferIOSurfacePropertiesKey as String])
+        XCTAssertEqual(outputConfiguration.alwaysDiscardsLateVideoFrames, true)
     }
 
     func testStopIsSafeBeforeStart() throws {
