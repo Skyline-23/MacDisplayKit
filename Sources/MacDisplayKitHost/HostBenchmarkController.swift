@@ -138,6 +138,16 @@ final class MDKHostBenchmarkController {
         )
     }
 
+    func traceScreenCaptureKitPassiveHandshake(
+        displayID: UInt32,
+        sampleDuration: TimeInterval
+    ) throws -> MDKScreenCaptureKitProxyHandshakeTrace {
+        try MDKScreenCaptureKitProxyHandshakeTracer.tracePassive(
+            displayID: displayID,
+            sampleDuration: sampleDuration
+        )
+    }
+
     func traceScreenCaptureKitTiming(
         displayID: UInt32,
         sampleDuration: TimeInterval

@@ -115,8 +115,31 @@ public enum MDKScreenCaptureKitProxyHandshakeTracer {
         displayID: UInt32,
         sampleDuration: TimeInterval
     ) throws -> MDKScreenCaptureKitProxyHandshakeTrace {
+        try trace(
+            displayID: displayID,
+            sampleDuration: sampleDuration,
+            mode: .consuming
+        )
+    }
+
+    public static func tracePassive(
+        displayID: UInt32,
+        sampleDuration: TimeInterval
+    ) throws -> MDKScreenCaptureKitProxyHandshakeTrace {
+        try trace(
+            displayID: displayID,
+            sampleDuration: sampleDuration,
+            mode: .passive
+        )
+    }
+
+    private static func trace(
+        displayID: UInt32,
+        sampleDuration: TimeInterval,
+        mode: MDKScreenCaptureKitProxyHandshakeShim.Mode
+    ) throws -> MDKScreenCaptureKitProxyHandshakeTrace {
         var nsError: NSError?
-        guard let payload = MDKScreenCaptureKitProxyHandshakeShim.function?(
+        guard let payload = MDKScreenCaptureKitProxyHandshakeShim.function(for: mode)?(
             UInt(displayID),
             sampleDuration,
             &nsError
@@ -135,12 +158,38 @@ private enum MDKScreenCaptureKitProxyHandshakeShim {
     typealias Function =
         @convention(c) (UInt, TimeInterval, UnsafeMutablePointer<NSError?>?) -> NSDictionary?
 
-    static let function: Function? = {
+    enum Mode {
+        case consuming
+        case passive
+    }
+
+    static func function(for mode: Mode) -> Function? {
+        switch mode {
+        case .consuming:
+            return consumingFunction
+        case .passive:
+            return passiveFunction
+        }
+    }
+
+    private static let consumingFunction: Function? = {
         guard let handle = dlopen(nil, RTLD_NOW) else {
             return nil
         }
 
         guard let symbol = dlsym(handle, "MDKShimVideoTraceScreenCaptureKitProxyHandshake") else {
+            return nil
+        }
+
+        return unsafeBitCast(symbol, to: Function.self)
+    }()
+
+    private static let passiveFunction: Function? = {
+        guard let handle = dlopen(nil, RTLD_NOW) else {
+            return nil
+        }
+
+        guard let symbol = dlsym(handle, "MDKShimVideoTraceScreenCaptureKitPassiveHandshake") else {
             return nil
         }
 

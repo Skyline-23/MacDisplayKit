@@ -268,6 +268,7 @@ static void *MDKActiveFigRemoteQueueReceiver = nullptr;
 static dispatch_queue_t MDKActiveFigRemoteQueueReceiverQueue = nil;
 static dispatch_semaphore_t MDKActiveFigRemoteQueueReceiverSemaphore = nil;
 static NSMutableDictionary<NSString *, id> *MDKActiveFigRemoteQueueReceiverState = nil;
+static BOOL MDKActiveSCKAllowPrivateQueueProbes = NO;
 
 struct MDKFigRemoteQueueMessage {
     const void *payloadBlock;
@@ -997,6 +998,7 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
         MDKActiveFigRemoteQueueReceiverQueue = nil;
         MDKActiveFigRemoteQueueReceiverSemaphore = nil;
         MDKActiveFigRemoteQueueReceiverState = nil;
+        MDKActiveSCKAllowPrivateQueueProbes = NO;
     }
 }
 
@@ -1998,7 +2000,7 @@ static void MDKSwizzledStartRemoteReceiveQueue(id self, SEL _cmd, id queue) {
 static void MDKSwizzledStartRemoteVideoReceiveQueue(id self, SEL _cmd, id queue) {
     BOOL needsPrime = NO;
     @synchronized(MDKActiveSCKTraceLock) {
-        needsPrime = (MDKActiveSCRemoteQueueWrapper == nullptr);
+        needsPrime = MDKActiveSCKAllowPrivateQueueProbes && (MDKActiveSCRemoteQueueWrapper == nullptr);
     }
     if (needsPrime) {
         NSDictionary<NSString *, id> *videoQueueEntry = MDKCopySCKRemoteQueueEntryForType(1);
@@ -2781,6 +2783,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     CFRelease(mode);
 
     MDKResetSCKTraceState(displayID, timeout);
+    @synchronized(MDKActiveSCKTraceLock) {
+        MDKActiveSCKAllowPrivateQueueProbes = includePrivateQueueProbes;
+    }
     MDKAppendSCKTraceNote([NSString stringWithFormat:@"class.BWRemoteQueueSinkNode.present=%@", NSClassFromString(@"BWRemoteQueueSinkNode") != Nil ? @"true" : @"false"]);
     MDKAppendSCKTraceNote([NSString stringWithFormat:@"class.BWRemoteQueueSinkNode.renderSampleBuffer:forInput:=%@", class_getInstanceMethod(NSClassFromString(@"BWRemoteQueueSinkNode"), sel_registerName("renderSampleBuffer:forInput:")) != nullptr ? @"true" : @"false"]);
     MDKAppendSCKTraceNote([NSString stringWithFormat:@"class.BWRemoteQueueSinkNode.handleDroppedSample:forInput:=%@", class_getInstanceMethod(NSClassFromString(@"BWRemoteQueueSinkNode"), sel_registerName("handleDroppedSample:forInput:")) != nullptr ? @"true" : @"false"]);
@@ -3950,6 +3955,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKPublicTimingTrace(
     CFRelease(mode);
 
     MDKResetSCKTraceState(displayID, timeout);
+    @synchronized(MDKActiveSCKTraceLock) {
+        MDKActiveSCKAllowPrivateQueueProbes = NO;
+    }
 
     __block id display = nil;
     __block NSError *shareableContentError = nil;
@@ -4769,6 +4777,14 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoTraceScreenCaptureKitProxyH
     NSError * _Nullable * _Nullable error
 ) {
     return MDKCreateSCKProxyHandshakeTrace(displayID, timeout, YES, error);
+}
+
+NSDictionary<NSString *, id> * _Nullable MDKShimVideoTraceScreenCaptureKitPassiveHandshake(
+    NSUInteger displayID,
+    NSTimeInterval timeout,
+    NSError * _Nullable * _Nullable error
+) {
+    return MDKCreateSCKProxyHandshakeTrace(displayID, timeout, NO, error);
 }
 
 NSDictionary<NSString *, id> * _Nullable MDKShimVideoTraceScreenCaptureKitTiming(

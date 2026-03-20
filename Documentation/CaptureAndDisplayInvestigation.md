@@ -83,6 +83,7 @@ The host now supports two `SCStream` investigation entry points:
 - command:
   - `MacDisplayKitHost --experimental-screencapturekit-timing-display <displayID> --sample-duration <seconds> --json`
   - `MacDisplayKitHost --experimental-screencapturekit-timing-display <displayID> --sample-duration <seconds> --with-metal-stimulus --json`
+  - `MacDisplayKitHost --experimental-screencapturekit-passive-handshake-display <displayID> --sample-duration <seconds> --json`
   - `MacDisplayKitHost --experimental-screencapturekit-proxy-handshake-display <displayID> --sample-duration <seconds> --json`
 - output includes:
   - sample buffer arrival delta histogram
@@ -94,6 +95,7 @@ The host now supports two `SCStream` investigation entry points:
 Interpretation of the two entry points:
 
 - the timing trace is intentionally public-only and measures the delivery behavior visible through `stream:didOutputSampleBuffer:ofType:`
+- the passive handshake trace records the same queue setup milestones as the proxy handshake trace, but does not prime any private queue wrapper or `FigRemoteQueueReceiver`
 - the proxy-handshake trace enables private queue tracing and queue-object introspection around the same `SCStream` start path
 
 Important harness bug that was fixed:
@@ -286,6 +288,44 @@ Current important failure mode:
 - current interpretation: the active probe path is stealing the receive right before public `SCStream` sample delivery begins
 
 This line of work remains useful for finding a lower-level capture consumer, but it is not yet a performance path by itself.
+
+### Passive handshake tracing
+
+The host now exposes the same handshake/startup path without the consuming private queue probes:
+
+- command:
+  - `MacDisplayKitHost --experimental-screencapturekit-passive-handshake-display <displayID> --sample-duration <seconds> --json`
+
+Interpretation:
+
+- this mode still records:
+  - `startCapture:withContentFilter:...`
+  - remote queue setup
+  - `SCRemoteQueueXPCObject` classification
+  - public sample delivery
+- but it does not call:
+  - `SCRemoteQueue_CreateReceiverQueue`
+  - `FigRemoteQueueReceiverCreateFromXPCObject`
+- this is the safe bridge between:
+  - queue/setup discovery
+  - public `stream:didOutputSampleBuffer:ofType:`
+
+Current use:
+
+- use the passive handshake trace when the goal is to connect queue setup to the first healthy public sample without consuming the `IOSurfaceReceiver` mach right
+- use the consuming proxy-handshake trace only when the goal is to inspect receiver creation behavior itself
+
+Recent passive-handshake sample on display `2`:
+
+- `sampleBufferEventCount=39`
+- public `stream:didOutputSampleBuffer:ofType:` delivery remained healthy
+- the same run still did not observe `RPDaemonProxy proxyCoreGraphicsWithMethodType:config:machPort:completionHandler:`
+
+Interpretation:
+
+- queue setup and public sample delivery can be correlated in one healthy session without consuming the queue
+- `proxyCoreGraphicsWithMethodType:config:machPort:completionHandler:` is not required for the public sample path we are currently observing
+- the next useful split is no longer “can we keep public samples alive,” but “which earlier queue/setup transition best predicts the first healthy sample”
 
 ## External clues worth keeping in mind
 
