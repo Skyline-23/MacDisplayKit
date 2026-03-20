@@ -82,6 +82,28 @@ final class MDKHostBenchmarkController {
         )
     }
 
+    func probePrivateDisplayStream(
+        displayID: UInt32
+    ) throws -> MDKPrivateCaptureProbeResult {
+        try MDKPrivateCapturePrototypeProbe.createDisplayStream(displayID: displayID)
+    }
+
+    func probePrivateDisplayStream(
+        displayID: UInt32,
+        configuration: MDKPrivateDisplayStreamProbeConfiguration
+    ) throws -> MDKPrivateCaptureProbeResult {
+        try MDKPrivateCapturePrototypeProbe.createDisplayStream(
+            displayID: displayID,
+            configuration: configuration
+        )
+    }
+
+    func probePrivateDisplayStreamMatrix(
+        displayID: UInt32
+    ) throws -> [MDKPrivateCaptureProbeResult] {
+        try MDKPrivateCapturePrototypeProbe.createDisplayStreamMatrix(displayID: displayID)
+    }
+
     func benchmarkPrivateCapture(
         displayID: UInt32,
         requestExtendedRange: Bool,

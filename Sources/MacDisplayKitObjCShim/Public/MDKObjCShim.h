@@ -15,6 +15,7 @@ FOUNDATION_EXPORT BOOL MDKShimVideoPrivateDesktopCaptureAvailable(void);
 FOUNDATION_EXPORT BOOL MDKShimVideoPrivateDisplayIOSurfaceCaptureAvailable(void);
 FOUNDATION_EXPORT BOOL MDKShimVideoPrivateDisplayIOSurfaceCaptureWithOptionsAvailable(void);
 FOUNDATION_EXPORT BOOL MDKShimVideoPrivateDisplayIOSurfaceProxyCaptureAvailable(void);
+FOUNDATION_EXPORT BOOL MDKShimVideoPrivateDisplayStreamProxyAvailable(void);
 FOUNDATION_EXPORT BOOL MDKShimVideoPrivateCaptureExtendedRangeOptionAvailable(void);
 FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureSingleFrame(
     NSUInteger displayID,
@@ -36,6 +37,17 @@ FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivatePr
     NSUInteger displayID,
     BOOL requestExtendedRange,
     NSTimeInterval sampleDuration,
+    NSError * _Nullable * _Nullable error
+);
+FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateDisplayStreamProbe(
+    NSUInteger displayID,
+    NSError * _Nullable * _Nullable error
+);
+FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateDisplayStreamProbeWithParameters(
+    NSUInteger displayID,
+    NSInteger streamPropertiesProfile,
+    NSInteger portMode,
+    NSInteger selectiveSharingMode,
     NSError * _Nullable * _Nullable error
 );
 FOUNDATION_EXPORT NSArray<NSString *> *MDKShimMicrophoneNames(void);

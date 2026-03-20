@@ -7,6 +7,8 @@ private enum MDKHostCLICommand {
     case privateCapturePlan(json: Bool)
     case privateCaptureProbe(displayID: UInt32, requestExtendedRange: Bool, json: Bool)
     case privateProxyCaptureProbe(displayID: UInt32, requestExtendedRange: Bool, json: Bool)
+    case privateDisplayStreamProbe(displayID: UInt32, json: Bool)
+    case privateDisplayStreamProbeMatrix(displayID: UInt32, json: Bool)
     case privateCaptureBenchmark(displayID: UInt32, requestExtendedRange: Bool, sampleDuration: TimeInterval, json: Bool)
     case privateProxyCaptureBenchmark(displayID: UInt32, requestExtendedRange: Bool, sampleDuration: TimeInterval, json: Bool)
     case benchmark(
@@ -99,6 +101,42 @@ enum MDKHostCommandLine {
                 return result.status == 0 && result.surfacePopulated ? 0 : 2
             } catch {
                 fputs("Failed to run private proxy capture probe: \(error)\n", stderr)
+                return 1
+            }
+        case .privateDisplayStreamProbe(let displayID, let json):
+            do {
+                let result = try controller.probePrivateDisplayStream(displayID: displayID)
+                if json {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    let data = try encoder.encode(result)
+                    if let text = String(data: data, encoding: .utf8) {
+                        print(text)
+                    }
+                } else {
+                    print(MDKHostBenchmarkFormatter.formatPrivateCaptureProbeResult(result))
+                }
+                return result.status == 0 ? 0 : 2
+            } catch {
+                fputs("Failed to run private display stream probe: \(error)\n", stderr)
+                return 1
+            }
+        case .privateDisplayStreamProbeMatrix(let displayID, let json):
+            do {
+                let results = try controller.probePrivateDisplayStreamMatrix(displayID: displayID)
+                if json {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    let data = try encoder.encode(results)
+                    if let text = String(data: data, encoding: .utf8) {
+                        print(text)
+                    }
+                } else {
+                    print(MDKHostBenchmarkFormatter.formatPrivateCaptureProbeResults(results))
+                }
+                return results.allSatisfy { $0.status == 0 } ? 0 : 2
+            } catch {
+                fputs("Failed to run private display stream probe matrix: \(error)\n", stderr)
                 return 1
             }
         case .privateCaptureBenchmark(let displayID, let requestExtendedRange, let sampleDuration, let json):
@@ -242,6 +280,24 @@ enum MDKHostCommandLine {
             return .privateProxyCaptureProbe(
                 displayID: displayID,
                 requestExtendedRange: tokens.contains("--experimental-private-hw-capture-proxy-probe-hdr"),
+                json: tokens.contains("--json")
+            )
+        }
+
+        if let probeDisplayIndex = tokens.firstIndex(of: "--experimental-private-hw-capture-stream-probe-display"),
+           tokens.indices.contains(probeDisplayIndex + 1),
+           let displayID = UInt32(tokens[probeDisplayIndex + 1]) {
+            return .privateDisplayStreamProbe(
+                displayID: displayID,
+                json: tokens.contains("--json")
+            )
+        }
+
+        if let probeDisplayIndex = tokens.firstIndex(of: "--experimental-private-hw-capture-stream-probe-matrix-display"),
+           tokens.indices.contains(probeDisplayIndex + 1),
+           let displayID = UInt32(tokens[probeDisplayIndex + 1]) {
+            return .privateDisplayStreamProbeMatrix(
+                displayID: displayID,
                 json: tokens.contains("--json")
             )
         }

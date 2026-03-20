@@ -38,12 +38,68 @@ enum MDKHostBenchmarkFormatter {
         if let proxiedFrameAvailable = result.proxiedFrameAvailable {
             lines.append("Proxy frame available: \(proxiedFrameAvailable ? "yes" : "no")")
         }
+        if let portStatus = result.portStatus {
+            lines.append("Port status: \(portStatus)")
+        }
+        if let portTypeStatus = result.portTypeStatus {
+            lines.append("Port type status: \(portTypeStatus)")
+        }
+        if let portType = result.portType {
+            lines.append(String(format: "Port type: 0x%08X", portType))
+        }
+        if let portMessageCount = result.portMessageCount {
+            lines.append("Port message count: \(portMessageCount)")
+        }
+        if let portQueueLimit = result.portQueueLimit {
+            lines.append("Port queue limit: \(portQueueLimit)")
+        }
+        if let portSequenceNumber = result.portSequenceNumber {
+            lines.append("Port sequence number: \(portSequenceNumber)")
+        }
+        if let portMessagesWaiting = result.portMessagesWaiting {
+            lines.append("Port messages waiting: \(portMessagesWaiting ? "yes" : "no")")
+        }
+        if let streamPropertiesProfile = result.streamPropertiesProfile {
+            lines.append("Stream properties profile: \(streamPropertiesProfile)")
+        }
+        if let portMode = result.portMode {
+            lines.append("Port mode: \(portMode)")
+        }
+        if let selectiveSharingMode = result.selectiveSharingMode {
+            lines.append("Selective sharing mode: \(selectiveSharingMode)")
+        }
+        if let selectiveSharingHigh = result.selectiveSharingHigh,
+           let selectiveSharingLow = result.selectiveSharingLow {
+            lines.append(
+                String(
+                    format: "Selective sharing token: 0x%016llX:0x%016llX",
+                    selectiveSharingHigh,
+                    selectiveSharingLow
+                )
+            )
+        }
         lines.append("")
         lines.append("Notes:")
         for note in result.notes {
             lines.append("  - \(note)")
         }
         return lines.joined(separator: "\n")
+    }
+
+    static func formatPrivateCaptureProbeResults(
+        _ results: [MDKPrivateCaptureProbeResult]
+    ) -> String {
+        results
+            .enumerated()
+            .map { index, result in
+                let header = "Private hardware capture probe #\(index + 1)"
+                let body = formatPrivateCaptureProbeResult(result)
+                    .components(separatedBy: "\n")
+                    .dropFirst()
+                    .joined(separator: "\n")
+                return header + "\n" + body
+            }
+            .joined(separator: "\n\n")
     }
 
     static func formatPrivateCapturePrototypePlan(
@@ -57,6 +113,7 @@ enum MDKHostBenchmarkFormatter {
         lines.append("Display->IOSurface available: \(plan.capabilities.displayIOSurfaceCaptureAvailable ? "yes" : "no")")
         lines.append("Display->IOSurface+options available: \(plan.capabilities.displayIOSurfaceCaptureWithOptionsAvailable ? "yes" : "no")")
         lines.append("Display->IOSurface proxy available: \(plan.capabilities.displayIOSurfaceProxyCaptureAvailable ? "yes" : "no")")
+        lines.append("Display stream proxy available: \(plan.capabilities.displayStreamProxyAvailable ? "yes" : "no")")
         lines.append("Extended range option available: \(plan.capabilities.extendedRangeOptionAvailable ? "yes" : "no")")
         lines.append("")
         lines.append("Notes:")

@@ -4,6 +4,7 @@
 #import <IOSurface/IOSurface.h>
 #import <dlfcn.h>
 #import <mach/mach.h>
+#import <unistd.h>
 
 #import "MDKObjCShim.h"
 
@@ -139,8 +140,80 @@ BOOL MDKShimVideoPrivateDisplayIOSurfaceProxyCaptureAvailable(void) {
     return MDKLookupScreenCaptureKitSymbol("SLSHWCaptureDisplayIntoIOSurfaceProxying") != nullptr;
 }
 
+BOOL MDKShimVideoPrivateDisplayStreamProxyAvailable(void) {
+    return MDKLookupScreenCaptureKitSymbol("SLSDisplayStreamCreateProxying") != nullptr;
+}
+
 BOOL MDKShimVideoPrivateCaptureExtendedRangeOptionAvailable(void) {
     return MDKLookupCaptureSymbol("kSLSCaptureExtendedRange") != nullptr;
+}
+
+static mach_port_t MDKCreateProbePortWithMode(NSInteger portMode, NSError * _Nullable * _Nullable error);
+
+static mach_port_t MDKCreateProbePortWithMode(NSInteger portMode, NSError * _Nullable * _Nullable error) {
+    mach_port_t port = MACH_PORT_NULL;
+    kern_return_t status = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &port);
+    if (status != KERN_SUCCESS) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:static_cast<NSInteger>(status)
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Failed to allocate a mach receive right for the private display stream probe."
+                                     }];
+        }
+        return MACH_PORT_NULL;
+    }
+
+    if (portMode == 0) {
+        status = mach_port_insert_right(mach_task_self(), port, port, MACH_MSG_TYPE_MAKE_SEND);
+        if (status != KERN_SUCCESS) {
+            mach_port_mod_refs(mach_task_self(), port, MACH_PORT_RIGHT_RECEIVE, -1);
+            if (error != nullptr) {
+                *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                             code:static_cast<NSInteger>(status)
+                                         userInfo:@{
+                                             NSLocalizedDescriptionKey: @"Failed to install a send right for the private display stream probe port."
+                                         }];
+            }
+            return MACH_PORT_NULL;
+        }
+    }
+
+    return port;
+}
+
+static void MDKDisposeProbePort(mach_port_t port) {
+    if (port == MACH_PORT_NULL) {
+        return;
+    }
+
+    mach_port_mod_refs(mach_task_self(), port, MACH_PORT_RIGHT_SEND, -1);
+    mach_port_mod_refs(mach_task_self(), port, MACH_PORT_RIGHT_RECEIVE, -1);
+}
+
+static NSDictionary<NSString *, id> *MDKCreateMachPortSnapshot(mach_port_t port) {
+    mach_port_status_t receiveStatus = {};
+    mach_msg_type_number_t receiveStatusCount = MACH_PORT_RECEIVE_STATUS_COUNT;
+    const kern_return_t status = mach_port_get_attributes(
+        mach_task_self(),
+        port,
+        MACH_PORT_RECEIVE_STATUS,
+        reinterpret_cast<mach_port_info_t>(&receiveStatus),
+        &receiveStatusCount
+    );
+
+    mach_port_type_t portType = 0;
+    const kern_return_t typeStatus = mach_port_type(mach_task_self(), port, &portType);
+
+    return @{
+        @"portStatus": @(status),
+        @"portTypeStatus": @(typeStatus),
+        @"portType": @(portType),
+        @"portMessageCount": status == KERN_SUCCESS ? @(receiveStatus.mps_msgcount) : @0,
+        @"portQueueLimit": status == KERN_SUCCESS ? @(receiveStatus.mps_qlimit) : @0,
+        @"portSequenceNumber": status == KERN_SUCCESS ? @(receiveStatus.mps_seqno) : @0,
+        @"portMessagesWaiting": @((status == KERN_SUCCESS) && (receiveStatus.mps_msgcount > 0)),
+    };
 }
 
 static NSDictionary<NSString *, id> * _Nullable MDKCreatePrivateCaptureSurfacePayload(
@@ -387,6 +460,230 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateProxyCaptureBenchmar
         sampleDuration,
         YES
     );
+}
+
+NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateDisplayStreamProbe(
+    NSUInteger displayID,
+    NSError * _Nullable * _Nullable error
+) {
+    return MDKShimVideoPrivateDisplayStreamProbeWithParameters(displayID, 0, 0, 0, error);
+}
+
+NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateDisplayStreamProbeWithParameters(
+    NSUInteger displayID,
+    NSInteger streamPropertiesProfile,
+    NSInteger portMode,
+    NSInteger selectiveSharingMode,
+    NSError * _Nullable * _Nullable error
+) {
+    using MDKPrivateDisplayStreamCreateProxyFn =
+        int (*)(std::int32_t, std::int32_t, std::int32_t, std::int32_t, CFDictionaryRef, mach_port_t, std::uint64_t, std::uint64_t);
+    auto symbol = reinterpret_cast<MDKPrivateDisplayStreamCreateProxyFn>(
+        MDKLookupScreenCaptureKitSymbol("SLSDisplayStreamCreateProxying")
+    );
+    if (symbol == nullptr) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:5
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"SLSDisplayStreamCreateProxying is unavailable."
+                                     }];
+        }
+        return nil;
+    }
+
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(static_cast<CGDirectDisplayID>(displayID));
+    if (mode == nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:6
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Unable to resolve the current display mode for the private display stream probe."
+                                     }];
+        }
+        return nil;
+    }
+
+    const std::int32_t width = static_cast<std::int32_t>(std::max<std::size_t>(CGDisplayModeGetPixelWidth(mode), 1));
+    const std::int32_t height = static_cast<std::int32_t>(std::max<std::size_t>(CGDisplayModeGetPixelHeight(mode), 1));
+    const CGFloat logicalWidth = static_cast<CGFloat>(std::max<std::size_t>(CGDisplayModeGetWidth(mode), 1));
+    const CGFloat logicalHeight = static_cast<CGFloat>(std::max<std::size_t>(CGDisplayModeGetHeight(mode), 1));
+    CFRelease(mode);
+
+    NSError *portError = nil;
+    const mach_port_t port = MDKCreateProbePortWithMode(portMode, &portError);
+    if (port == MACH_PORT_NULL) {
+        if (error != nullptr) {
+            *error = portError;
+        }
+        return nil;
+    }
+
+    const std::int32_t pixelFormat = static_cast<std::int32_t>(kCVPixelFormatType_32BGRA);
+    NSDictionary *minimalProperties = @{
+        (__bridge NSString *) kCGDisplayStreamShowCursor: @NO,
+        (__bridge NSString *) kCGDisplayStreamMinimumFrameTime: @0,
+        (__bridge NSString *) kCGDisplayStreamSourceRect: (__bridge_transfer NSDictionary *) CGRectCreateDictionaryRepresentation(
+            CGRectMake(0, 0, logicalWidth, logicalHeight)
+        ),
+        (__bridge NSString *) kCGDisplayStreamDestinationRect: (__bridge_transfer NSDictionary *) CGRectCreateDictionaryRepresentation(
+            CGRectMake(0, 0, width, height)
+        ),
+        (__bridge NSString *) kCGDisplayStreamPreserveAspectRatio: @NO,
+        (__bridge NSString *) kCGDisplayStreamQueueDepth: @3,
+    };
+    NSDictionary *rectlessMinimalProperties = @{
+        (__bridge NSString *) kCGDisplayStreamShowCursor: @NO,
+        (__bridge NSString *) kCGDisplayStreamMinimumFrameTime: @0,
+        (__bridge NSString *) kCGDisplayStreamPreserveAspectRatio: @NO,
+        (__bridge NSString *) kCGDisplayStreamQueueDepth: @3,
+    };
+    NSDictionary *timedMinimalProperties = @{
+        (__bridge NSString *) kCGDisplayStreamShowCursor: @NO,
+        (__bridge NSString *) kCGDisplayStreamMinimumFrameTime: @((1.0 / 120.0)),
+        (__bridge NSString *) kCGDisplayStreamSourceRect: (__bridge_transfer NSDictionary *) CGRectCreateDictionaryRepresentation(
+            CGRectMake(0, 0, logicalWidth, logicalHeight)
+        ),
+        (__bridge NSString *) kCGDisplayStreamDestinationRect: (__bridge_transfer NSDictionary *) CGRectCreateDictionaryRepresentation(
+            CGRectMake(0, 0, width, height)
+        ),
+        (__bridge NSString *) kCGDisplayStreamPreserveAspectRatio: @NO,
+        (__bridge NSString *) kCGDisplayStreamQueueDepth: @2,
+    };
+    NSMutableDictionary *fullProperties = [minimalProperties mutableCopy];
+    fullProperties[@"IOSurfaceProperties"] = @{};
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    if (colorSpace != nil) {
+        fullProperties[(__bridge NSString *) kCGDisplayStreamColorSpace] = (__bridge id) colorSpace;
+    }
+    NSDictionary *streamProperties = nil;
+    switch (streamPropertiesProfile) {
+        case 1:
+            streamProperties = rectlessMinimalProperties;
+            break;
+        case 2:
+            streamProperties = timedMinimalProperties;
+            break;
+        case 3:
+            streamProperties = nil;
+            break;
+        case 4:
+            streamProperties = fullProperties;
+            break;
+        case 0:
+        default:
+            streamProperties = minimalProperties;
+            break;
+    }
+    if (colorSpace != nil) {
+        CFRelease(colorSpace);
+    }
+    std::uint64_t selectiveSharingHi = 0;
+    std::uint64_t selectiveSharingLo = 0;
+    switch (selectiveSharingMode) {
+        case 1:
+            selectiveSharingHi = static_cast<std::uint64_t>(displayID);
+            selectiveSharingLo = static_cast<std::uint64_t>(displayID);
+            break;
+        case 2:
+            selectiveSharingHi = 0xA5A5A5A5A5A5A5A5ULL;
+            selectiveSharingLo = 0x5A5A5A5A5A5A5A5AULL;
+            break;
+        case 0:
+        default:
+            break;
+    }
+    const int status = symbol(
+        static_cast<std::int32_t>(displayID),
+        width,
+        height,
+        pixelFormat,
+        (__bridge CFDictionaryRef) streamProperties,
+        port,
+        selectiveSharingHi,
+        selectiveSharingLo
+    );
+    usleep(100 * 1000);
+
+    NSDictionary<NSString *, id> *portSnapshot = MDKCreateMachPortSnapshot(port);
+    MDKDisposeProbePort(port);
+
+    NSString *profileLabel = @"minimal";
+    switch (streamPropertiesProfile) {
+        case 1:
+            profileLabel = @"rectless-minimal";
+            break;
+        case 2:
+            profileLabel = @"timed-minimal";
+            break;
+        case 3:
+            profileLabel = @"nil";
+            break;
+        case 4:
+            profileLabel = @"full-public";
+            break;
+        default:
+            break;
+    }
+
+    NSString *portModeLabel = @"receive-send";
+    switch (portMode) {
+        case 1:
+            portModeLabel = @"receive-only";
+            break;
+        default:
+            break;
+    }
+
+    NSString *selectiveSharingLabel = @"zero";
+    switch (selectiveSharingMode) {
+        case 1:
+            selectiveSharingLabel = @"display-id";
+            break;
+        case 2:
+            selectiveSharingLabel = @"fixed-nonzero";
+            break;
+        default:
+            break;
+    }
+
+    if (status != 0 && error != nullptr) {
+        *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                     code:status
+                                 userInfo:@{
+                                     NSLocalizedDescriptionKey: @"SLSDisplayStreamCreateProxying returned a non-zero status."
+                                 }];
+    }
+
+    return @{
+        @"entryPoint": @"sls-display-stream-proxying",
+        @"displayID": @(displayID),
+        @"surfaceWidth": @(width),
+        @"surfaceHeight": @(height),
+        @"bytesPerRow": @0,
+        @"pixelFormat": @(static_cast<std::uint32_t>(pixelFormat)),
+        @"sampleWord": @0,
+        @"status": @(status),
+        @"surfacePopulated": @NO,
+        @"requestedExtendedRange": @NO,
+        @"extendedRangeApplied": @NO,
+        @"streamPropertiesProfile": profileLabel,
+        @"portMode": portModeLabel,
+        @"selectiveSharingMode": selectiveSharingLabel,
+        @"selectiveSharingHigh": @(selectiveSharingHi),
+        @"selectiveSharingLow": @(selectiveSharingLo),
+        @"notes": @[
+            @"Uses SLSDisplayStreamCreateProxying with the current pixel size and a configurable CGDisplayStream-style properties dictionary.",
+            @"The probe only verifies stream creation status and whether the supplied port shows activity after the create call."
+        ],
+        @"portStatus": portSnapshot[@"portStatus"] ?: @0,
+        @"portTypeStatus": portSnapshot[@"portTypeStatus"] ?: @0,
+        @"portType": portSnapshot[@"portType"] ?: @0,
+        @"portMessageCount": portSnapshot[@"portMessageCount"] ?: @0,
+        @"portQueueLimit": portSnapshot[@"portQueueLimit"] ?: @0,
+        @"portSequenceNumber": portSnapshot[@"portSequenceNumber"] ?: @0,
+        @"portMessagesWaiting": portSnapshot[@"portMessagesWaiting"] ?: @NO,
+    };
 }
 
 NSArray<NSString *> *MDKShimMicrophoneNames(void) {

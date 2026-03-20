@@ -28,6 +28,7 @@ final class MacDisplayKitTests: XCTestCase {
             displayIOSurfaceCaptureAvailable: false,
             displayIOSurfaceCaptureWithOptionsAvailable: true,
             displayIOSurfaceProxyCaptureAvailable: false,
+            displayStreamProxyAvailable: false,
             extendedRangeOptionAvailable: true
         )
 
@@ -43,12 +44,15 @@ final class MacDisplayKitTests: XCTestCase {
             capabilities.hasAnyHardwareCaptureSurface,
             capabilities.desktopCaptureAvailable ||
                 capabilities.displayIOSurfaceCaptureAvailable ||
-                capabilities.displayIOSurfaceCaptureWithOptionsAvailable
+                capabilities.displayIOSurfaceCaptureWithOptionsAvailable ||
+                capabilities.displayIOSurfaceProxyCaptureAvailable ||
+                capabilities.displayStreamProxyAvailable
         )
         XCTAssertEqual(
             capabilities.supportsIOSurfaceDisplayCapture,
             capabilities.displayIOSurfaceCaptureAvailable ||
-                capabilities.displayIOSurfaceCaptureWithOptionsAvailable
+                capabilities.displayIOSurfaceCaptureWithOptionsAvailable ||
+                capabilities.displayIOSurfaceProxyCaptureAvailable
         )
         if capabilities.supportsHDRHardwareCaptureHints {
             XCTAssertTrue(capabilities.supportsIOSurfaceDisplayCapture)
@@ -63,6 +67,7 @@ final class MacDisplayKitTests: XCTestCase {
                 displayIOSurfaceCaptureAvailable: true,
                 displayIOSurfaceCaptureWithOptionsAvailable: true,
                 displayIOSurfaceProxyCaptureAvailable: false,
+                displayStreamProxyAvailable: false,
                 extendedRangeOptionAvailable: true
             )
         )
@@ -79,6 +84,7 @@ final class MacDisplayKitTests: XCTestCase {
                 displayIOSurfaceCaptureAvailable: true,
                 displayIOSurfaceCaptureWithOptionsAvailable: false,
                 displayIOSurfaceProxyCaptureAvailable: false,
+                displayStreamProxyAvailable: false,
                 extendedRangeOptionAvailable: false
             )
         )
@@ -94,6 +100,7 @@ final class MacDisplayKitTests: XCTestCase {
                 displayIOSurfaceCaptureAvailable: false,
                 displayIOSurfaceCaptureWithOptionsAvailable: false,
                 displayIOSurfaceProxyCaptureAvailable: false,
+                displayStreamProxyAvailable: false,
                 extendedRangeOptionAvailable: false
             )
         )
@@ -109,6 +116,7 @@ final class MacDisplayKitTests: XCTestCase {
                 displayIOSurfaceCaptureAvailable: false,
                 displayIOSurfaceCaptureWithOptionsAvailable: false,
                 displayIOSurfaceProxyCaptureAvailable: false,
+                displayStreamProxyAvailable: false,
                 extendedRangeOptionAvailable: false
             )
         )
@@ -132,6 +140,18 @@ final class MacDisplayKitTests: XCTestCase {
             requestedExtendedRange: false,
             extendedRangeApplied: false,
             proxiedFrameAvailable: nil,
+            portStatus: nil,
+            portTypeStatus: nil,
+            portType: nil,
+            portMessageCount: nil,
+            portQueueLimit: nil,
+            portSequenceNumber: nil,
+            portMessagesWaiting: nil,
+            streamPropertiesProfile: nil,
+            portMode: nil,
+            selectiveSharingMode: nil,
+            selectiveSharingHigh: nil,
+            selectiveSharingLow: nil,
             notes: [
                 "Uses the private SDR-safe probe path."
             ]
@@ -157,6 +177,13 @@ final class MacDisplayKitTests: XCTestCase {
             "requestedExtendedRange": NSNumber(value: false),
             "extendedRangeApplied": NSNumber(value: false),
             "proxiedFrameAvailable": NSNumber(value: true),
+            "portStatus": NSNumber(value: 0),
+            "portTypeStatus": NSNumber(value: 0),
+            "portType": NSNumber(value: 17),
+            "portMessageCount": NSNumber(value: 3),
+            "portQueueLimit": NSNumber(value: 5),
+            "portSequenceNumber": NSNumber(value: 7),
+            "portMessagesWaiting": NSNumber(value: true),
             "notes": ["payload parsed"]
         ]
 
@@ -171,7 +198,45 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(result.captureValue, 5678)
         XCTAssertTrue(result.surfacePopulated)
         XCTAssertEqual(result.proxiedFrameAvailable, true)
+        XCTAssertEqual(result.portStatus, 0)
+        XCTAssertEqual(result.portTypeStatus, 0)
+        XCTAssertEqual(result.portType, 17)
+        XCTAssertEqual(result.portMessageCount, 3)
+        XCTAssertEqual(result.portQueueLimit, 5)
+        XCTAssertEqual(result.portSequenceNumber, 7)
+        XCTAssertEqual(result.portMessagesWaiting, true)
+        XCTAssertEqual(result.streamPropertiesProfile, nil)
         XCTAssertEqual(result.notes, ["payload parsed"])
+    }
+
+    func testPrivateCaptureProbeResultParsesDisplayStreamConfigurationFields() throws {
+        let payload: NSDictionary = [
+            "entryPoint": "sls-display-stream-proxying",
+            "displayID": NSNumber(value: 2),
+            "surfaceWidth": NSNumber(value: 5120),
+            "surfaceHeight": NSNumber(value: 2880),
+            "bytesPerRow": NSNumber(value: 0),
+            "pixelFormat": NSNumber(value: kCVPixelFormatType_32BGRA),
+            "sampleWord": NSNumber(value: 0),
+            "status": NSNumber(value: 1002),
+            "surfacePopulated": NSNumber(value: false),
+            "requestedExtendedRange": NSNumber(value: false),
+            "extendedRangeApplied": NSNumber(value: false),
+            "streamPropertiesProfile": "full-public",
+            "portMode": "receive-only",
+            "selectiveSharingMode": "zero",
+            "selectiveSharingHigh": NSNumber(value: UInt64(0)),
+            "selectiveSharingLow": NSNumber(value: UInt64(0)),
+            "notes": ["stream probe payload parsed"]
+        ]
+
+        let result = try MDKPrivateCaptureProbeResult(shimDictionary: payload)
+        XCTAssertEqual(result.entryPoint, .displayStreamProxying)
+        XCTAssertEqual(result.streamPropertiesProfile, "full-public")
+        XCTAssertEqual(result.portMode, "receive-only")
+        XCTAssertEqual(result.selectiveSharingMode, "zero")
+        XCTAssertEqual(result.selectiveSharingHigh, 0)
+        XCTAssertEqual(result.selectiveSharingLow, 0)
     }
 
     func testPrivateCaptureBenchmarkResultParsesShimDictionary() throws {
@@ -189,6 +254,7 @@ final class MacDisplayKitTests: XCTestCase {
             "requestedExtendedRange": NSNumber(value: true),
             "extendedRangeApplied": NSNumber(value: true),
             "proxiedFrameAvailable": NSNumber(value: true),
+            "portMessageCount": NSNumber(value: 2),
             "sampleDuration": NSNumber(value: 1.25),
             "iterationCount": NSNumber(value: 150),
             "populatedFrameCount": NSNumber(value: 148),
@@ -206,6 +272,7 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(result.observedFrameRate, 120.0, accuracy: 0.0001)
         XCTAssertEqual(result.populatedFrameRate, 118.4, accuracy: 0.0001)
         XCTAssertEqual(result.probe.proxiedFrameAvailable, true)
+        XCTAssertEqual(result.probe.portMessageCount, 2)
     }
 
     func testPrivateCapturePrototypePlannerPrefersProxyingPathWhenAvailable() {
@@ -215,12 +282,29 @@ final class MacDisplayKitTests: XCTestCase {
                 displayIOSurfaceCaptureAvailable: true,
                 displayIOSurfaceCaptureWithOptionsAvailable: true,
                 displayIOSurfaceProxyCaptureAvailable: true,
+                displayStreamProxyAvailable: false,
                 extendedRangeOptionAvailable: true
             )
         )
 
         XCTAssertEqual(plan.recommendedEntryPoint, .displayIOSurfaceProxying)
         XCTAssertTrue(plan.readyForIOSurfacePrototype)
+    }
+
+    func testPrivateCapturePrototypePlannerPrefersDisplayStreamProxyWhenAvailable() {
+        let plan = MDKPrivateCapturePrototypePlanner.plan(
+            for: MDKPrivateCaptureCapabilities(
+                desktopCaptureAvailable: true,
+                displayIOSurfaceCaptureAvailable: true,
+                displayIOSurfaceCaptureWithOptionsAvailable: true,
+                displayIOSurfaceProxyCaptureAvailable: true,
+                displayStreamProxyAvailable: true,
+                extendedRangeOptionAvailable: true
+            )
+        )
+
+        XCTAssertEqual(plan.recommendedEntryPoint, .displayStreamProxying)
+        XCTAssertFalse(plan.readyForIOSurfacePrototype)
     }
 
     func testOptimizationTargetsInclude4KHDR120CaptureOnlyBaseline() {

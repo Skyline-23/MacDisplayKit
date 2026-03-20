@@ -1,6 +1,7 @@
 import Foundation
 
 public enum MDKPrivateCaptureEntryPoint: String, Codable, Equatable, Sendable {
+    case displayStreamProxying = "sls-display-stream-proxying"
     case displayIOSurfaceProxying = "sls-display-iosurface-proxying"
     case displayIOSurfaceWithOptions = "cgshw-display-iosurface-with-options"
     case displayIOSurface = "cgshw-display-iosurface"
@@ -9,6 +10,8 @@ public enum MDKPrivateCaptureEntryPoint: String, Codable, Equatable, Sendable {
 
     public var displayName: String {
         switch self {
+        case .displayStreamProxying:
+            return "SLSDisplayStreamCreateProxying"
         case .displayIOSurfaceProxying:
             return "SLSHWCaptureDisplayIntoIOSurfaceProxying"
         case .displayIOSurfaceWithOptions:
@@ -50,6 +53,18 @@ public enum MDKPrivateCapturePrototypePlanner {
     public static func plan(
         for capabilities: MDKPrivateCaptureCapabilities
     ) -> MDKPrivateCapturePrototypePlan {
+        if capabilities.displayStreamProxyAvailable {
+            return MDKPrivateCapturePrototypePlan(
+                capabilities: capabilities,
+                recommendedEntryPoint: .displayStreamProxying,
+                readyForIOSurfacePrototype: false,
+                recommendedNotes: [
+                    "Prefer the ScreenCaptureKit display-stream proxy create path because it is the strongest candidate for a reusable hardware-backed stream session.",
+                    "Start with a create-only probe that watches the supplied mach port for activity before attempting any repeated capture loop."
+                ]
+            )
+        }
+
         if capabilities.displayIOSurfaceProxyCaptureAvailable {
             return MDKPrivateCapturePrototypePlan(
                 capabilities: capabilities,

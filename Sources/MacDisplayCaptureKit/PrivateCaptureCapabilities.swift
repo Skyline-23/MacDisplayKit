@@ -6,6 +6,7 @@ public struct MDKPrivateCaptureCapabilities: Codable, Equatable, Sendable {
     public let displayIOSurfaceCaptureAvailable: Bool
     public let displayIOSurfaceCaptureWithOptionsAvailable: Bool
     public let displayIOSurfaceProxyCaptureAvailable: Bool
+    public let displayStreamProxyAvailable: Bool
     public let extendedRangeOptionAvailable: Bool
 
     public init(
@@ -13,12 +14,14 @@ public struct MDKPrivateCaptureCapabilities: Codable, Equatable, Sendable {
         displayIOSurfaceCaptureAvailable: Bool,
         displayIOSurfaceCaptureWithOptionsAvailable: Bool,
         displayIOSurfaceProxyCaptureAvailable: Bool,
+        displayStreamProxyAvailable: Bool,
         extendedRangeOptionAvailable: Bool
     ) {
         self.desktopCaptureAvailable = desktopCaptureAvailable
         self.displayIOSurfaceCaptureAvailable = displayIOSurfaceCaptureAvailable
         self.displayIOSurfaceCaptureWithOptionsAvailable = displayIOSurfaceCaptureWithOptionsAvailable
         self.displayIOSurfaceProxyCaptureAvailable = displayIOSurfaceProxyCaptureAvailable
+        self.displayStreamProxyAvailable = displayStreamProxyAvailable
         self.extendedRangeOptionAvailable = extendedRangeOptionAvailable
     }
 
@@ -26,7 +29,8 @@ public struct MDKPrivateCaptureCapabilities: Codable, Equatable, Sendable {
         desktopCaptureAvailable ||
             displayIOSurfaceCaptureAvailable ||
             displayIOSurfaceCaptureWithOptionsAvailable ||
-            displayIOSurfaceProxyCaptureAvailable
+            displayIOSurfaceProxyCaptureAvailable ||
+            displayStreamProxyAvailable
     }
 
     public var supportsIOSurfaceDisplayCapture: Bool {
@@ -47,6 +51,7 @@ public enum MDKPrivateCaptureCapabilityProbe {
             displayIOSurfaceCaptureAvailable: MDKShimVideoPrivateDisplayIOSurfaceCaptureAvailable(),
             displayIOSurfaceCaptureWithOptionsAvailable: MDKShimVideoPrivateDisplayIOSurfaceCaptureWithOptionsAvailable(),
             displayIOSurfaceProxyCaptureAvailable: MDKShimVideoPrivateDisplayIOSurfaceProxyCaptureAvailable(),
+            displayStreamProxyAvailable: MDKShimVideoPrivateDisplayStreamProxyAvailable(),
             extendedRangeOptionAvailable: MDKShimVideoPrivateCaptureExtendedRangeOptionAvailable()
         )
     }
