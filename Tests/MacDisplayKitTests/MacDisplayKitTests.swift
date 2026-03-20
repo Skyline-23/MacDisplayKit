@@ -60,6 +60,7 @@ final class MacDisplayKitTests: XCTestCase {
         let display = MDKDisplayDescriptor(id: 77, name: "77", localizedName: "Test Display")
         let target = MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly
         let availability = MDKCaptureBackendAvailability(
+            screenCaptureAccessAuthorized: true,
             avFoundationAvailable: true,
             cgDisplayStreamAvailable: true
         )
@@ -70,6 +71,7 @@ final class MacDisplayKitTests: XCTestCase {
         )
 
         XCTAssertEqual(plan.intent, .validateDefaultBackend)
+        XCTAssertTrue(plan.screenCaptureAccessAuthorized)
         XCTAssertEqual(plan.candidates.map(\.backend), [.cgDisplayStream, .avFoundation])
         XCTAssertEqual(plan.preferredCandidate?.backend, .cgDisplayStream)
         XCTAssertEqual(

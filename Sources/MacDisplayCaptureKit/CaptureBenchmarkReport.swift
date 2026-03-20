@@ -26,6 +26,7 @@ public struct MDKCaptureBenchmarkSuiteReport: Codable, Equatable, Sendable {
     public let targetName: String
     public let topology: String
     public let intent: String
+    public let screenCaptureAccessAuthorized: Bool
     public let pixelFormat: UInt32
     public let sampleDuration: TimeInterval
     public let suitePassed: Bool
@@ -69,6 +70,7 @@ public enum MDKCaptureBenchmarkReport {
             targetName: suite.plan.target.name,
             topology: topologyName(suite.plan.target.topology),
             intent: intentName(suite.plan.intent),
+            screenCaptureAccessAuthorized: suite.plan.screenCaptureAccessAuthorized,
             pixelFormat: suite.pixelFormat,
             sampleDuration: suite.sampleDuration,
             suitePassed: assessment.passed,

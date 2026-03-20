@@ -117,6 +117,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
             target: target,
             display: display,
             intent: .compareBackends,
+            screenCaptureAccessAuthorized: true,
             candidates: [
                 MDKCaptureBackendCandidate(
                     backend: .cgDisplayStream,
@@ -264,6 +265,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 target: target,
                 display: display,
                 intent: .validateDefaultBackend,
+                screenCaptureAccessAuthorized: true,
                 candidates: []
             ),
             pixelFormat: 0x78343230,
@@ -275,6 +277,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 target: target,
                 display: display,
                 intent: .compareBackends,
+                screenCaptureAccessAuthorized: true,
                 candidates: []
             ),
             pixelFormat: 0x78343230,
@@ -305,6 +308,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 target: target,
                 display: display,
                 intent: .validateDefaultBackend,
+                screenCaptureAccessAuthorized: true,
                 candidates: []
             ),
             pixelFormat: 0x78343230,
@@ -336,11 +340,37 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
         let decoded = try JSONDecoder().decode(MDKCaptureBenchmarkSuiteReport.self, from: jsonData)
 
         XCTAssertEqual(report.targetIdentifier, "uhd-hdr-120-capture-only")
+        XCTAssertTrue(report.screenCaptureAccessAuthorized)
         XCTAssertTrue(report.suitePassed)
         XCTAssertEqual(report.measurements.count, 1)
         XCTAssertEqual(report.measurements[0].backend, "cgdisplaystream")
         XCTAssertEqual(report.measurements[0].observedFrameRate ?? -1, 114.0, accuracy: 0.001)
         XCTAssertEqual(decoded, report)
+    }
+
+    func testPlannerMarksBackendsUnavailableWhenScreenCapturePermissionIsMissing() {
+        let display = MDKDisplayDescriptor(id: 77, name: "77", localizedName: "Test Display")
+        let target = MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly
+        let availability = MDKCaptureBackendAvailability(
+            screenCaptureAccessAuthorized: false,
+            avFoundationAvailable: true,
+            cgDisplayStreamAvailable: true
+        )
+
+        let plan = MDKCaptureBenchmarkPlanner.plan(
+            for: display,
+            target: target,
+            availability: availability
+        )
+
+        XCTAssertFalse(plan.screenCaptureAccessAuthorized)
+        XCTAssertEqual(plan.candidates.count, 2)
+        XCTAssertFalse(plan.candidates[0].available)
+        XCTAssertFalse(plan.candidates[1].available)
+        XCTAssertEqual(
+            plan.candidates[0].reason,
+            "Screen Recording permission is not granted for this host process."
+        )
     }
 }
 

@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <CoreGraphics/CoreGraphics.h>
 
 #import "MDKObjCShim.h"
 
@@ -38,6 +39,10 @@ NSArray<NSDictionary<NSString *, id> *> *MDKShimListDisplays(void) {
 
 NSString * _Nullable MDKShimDisplayName(NSUInteger displayID) {
     return [AVVideo getDisplayName:static_cast<CGDirectDisplayID>(displayID)];
+}
+
+BOOL MDKShimScreenCaptureAccessAuthorized(void) {
+    return CGPreflightScreenCaptureAccess();
 }
 
 BOOL MDKShimVideoAVFoundationAvailableForDisplay(NSUInteger displayID, NSInteger frameRate) {

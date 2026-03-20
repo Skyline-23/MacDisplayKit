@@ -9,6 +9,7 @@ enum MDKHostBenchmarkFormatter {
         lines.append("Target: \(suite.plan.target.name)")
         lines.append("Target ID: \(suite.plan.target.identifier)")
         lines.append("Intent: \(suite.plan.intent == .compareBackends ? "compare-backends" : "validate-default-backend")")
+        lines.append("Screen capture access: \(suite.plan.screenCaptureAccessAuthorized ? "authorized" : "not authorized")")
         lines.append("Sample duration: \(String(format: "%.2fs", suite.sampleDuration))")
         lines.append("Pixel format: \(String(format: "0x%08X", suite.pixelFormat))")
         lines.append("Suite result: \(assessment.passed ? "PASS" : "FAIL")")

@@ -8,8 +8,10 @@ public final class MDKCaptureBackendProbe: NSObject {
         target: MDKCaptureOptimizationTarget
     ) -> MDKCaptureBackendAvailability {
         let requestedFrameRate = max(target.frameRate, 1)
+        let screenCaptureAccessAuthorized = MDKShimScreenCaptureAccessAuthorized()
 
         return MDKCaptureBackendAvailability(
+            screenCaptureAccessAuthorized: screenCaptureAccessAuthorized,
             avFoundationAvailable: MDKShimVideoAVFoundationAvailableForDisplay(
                 UInt(display.id),
                 requestedFrameRate
