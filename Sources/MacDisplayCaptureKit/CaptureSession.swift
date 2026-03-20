@@ -3,7 +3,33 @@ import CoreVideo
 import Foundation
 import IOSurface
 
-private func MDKDisplayStreamProperties(for configuration: MDKCaptureConfiguration) -> CFDictionary {
+func MDKDisplayLogicalSize(displayID: CGDirectDisplayID) -> CGSize {
+    guard let displayMode = CGDisplayCopyDisplayMode(displayID) else {
+        return CGSize(
+            width: CGFloat(CGDisplayPixelsWide(displayID)),
+            height: CGFloat(CGDisplayPixelsHigh(displayID))
+        )
+    }
+
+    return CGSize(
+        width: CGFloat(displayMode.width),
+        height: CGFloat(displayMode.height)
+    )
+}
+
+struct MDKCGDisplayStreamConfiguration: Equatable {
+    let minimumFrameTime: TimeInterval
+    let sourceRect: CGRect
+    let destinationRect: CGRect
+    let preserveAspectRatio: Bool
+    let queueDepth: Int
+    let yCbCrMatrix: CFString?
+}
+
+func makeMDKCGDisplayStreamConfiguration(
+    for configuration: MDKCaptureConfiguration,
+    logicalSize: CGSize
+) -> MDKCGDisplayStreamConfiguration {
     let frameTimeInSeconds: Float
     if configuration.frameRate <= 0 || configuration.frameRate > 60 {
         frameTimeInSeconds = 0
@@ -11,10 +37,55 @@ private func MDKDisplayStreamProperties(for configuration: MDKCaptureConfigurati
         frameTimeInSeconds = 1.0 / Float(configuration.frameRate)
     }
 
-    return [
+    let yCbCrMatrix: CFString?
+    switch configuration.pixelFormat {
+    case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+        kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+        kCVPixelFormatType_420YpCbCr10BiPlanarFullRange:
+        yCbCrMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
+    default:
+        yCbCrMatrix = nil
+    }
+
+    return MDKCGDisplayStreamConfiguration(
+        minimumFrameTime: TimeInterval(frameTimeInSeconds),
+        sourceRect: CGRect(origin: .zero, size: logicalSize),
+        destinationRect: CGRect(
+            x: 0,
+            y: 0,
+            width: configuration.width,
+            height: configuration.height
+        ),
+        preserveAspectRatio: false,
+        queueDepth: configuration.frameRate > 60 ? 2 : 3,
+        yCbCrMatrix: yCbCrMatrix
+    )
+}
+
+func MDKDisplayStreamProperties(
+    for configuration: MDKCaptureConfiguration,
+    logicalSize: CGSize
+) -> CFDictionary {
+    let streamConfiguration = makeMDKCGDisplayStreamConfiguration(
+        for: configuration,
+        logicalSize: logicalSize
+    )
+
+    var properties: [String: Any] = [
         CGDisplayStream.showCursor as String: false,
-        CGDisplayStream.minimumFrameTime as String: NSNumber(value: frameTimeInSeconds),
-    ] as NSDictionary as CFDictionary
+        CGDisplayStream.minimumFrameTime as String: NSNumber(value: streamConfiguration.minimumFrameTime),
+        CGDisplayStream.sourceRect as String: CGRectCreateDictionaryRepresentation(streamConfiguration.sourceRect),
+        CGDisplayStream.destinationRect as String: CGRectCreateDictionaryRepresentation(streamConfiguration.destinationRect),
+        CGDisplayStream.preserveAspectRatio as String: NSNumber(value: streamConfiguration.preserveAspectRatio),
+        CGDisplayStream.queueDepth as String: NSNumber(value: streamConfiguration.queueDepth),
+    ]
+
+    if let yCbCrMatrix = streamConfiguration.yCbCrMatrix {
+        properties[CGDisplayStream.yCbCrMatrix as String] = yCbCrMatrix
+    }
+
+    return properties as NSDictionary as CFDictionary
 }
 
 public struct MDKCaptureFrame: Sendable, Equatable {
@@ -190,7 +261,11 @@ private final class MDKCGDisplayStreamCaptureDriver: MDKCaptureSessionDriver {
         }
         stateLock.unlock()
 
-        let properties = MDKDisplayStreamProperties(for: configuration)
+        let logicalSize = MDKDisplayLogicalSize(displayID: configuration.displayID)
+        let properties = MDKDisplayStreamProperties(
+            for: configuration,
+            logicalSize: logicalSize
+        )
 
         let stream = CGDisplayStream(
             dispatchQueueDisplay: configuration.displayID,

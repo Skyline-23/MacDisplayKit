@@ -45,20 +45,6 @@ private func MDKCaptureScaleFactor(
     return max(scale, 0.01)
 }
 
-private func MDKDisplayLogicalSize(displayID: CGDirectDisplayID) -> CGSize {
-    guard let displayMode = CGDisplayCopyDisplayMode(displayID) else {
-        return CGSize(
-            width: CGFloat(CGDisplayPixelsWide(displayID)),
-            height: CGFloat(CGDisplayPixelsHigh(displayID))
-        )
-    }
-
-    return CGSize(
-        width: CGFloat(displayMode.width),
-        height: CGFloat(displayMode.height)
-    )
-}
-
 func makeMDKAVFoundationScreenInputConfiguration(
     for configuration: MDKCaptureConfiguration,
     logicalSize: CGSize

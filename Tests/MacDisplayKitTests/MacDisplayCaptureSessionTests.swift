@@ -117,6 +117,54 @@ final class MacDisplayCaptureSessionTests: XCTestCase {
         XCTAssertEqual(outputConfiguration.alwaysDiscardsLateVideoFrames, true)
     }
 
+    func testCGDisplayStreamConfigurationUsesLogicalSourceAndExactDestinationSizing() {
+        let configuration = MDKCaptureConfiguration(
+            displayID: 77,
+            width: 3840,
+            height: 2160,
+            frameRate: 120,
+            pixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+            backend: .cgDisplayStream,
+            dynamicRangeMode: .hdrCanonical
+        )
+
+        let streamConfiguration = makeMDKCGDisplayStreamConfiguration(
+            for: configuration,
+            logicalSize: CGSize(width: 2560, height: 1440)
+        )
+
+        XCTAssertEqual(streamConfiguration.minimumFrameTime, 0, accuracy: 0.0001)
+        XCTAssertEqual(streamConfiguration.sourceRect, CGRect(x: 0, y: 0, width: 2560, height: 1440))
+        XCTAssertEqual(streamConfiguration.destinationRect, CGRect(x: 0, y: 0, width: 3840, height: 2160))
+        XCTAssertFalse(streamConfiguration.preserveAspectRatio)
+        XCTAssertEqual(streamConfiguration.queueDepth, 2)
+        XCTAssertEqual(
+            streamConfiguration.yCbCrMatrix as String?,
+            CGDisplayStream.yCbCrMatrix_ITU_R_709_2 as String
+        )
+    }
+
+    func testCGDisplayStreamConfigurationLeavesMatrixUnsetForRGBFormats() {
+        let configuration = MDKCaptureConfiguration(
+            displayID: 77,
+            width: 1920,
+            height: 1080,
+            frameRate: 60,
+            pixelFormat: kCVPixelFormatType_32BGRA,
+            backend: .cgDisplayStream,
+            dynamicRangeMode: .sdr
+        )
+
+        let streamConfiguration = makeMDKCGDisplayStreamConfiguration(
+            for: configuration,
+            logicalSize: CGSize(width: 1920, height: 1080)
+        )
+
+        XCTAssertEqual(streamConfiguration.minimumFrameTime, 1.0 / 60.0, accuracy: 0.0001)
+        XCTAssertEqual(streamConfiguration.queueDepth, 3)
+        XCTAssertNil(streamConfiguration.yCbCrMatrix)
+    }
+
     func testStopIsSafeBeforeStart() throws {
         let configuration = MDKCaptureConfiguration(
             displayID: 77,
