@@ -166,6 +166,38 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(result.notes, ["payload parsed"])
     }
 
+    func testPrivateCaptureBenchmarkResultParsesShimDictionary() throws {
+        let payload: NSDictionary = [
+            "entryPoint": "cgshw-display-iosurface-with-options",
+            "displayID": NSNumber(value: 99),
+            "surfaceWidth": NSNumber(value: 3840),
+            "surfaceHeight": NSNumber(value: 2160),
+            "bytesPerRow": NSNumber(value: 15360),
+            "pixelFormat": NSNumber(value: kCVPixelFormatType_32BGRA),
+            "sampleWord": NSNumber(value: 4321),
+            "captureValue": NSNumber(value: 8765),
+            "status": NSNumber(value: 0),
+            "surfacePopulated": NSNumber(value: true),
+            "requestedExtendedRange": NSNumber(value: true),
+            "extendedRangeApplied": NSNumber(value: true),
+            "sampleDuration": NSNumber(value: 1.25),
+            "iterationCount": NSNumber(value: 150),
+            "populatedFrameCount": NSNumber(value: 148),
+            "observedFrameRate": NSNumber(value: 120.0),
+            "populatedFrameRate": NSNumber(value: 118.4),
+            "notes": ["benchmark payload parsed"]
+        ]
+
+        let result = try MDKPrivateCaptureBenchmarkResult(shimDictionary: payload)
+        XCTAssertEqual(result.probe.displayID, 99)
+        XCTAssertEqual(result.probe.captureValue, 8765)
+        XCTAssertEqual(result.sampleDuration, 1.25, accuracy: 0.0001)
+        XCTAssertEqual(result.iterationCount, 150)
+        XCTAssertEqual(result.populatedFrameCount, 148)
+        XCTAssertEqual(result.observedFrameRate, 120.0, accuracy: 0.0001)
+        XCTAssertEqual(result.populatedFrameRate, 118.4, accuracy: 0.0001)
+    }
+
     func testOptimizationTargetsInclude4KHDR120CaptureOnlyBaseline() {
         let target = MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly
 

@@ -71,4 +71,16 @@ final class MDKHostBenchmarkController {
             requestExtendedRange: requestExtendedRange
         )
     }
+
+    func benchmarkPrivateCapture(
+        displayID: UInt32,
+        requestExtendedRange: Bool,
+        sampleDuration: TimeInterval
+    ) throws -> MDKPrivateCaptureBenchmarkResult {
+        try MDKPrivateCapturePrototypeBenchmark.run(
+            displayID: displayID,
+            requestExtendedRange: requestExtendedRange,
+            sampleDuration: sampleDuration
+        )
+    }
 }

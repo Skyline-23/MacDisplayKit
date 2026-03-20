@@ -2,6 +2,21 @@ import Foundation
 import MacDisplayKit
 
 enum MDKHostBenchmarkFormatter {
+    static func formatPrivateCaptureBenchmarkResult(
+        _ result: MDKPrivateCaptureBenchmarkResult
+    ) -> String {
+        var lines = formatPrivateCaptureProbeResult(result.probe).components(separatedBy: "\n")
+        lines.insert("Private hardware capture benchmark", at: 0)
+        lines[1] = "Benchmark base probe"
+        lines.append("")
+        lines.append(String(format: "Sample duration: %.3fs", result.sampleDuration))
+        lines.append("Iterations: \(result.iterationCount)")
+        lines.append("Populated frames: \(result.populatedFrameCount)")
+        lines.append(String(format: "Observed FPS: %.2f", result.observedFrameRate))
+        lines.append(String(format: "Populated FPS: %.2f", result.populatedFrameRate))
+        return lines.joined(separator: "\n")
+    }
+
     static func formatPrivateCaptureProbeResult(
         _ result: MDKPrivateCaptureProbeResult
     ) -> String {

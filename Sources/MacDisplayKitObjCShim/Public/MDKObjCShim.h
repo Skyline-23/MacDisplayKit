@@ -20,6 +20,12 @@ FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCa
     BOOL requestExtendedRange,
     NSError * _Nullable * _Nullable error
 );
+FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureBenchmark(
+    NSUInteger displayID,
+    BOOL requestExtendedRange,
+    NSTimeInterval sampleDuration,
+    NSError * _Nullable * _Nullable error
+);
 FOUNDATION_EXPORT NSArray<NSString *> *MDKShimMicrophoneNames(void);
 FOUNDATION_EXPORT NSString * _Nullable MDKShimCreateVirtualDisplay(
     NSString *clientIdentifier,

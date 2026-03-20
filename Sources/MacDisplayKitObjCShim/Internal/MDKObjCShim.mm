@@ -112,10 +112,12 @@ BOOL MDKShimVideoPrivateCaptureExtendedRangeOptionAvailable(void) {
     return MDKLookupCaptureSymbol("kSLSCaptureExtendedRange") != nullptr;
 }
 
-NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureSingleFrame(
+static NSDictionary<NSString *, id> * _Nullable MDKCreatePrivateCaptureSurfacePayload(
     NSUInteger displayID,
     BOOL requestExtendedRange,
-    NSError * _Nullable * _Nullable error
+    NSError * _Nullable * _Nullable error,
+    BOOL benchmarkMode,
+    NSTimeInterval sampleDuration
 ) {
     using MDKPrivateCaptureDisplayIntoIOSurfaceWithOptionsFn =
         int (*)(std::uint32_t, std::uint32_t, std::uint32_t, IOSurfaceRef, std::uint32_t *);
@@ -169,36 +171,71 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureSingleFrame(
         return nil;
     }
 
-    std::uint32_t captureValue = 0;
     const std::uint32_t optionsBits = requestExtendedRange ? MDKPrivateCaptureExtendedRangeBit : 0;
-    const int status = symbol(
-        0,
-        static_cast<std::uint32_t>(displayID),
-        optionsBits,
-        surface,
-        &captureValue
-    );
+    std::uint32_t captureValue = 0;
+    std::uint32_t sampleWord = 0;
+    std::uint64_t iterationCount = 0;
+    std::uint64_t populatedFrameCount = 0;
+    int status = 0;
 
-    IOSurfaceLock(surface, kIOSurfaceLockReadOnly, nullptr);
-    const auto *baseAddress = static_cast<const std::uint32_t *>(IOSurfaceGetBaseAddress(surface));
-    const std::uint32_t sampleWord = baseAddress != nullptr ? baseAddress[0] : 0;
+    const CFAbsoluteTime startedAt = CFAbsoluteTimeGetCurrent();
+    const CFAbsoluteTime targetDuration = benchmarkMode ? std::max(sampleDuration, 0.001) : 0.0;
+
+    do {
+        captureValue = 0;
+        status = symbol(
+            0,
+            static_cast<std::uint32_t>(displayID),
+            optionsBits,
+            surface,
+            &captureValue
+        );
+        iterationCount += 1;
+
+        IOSurfaceLock(surface, kIOSurfaceLockReadOnly, nullptr);
+        const auto *baseAddress = static_cast<const std::uint32_t *>(IOSurfaceGetBaseAddress(surface));
+        sampleWord = baseAddress != nullptr ? baseAddress[0] : 0;
+        if (sampleWord != 0) {
+            populatedFrameCount += 1;
+        }
+        IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, nullptr);
+
+        if (!benchmarkMode || status != 0) {
+            break;
+        }
+    } while ((CFAbsoluteTimeGetCurrent() - startedAt) < targetDuration);
+
+    const CFAbsoluteTime elapsed = std::max(CFAbsoluteTimeGetCurrent() - startedAt, 0.0);
     const BOOL surfacePopulated = sampleWord != 0;
     const std::size_t bytesPerRow = IOSurfaceGetBytesPerRow(surface);
     const OSType pixelFormat = IOSurfaceGetPixelFormat(surface);
     const std::size_t surfaceWidth = IOSurfaceGetWidth(surface);
     const std::size_t surfaceHeight = IOSurfaceGetHeight(surface);
-    IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, nullptr);
     CFRelease(surface);
 
     if (status != 0 && error != nullptr) {
         *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
                                      code:status
                                  userInfo:@{
-                                     NSLocalizedDescriptionKey: @"The private IOSurface capture probe returned a non-zero status."
+                                     NSLocalizedDescriptionKey: benchmarkMode
+                                         ? @"The private IOSurface capture benchmark returned a non-zero status."
+                                         : @"The private IOSurface capture probe returned a non-zero status."
                                  }];
     }
 
-    return @{
+    NSMutableArray<NSString *> *notes = [NSMutableArray arrayWithObject:
+        @"Uses CGSHWCaptureDisplayIntoIOSurfaceWithOptions with option bits and a direct IOSurface target."
+    ];
+    if (requestExtendedRange) {
+        [notes addObject:@"Extended-range capture was requested with the 0x00200000 private option bit."];
+    } else {
+        [notes addObject:@"The probe is running in the SDR-safe private capture mode."];
+    }
+    if (benchmarkMode) {
+        [notes addObject:@"The benchmark reuses a single IOSurface to avoid per-frame allocation noise."];
+    }
+
+    NSMutableDictionary<NSString *, id> *payload = [@{
         @"entryPoint": @"cgshw-display-iosurface-with-options",
         @"displayID": @(displayID),
         @"surfaceWidth": @(surfaceWidth),
@@ -211,13 +248,43 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureSingleFrame(
         @"surfacePopulated": @(surfacePopulated),
         @"requestedExtendedRange": @(requestExtendedRange),
         @"extendedRangeApplied": @(requestExtendedRange && status == 0),
-        @"notes": @[
-            @"Uses CGSHWCaptureDisplayIntoIOSurfaceWithOptions with option bits and a direct IOSurface target.",
-            requestExtendedRange
-                ? @"Extended-range capture was requested with the 0x00200000 private option bit."
-                : @"The probe is running in the SDR-safe private capture mode."
-        ]
-    };
+        @"notes": notes
+    } mutableCopy];
+
+    if (benchmarkMode) {
+        const double observedFrameRate = elapsed > 0 ? static_cast<double>(iterationCount) / elapsed : 0;
+        const double populatedFrameRate = elapsed > 0 ? static_cast<double>(populatedFrameCount) / elapsed : 0;
+        payload[@"sampleDuration"] = @(elapsed);
+        payload[@"iterationCount"] = @(iterationCount);
+        payload[@"populatedFrameCount"] = @(populatedFrameCount);
+        payload[@"observedFrameRate"] = @(observedFrameRate);
+        payload[@"populatedFrameRate"] = @(populatedFrameRate);
+    }
+
+    return payload;
+}
+
+NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureSingleFrame(
+    NSUInteger displayID,
+    BOOL requestExtendedRange,
+    NSError * _Nullable * _Nullable error
+) {
+    return MDKCreatePrivateCaptureSurfacePayload(displayID, requestExtendedRange, error, NO, 0);
+}
+
+NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureBenchmark(
+    NSUInteger displayID,
+    BOOL requestExtendedRange,
+    NSTimeInterval sampleDuration,
+    NSError * _Nullable * _Nullable error
+) {
+    return MDKCreatePrivateCaptureSurfacePayload(
+        displayID,
+        requestExtendedRange,
+        error,
+        YES,
+        sampleDuration
+    );
 }
 
 NSArray<NSString *> *MDKShimMicrophoneNames(void) {
