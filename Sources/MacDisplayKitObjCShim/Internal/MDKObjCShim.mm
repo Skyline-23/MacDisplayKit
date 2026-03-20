@@ -231,6 +231,7 @@ static void MDKRecordSCKTraceEvent(NSString *kind, NSDictionary<NSString *, id> 
 static NSDictionary<NSString *, id> *MDKSummarizeSampleBuffer(CMSampleBufferRef sampleBuffer);
 static NSDictionary<NSString *, id> *MDKCopySCStreamInternalState(id stream);
 static NSDictionary<NSString *, id> *MDKSummarizeXPCObject(xpc_object_t object);
+static NSDictionary<NSString *, id> *MDKSummarizeSampleCarrier(id sample);
 
 @implementation MDKShimStreamOutputCollector
 
@@ -281,6 +282,7 @@ using MDKManagerStreamUpdateWithFilterFn = void (*)(id, SEL, id, id);
 using MDKManagerStreamOutputEffectDidStartFn = void (*)(id, SEL, BOOL, id);
 using MDKRPIOSurfaceSetFn = void (*)(id, SEL, IOSurfaceRef);
 using MDKRPIOSurfaceGetFn = IOSurfaceRef (*)(id, SEL);
+using MDKCaptureHandlerWithSampleFn = void (*)(id, SEL, id, id);
 
 static MDKProxyCoreGraphicsFn MDKOriginalProxyCoreGraphics = nullptr;
 static MDKStartRemoteQueueFn MDKOriginalStartRemoteQueue = nullptr;
@@ -302,6 +304,8 @@ static MDKManagerStreamUpdateWithFilterFn MDKOriginalManagerStreamDidRequestUpda
 static MDKManagerStreamOutputEffectDidStartFn MDKOriginalManagerStreamOutputEffectDidStart = nullptr;
 static MDKRPIOSurfaceSetFn MDKOriginalRPIOSurfaceSet = nullptr;
 static MDKRPIOSurfaceGetFn MDKOriginalRPIOSurfaceGet = nullptr;
+static MDKCaptureHandlerWithSampleFn MDKOriginalDaemonCaptureHandlerWithSample = nullptr;
+static MDKCaptureHandlerWithSampleFn MDKOriginalScreenRecorderCaptureHandlerWithSample = nullptr;
 
 static uint64_t MDKCurrentTraceTimestampNanos(void) {
     return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
@@ -622,6 +626,21 @@ static NSDictionary<NSString *, id> *MDKSummarizeSampleBuffer(CMSampleBufferRef 
     return summary;
 }
 
+static NSDictionary<NSString *, id> *MDKSummarizeSampleCarrier(id sample) {
+    if (sample == nil) {
+        return @{
+            @"present": @NO
+        };
+    }
+
+    CFTypeRef cfSample = (__bridge CFTypeRef)sample;
+    if (CFGetTypeID(cfSample) == CMSampleBufferGetTypeID()) {
+        return MDKSummarizeSampleBuffer((__bridge CMSampleBufferRef)sample);
+    }
+
+    return MDKSummarizeObject(sample);
+}
+
 static NSDictionary<NSString *, id> *MDKCopySCStreamInternalState(id stream) {
     if (stream == nil) {
         return @{
@@ -683,6 +702,7 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"collectStreamDataCallCount": @0,
             @"sampleBufferEventCount": @0,
             @"rpIOSurfaceEventCount": @0,
+            @"captureHandlerSampleEventCount": @0,
         } mutableCopy];
     }
 }
@@ -1069,6 +1089,28 @@ static void MDKRecordRPIOSurfaceEvent(NSString *kind, IOSurfaceRef surface) {
     );
 }
 
+static void MDKRecordCaptureHandlerSampleEvent(NSString *kind, id sample, id timingData) {
+    BOOL shouldRecord = NO;
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            NSUInteger eventCount = [MDKActiveSCKTraceState[@"captureHandlerSampleEventCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"captureHandlerSampleEventCount"] = @(eventCount);
+            shouldRecord = eventCount <= 6;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    MDKRecordSCKTraceEvent(
+        kind,
+        @{
+            @"sample": MDKSummarizeSampleCarrier(sample),
+            @"timingData": MDKSummarizeObject(timingData),
+        }
+    );
+}
+
 static void MDKSwizzledRPIOSurfaceSet(id self, SEL _cmd, IOSurfaceRef surface) {
     MDKRecordRPIOSurfaceEvent(@"rp-iosurface-set", surface);
     MDKOriginalRPIOSurfaceSet(self, _cmd, surface);
@@ -1078,6 +1120,16 @@ static IOSurfaceRef MDKSwizzledRPIOSurfaceGet(id self, SEL _cmd) {
     IOSurfaceRef surface = MDKOriginalRPIOSurfaceGet(self, _cmd);
     MDKRecordRPIOSurfaceEvent(@"rp-iosurface-get", surface);
     return surface;
+}
+
+static void MDKSwizzledDaemonCaptureHandlerWithSample(id self, SEL _cmd, id sample, id timingData) {
+    MDKRecordCaptureHandlerSampleEvent(@"daemon-capture-handler-sample", sample, timingData);
+    MDKOriginalDaemonCaptureHandlerWithSample(self, _cmd, sample, timingData);
+}
+
+static void MDKSwizzledScreenRecorderCaptureHandlerWithSample(id self, SEL _cmd, id sample, id timingData) {
+    MDKRecordCaptureHandlerSampleEvent(@"screen-recorder-capture-handler-sample", sample, timingData);
+    MDKOriginalScreenRecorderCaptureHandlerWithSample(self, _cmd, sample, timingData);
 }
 
 static void MDKRecordRemoteQueueConsumerEvent(NSString *kind, id queue) {
@@ -1223,6 +1275,19 @@ static void MDKInstallSCKProxyTraceHooks(void) {
             method_setImplementation(
                 streamOutputEffectDidStartMethod,
                 reinterpret_cast<IMP>(MDKSwizzledStreamOutputEffectDidStart)
+            );
+        }
+
+        Method daemonCaptureHandlerWithSampleMethod = class_getInstanceMethod(
+            daemonProxyClass,
+            sel_registerName("captureHandlerWithSample:timingData:")
+        );
+        if (daemonCaptureHandlerWithSampleMethod != nullptr) {
+            MDKOriginalDaemonCaptureHandlerWithSample =
+                reinterpret_cast<MDKCaptureHandlerWithSampleFn>(method_getImplementation(daemonCaptureHandlerWithSampleMethod));
+            method_setImplementation(
+                daemonCaptureHandlerWithSampleMethod,
+                reinterpret_cast<IMP>(MDKSwizzledDaemonCaptureHandlerWithSample)
             );
         }
 
@@ -1389,6 +1454,22 @@ static void MDKInstallSCKProxyTraceHooks(void) {
                 method_setImplementation(
                     ioSurfaceMethod,
                     reinterpret_cast<IMP>(MDKSwizzledRPIOSurfaceGet)
+                );
+            }
+        }
+
+        Class screenRecorderClass = NSClassFromString(@"RPScreenRecorder");
+        if (screenRecorderClass != Nil) {
+            Method screenRecorderCaptureHandlerWithSampleMethod = class_getInstanceMethod(
+                screenRecorderClass,
+                sel_registerName("captureHandlerWithSample:timingData:")
+            );
+            if (screenRecorderCaptureHandlerWithSampleMethod != nullptr) {
+                MDKOriginalScreenRecorderCaptureHandlerWithSample =
+                    reinterpret_cast<MDKCaptureHandlerWithSampleFn>(method_getImplementation(screenRecorderCaptureHandlerWithSampleMethod));
+                method_setImplementation(
+                    screenRecorderCaptureHandlerWithSampleMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledScreenRecorderCaptureHandlerWithSample)
                 );
             }
         }
@@ -2068,6 +2149,28 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             continue;
         }
 
+        if ([kind isEqualToString:@"daemon-capture-handler-sample"] ||
+            [kind isEqualToString:@"screen-recorder-capture-handler-sample"]) {
+            NSString *selector = @"captureHandlerWithSample:timingData:";
+            NSString *symbol = [kind isEqualToString:@"daemon-capture-handler-sample"] ? @"RPDaemonProxy" : @"RPScreenRecorder";
+            [selectors addObject:selector];
+            [symbols addObject:symbol];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"sample=%@", MDKDescribeTraceValue(event[@"sample"])],
+                [NSString stringWithFormat:@"timingData=%@", MDKDescribeTraceValue(event[@"timingData"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(
+                kind,
+                selector,
+                symbol,
+                nil,
+                @YES,
+                notes
+            )];
+            continue;
+        }
+
         if ([kind isEqualToString:@"rp-iosurface-set"] || [kind isEqualToString:@"rp-iosurface-get"]) {
             [selectors addObject:[kind isEqualToString:@"rp-iosurface-set"] ? @"setIOSurface:" : @"ioSurface"];
             [symbols addObject:@"RPIOSurfaceObject"];
@@ -2119,6 +2222,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"collectStreamDataCallCount=%@", MDKDescribeTraceValue(snapshot[@"collectStreamDataCallCount"])]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferEventCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferEventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"rpIOSurfaceEventCount=%@", MDKDescribeTraceValue(snapshot[@"rpIOSurfaceEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"captureHandlerSampleEventCount=%@", MDKDescribeTraceValue(snapshot[@"captureHandlerSampleEventCount"])]];
     [notes addObject:@"stopCaptureWithCompletionHandler was intentionally skipped in the host-only trace to avoid an RPDaemonProxy stop-path NSXPCEncoder exception."];
     const BOOL succeeded = [snapshot[@"sawProxyCoreGraphics"] boolValue] && startError == nil;
     const std::int32_t status = startError != nil ? static_cast<std::int32_t>(startError.code) : (succeeded ? 0 : 1);
