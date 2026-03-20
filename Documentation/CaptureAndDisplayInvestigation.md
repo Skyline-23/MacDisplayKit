@@ -662,8 +662,17 @@ The current best lower-level model is now:
 - the last video-specific setup milestone before the first callback remains:
   - `firstVideoQueueCallbackLastSetupEventKind=stream-post-start-remote-video-state`
   - `firstVideoQueueCallbackLastSetupEventLeadMilliseconds=15.75475`
-- this means the next remaining ceiling to inspect is the queue scheduling boundary between `stream-post-start-remote-video-state` and the first `_videoReceiveQueue` callback, not the public sample callback itself
-- the next most promising technical target is still the local video receive path around:
+- the raw wrapper under `_videoReceiveQueue` is tiny and stable:
+  - `videoReceiveQueueWrapperMallocSize=48`
+  - `videoReceiveQueueWrapperCandidateBlockOffsets=[40]`
+  - `videoQueueWrapperInstalledOffset=40`
+- the block currently patched at wrapper offset `40` originally points at:
+  - `videoQueueWrapperOriginalInvokeSymbol=__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke`
+- `collectStreamData` does not appear to be the missing hot gate immediately before the first local drain callback:
+  - `lastCollectStreamDataEnterLeadMilliseconds=<null>`
+  - `lastCollectStreamDataExitLeadMilliseconds=<null>`
+- this shifts the next remaining ceiling from generic `collectStreamData` timing to the `FigRemoteOperationReceiverCreateMessageReceiver` path that owns the original video wrapper callback
+- the next most promising technical target is now the local video receive path around:
+  - `__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke`
+  - the code path that allocates or populates the wrapper capture slot at offset `32`
   - `SCStream startRemoteVideoReceiveQueue:`
-  - `SCStream collectStreamData`
-  - `_videoReceiveQueue` internal wrapper state / hidden block slots

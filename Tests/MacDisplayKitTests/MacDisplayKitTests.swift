@@ -360,7 +360,9 @@ final class MacDisplayKitTests: XCTestCase {
                         "firstPublicSamplePrecedingEventKind=post-start-stream-state",
                         "firstPublicSamplePrecedingEventLeadMilliseconds=1.25",
                         "firstPublicSampleLastVideoEventKind=stream-post-start-remote-video-state",
-                        "firstPublicSampleInterveningEventKinds=[\"stream-start-remote-audio-receive-queue\",\"stream-start-remote-microphone-receive-queue\"]"
+                        "firstPublicSampleInterveningEventKinds=[\"stream-start-remote-audio-receive-queue\",\"stream-start-remote-microphone-receive-queue\"]",
+                        "videoQueueWrapperOriginalInvokeSymbol=__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke",
+                        "lastCollectStreamDataExitLeadMilliseconds=<null>"
                     ]
                 ]
             ],
@@ -370,6 +372,8 @@ final class MacDisplayKitTests: XCTestCase {
                 "firstPublicSamplePrecedingEventLeadMilliseconds=1.25",
                 "firstPublicSampleLastVideoEventKind=stream-post-start-remote-video-state",
                 "firstPublicSampleInterveningEventKinds=[\"stream-start-remote-audio-receive-queue\",\"stream-start-remote-microphone-receive-queue\"]",
+                "videoQueueWrapperOriginalInvokeSymbol=__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke",
+                "lastCollectStreamDataExitLeadMilliseconds=<null>",
                 "sampleBufferArrivalDelta120HzEquivalentCount=35",
                 "sampleBufferArrivalCadenceClassification=coalesced-or-mixed",
                 "sampleBufferPresentationDelta120HzEquivalentCount=31",
@@ -411,6 +415,8 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertTrue(trace.steps[2].notes.contains("firstPublicSamplePrecedingEventLeadMilliseconds=1.25"))
         XCTAssertTrue(trace.steps[2].notes.contains("firstPublicSampleLastVideoEventKind=stream-post-start-remote-video-state"))
         XCTAssertTrue(trace.steps[2].notes.contains("firstPublicSampleInterveningEventKinds=[\"stream-start-remote-audio-receive-queue\",\"stream-start-remote-microphone-receive-queue\"]"))
+        XCTAssertTrue(trace.steps[2].notes.contains("videoQueueWrapperOriginalInvokeSymbol=__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke"))
+        XCTAssertTrue(trace.steps[2].notes.contains("lastCollectStreamDataExitLeadMilliseconds=<null>"))
         XCTAssertEqual(
             trace.notes,
             [
@@ -419,6 +425,8 @@ final class MacDisplayKitTests: XCTestCase {
                 "firstPublicSamplePrecedingEventLeadMilliseconds=1.25",
                 "firstPublicSampleLastVideoEventKind=stream-post-start-remote-video-state",
                 "firstPublicSampleInterveningEventKinds=[\"stream-start-remote-audio-receive-queue\",\"stream-start-remote-microphone-receive-queue\"]",
+                "videoQueueWrapperOriginalInvokeSymbol=__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke",
+                "lastCollectStreamDataExitLeadMilliseconds=<null>",
                 "sampleBufferArrivalDelta120HzEquivalentCount=35",
                 "sampleBufferArrivalCadenceClassification=coalesced-or-mixed",
                 "sampleBufferPresentationDelta120HzEquivalentCount=31",
