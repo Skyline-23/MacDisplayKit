@@ -1,9 +1,9 @@
-import CoreVideo
 import Foundation
 import MacDisplayKit
 
 final class MDKHostBenchmarkController {
-    static let benchmarkPixelFormat = UInt32(kCVPixelFormatType_32BGRA)
+    static let benchmarkWarmupDuration: TimeInterval = 1.0
+    static let benchmarkSampleDuration: TimeInterval = 3.0
 
     func availableDisplays() -> [MDKDisplayDescriptor] {
         MDKCaptureDiscovery.displays()
@@ -36,8 +36,9 @@ final class MDKHostBenchmarkController {
 
         return MDKCaptureBenchmarkSuiteRunner.run(
             plan: plan,
-            pixelFormat: Self.benchmarkPixelFormat,
-            sampleDuration: 1.0
+            pixelFormat: target.benchmarkPixelFormat,
+            warmupDuration: Self.benchmarkWarmupDuration,
+            sampleDuration: Self.benchmarkSampleDuration
         )
     }
 }

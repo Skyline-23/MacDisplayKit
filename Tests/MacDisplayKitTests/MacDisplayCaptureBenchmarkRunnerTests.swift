@@ -86,6 +86,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
 
         let result = try MDKCaptureBenchmarkRunner.run(
             configuration: configuration,
+            warmupDuration: 0,
             sampleDuration: 1.0,
             makeSession: { _ in session },
             timeSource: { timeBox.currentTime },
@@ -135,9 +136,11 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
         let suite = MDKCaptureBenchmarkSuiteRunner.run(
             plan: plan,
             pixelFormat: 0x78343230,
+            warmupDuration: 0,
             sampleDuration: 1.0,
-            runBenchmark: { configuration, sampleDuration in
+            runBenchmark: { configuration, warmupDuration, sampleDuration in
                 XCTAssertEqual(configuration.backend, .cgDisplayStream)
+                XCTAssertEqual(warmupDuration, 0, accuracy: 0.0001)
                 XCTAssertEqual(sampleDuration, 1.0, accuracy: 0.0001)
                 return MDKCaptureBenchmarkResult(
                     backend: configuration.backend,
@@ -269,6 +272,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 candidates: []
             ),
             pixelFormat: 0x78343230,
+            warmupDuration: 1.0,
             sampleDuration: 1.0,
             measurements: [failingMeasurement, passingMeasurement]
         )
@@ -281,6 +285,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 candidates: []
             ),
             pixelFormat: 0x78343230,
+            warmupDuration: 1.0,
             sampleDuration: 1.0,
             measurements: [failingMeasurement, passingMeasurement]
         )
@@ -312,6 +317,7 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
                 candidates: []
             ),
             pixelFormat: 0x78343230,
+            warmupDuration: 1.0,
             sampleDuration: 1.0,
             measurements: [
                 MDKCaptureBenchmarkMeasurement(
@@ -341,11 +347,61 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
 
         XCTAssertEqual(report.targetIdentifier, "uhd-hdr-120-capture-only")
         XCTAssertTrue(report.screenCaptureAccessAuthorized)
+        XCTAssertEqual(report.warmupDuration, 1.0, accuracy: 0.0001)
         XCTAssertTrue(report.suitePassed)
         XCTAssertEqual(report.measurements.count, 1)
         XCTAssertEqual(report.measurements[0].backend, "cgdisplaystream")
         XCTAssertEqual(report.measurements[0].observedFrameRate ?? -1, 114.0, accuracy: 0.001)
         XCTAssertEqual(decoded, report)
+    }
+
+    func testRunnerExcludesWarmupFramesFromBenchmarkStatistics() throws {
+        let configuration = MDKCaptureConfiguration(
+            displayID: 99,
+            width: 3840,
+            height: 2160,
+            frameRate: 120,
+            pixelFormat: 0x78343230,
+            backend: .cgDisplayStream,
+            dynamicRangeMode: .hdrCanonical
+        )
+        let session = FakeCaptureSession(backend: .cgDisplayStream)
+        let timeBox = FakeTimeBox(initial: 100.0)
+
+        let result = try MDKCaptureBenchmarkRunner.run(
+            configuration: configuration,
+            warmupDuration: 0.5,
+            sampleDuration: 1.0,
+            makeSession: { _ in session },
+            timeSource: { timeBox.currentTime },
+            sleeper: { duration in
+                switch duration {
+                case 0.5:
+                    timeBox.advance(by: 0.10)
+                    session.emitFrame()
+                    timeBox.advance(by: 0.10)
+                    session.emitSkippedCallback()
+                    timeBox.advance(by: 0.30)
+                case 1.0:
+                    timeBox.advance(by: 0.20)
+                    session.emitFrame()
+                    timeBox.advance(by: 0.20)
+                    session.emitFrame()
+                    timeBox.advance(by: 0.20)
+                    session.emitSkippedCallback()
+                    timeBox.advance(by: 0.40)
+                default:
+                    XCTFail("Unexpected sleep duration \(duration)")
+                }
+            }
+        )
+
+        XCTAssertEqual(result.deliveredFrameCount, 2)
+        XCTAssertEqual(result.skippedFrameCount, 1)
+        XCTAssertEqual(result.callbackCount, 3)
+        XCTAssertEqual(result.observedFrameRate, 5.0, accuracy: 0.001)
+        XCTAssertEqual(result.deliveryRatio, 5.0 / 120.0, accuracy: 0.001)
+        XCTAssertEqual(result.firstFrameLatency ?? -1, 0.20, accuracy: 0.0001)
     }
 
     func testPlannerMarksBackendsUnavailableWhenScreenCapturePermissionIsMissing() {

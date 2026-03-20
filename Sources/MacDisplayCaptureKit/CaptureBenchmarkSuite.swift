@@ -28,17 +28,20 @@ public final class MDKCaptureBenchmarkMeasurement: NSObject {
 public final class MDKCaptureBenchmarkSuiteResult: NSObject {
     public let plan: MDKCaptureBenchmarkPlan
     public let pixelFormat: UInt32
+    public let warmupDuration: TimeInterval
     public let sampleDuration: TimeInterval
     public let measurements: [MDKCaptureBenchmarkMeasurement]
 
     public init(
         plan: MDKCaptureBenchmarkPlan,
         pixelFormat: UInt32,
+        warmupDuration: TimeInterval,
         sampleDuration: TimeInterval,
         measurements: [MDKCaptureBenchmarkMeasurement]
     ) {
         self.plan = plan
         self.pixelFormat = pixelFormat
+        self.warmupDuration = warmupDuration
         self.sampleDuration = sampleDuration
         self.measurements = measurements
         super.init()
@@ -53,16 +56,19 @@ public enum MDKCaptureBenchmarkSuiteRunner {
     public static func run(
         plan: MDKCaptureBenchmarkPlan,
         pixelFormat: UInt32,
+        warmupDuration: TimeInterval = 1.0,
         sampleDuration: TimeInterval = 1.0
     ) -> MDKCaptureBenchmarkSuiteResult {
         run(
             plan: plan,
             pixelFormat: pixelFormat,
+            warmupDuration: warmupDuration,
             sampleDuration: sampleDuration,
-            runBenchmark: { configuration, duration in
+            runBenchmark: { configuration, warmupDuration, sampleDuration in
                 try MDKCaptureBenchmarkRunner.run(
                     configuration: configuration,
-                    sampleDuration: duration
+                    warmupDuration: warmupDuration,
+                    sampleDuration: sampleDuration
                 )
             }
         )
@@ -71,8 +77,9 @@ public enum MDKCaptureBenchmarkSuiteRunner {
     static func run(
         plan: MDKCaptureBenchmarkPlan,
         pixelFormat: UInt32,
+        warmupDuration: TimeInterval,
         sampleDuration: TimeInterval,
-        runBenchmark: (MDKCaptureConfiguration, TimeInterval) throws -> MDKCaptureBenchmarkResult
+        runBenchmark: (MDKCaptureConfiguration, TimeInterval, TimeInterval) throws -> MDKCaptureBenchmarkResult
     ) -> MDKCaptureBenchmarkSuiteResult {
         let measurements = plan.candidates.map { candidate in
             guard candidate.available else {
@@ -92,7 +99,7 @@ public enum MDKCaptureBenchmarkSuiteRunner {
             )
 
             do {
-                let result = try runBenchmark(configuration, sampleDuration)
+                let result = try runBenchmark(configuration, warmupDuration, sampleDuration)
                 return MDKCaptureBenchmarkMeasurement(
                     backend: candidate.backend,
                     available: true,
@@ -114,6 +121,7 @@ public enum MDKCaptureBenchmarkSuiteRunner {
         return MDKCaptureBenchmarkSuiteResult(
             plan: plan,
             pixelFormat: pixelFormat,
+            warmupDuration: warmupDuration,
             sampleDuration: sampleDuration,
             measurements: measurements
         )

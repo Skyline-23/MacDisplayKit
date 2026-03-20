@@ -3,6 +3,20 @@ import CoreVideo
 import Foundation
 import IOSurface
 
+private func MDKDisplayStreamProperties(for configuration: MDKCaptureConfiguration) -> CFDictionary {
+    let frameTimeInSeconds: Float
+    if configuration.frameRate <= 0 || configuration.frameRate > 60 {
+        frameTimeInSeconds = 0
+    } else {
+        frameTimeInSeconds = 1.0 / Float(configuration.frameRate)
+    }
+
+    return [
+        CGDisplayStream.showCursor as String: false,
+        CGDisplayStream.minimumFrameTime as String: NSNumber(value: frameTimeInSeconds),
+    ] as NSDictionary as CFDictionary
+}
+
 public struct MDKCaptureFrame: Sendable, Equatable {
     public let sequenceNumber: UInt64
     public let displayTime: UInt64
@@ -24,6 +38,15 @@ public struct MDKCaptureSessionStatistics: Sendable, Equatable {
         skippedFrameCount: 0,
         lastDisplayTime: 0
     )
+
+    public func delta(since baseline: MDKCaptureSessionStatistics) -> MDKCaptureSessionStatistics {
+        MDKCaptureSessionStatistics(
+            callbackCount: callbackCount &- baseline.callbackCount,
+            deliveredFrameCount: deliveredFrameCount &- baseline.deliveredFrameCount,
+            skippedFrameCount: skippedFrameCount &- baseline.skippedFrameCount,
+            lastDisplayTime: lastDisplayTime
+        )
+    }
 }
 
 public enum MDKCaptureSessionError: Error, LocalizedError, Equatable {
@@ -148,9 +171,7 @@ private final class MDKCGDisplayStreamCaptureDriver: MDKCaptureSessionDriver {
         }
         stateLock.unlock()
 
-        let properties = [
-            CGDisplayStream.showCursor: kCFBooleanTrue as Any
-        ] as NSDictionary as CFDictionary
+        let properties = MDKDisplayStreamProperties(for: configuration)
 
         let stream = CGDisplayStream(
             dispatchQueueDisplay: configuration.displayID,

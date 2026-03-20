@@ -55,6 +55,7 @@ private final class MDKCaptureBenchmarkTimelineBox: @unchecked Sendable {
     private let lock = NSLock()
     private var timeline = MDKCaptureBenchmarkTimeline()
     private let timeSource: @Sendable () -> TimeInterval
+    private var isRecording = false
 
     init(timeSource: @escaping @Sendable () -> TimeInterval) {
         self.timeSource = timeSource
@@ -62,8 +63,25 @@ private final class MDKCaptureBenchmarkTimelineBox: @unchecked Sendable {
 
     func recordFrame() {
         lock.lock()
-        timeline.recordFrame(at: timeSource())
+        if isRecording {
+            timeline.recordFrame(at: timeSource())
+        }
         lock.unlock()
+    }
+
+    func beginRecording() {
+        lock.lock()
+        timeline = MDKCaptureBenchmarkTimeline()
+        isRecording = true
+        lock.unlock()
+    }
+
+    func endRecording() -> MDKCaptureBenchmarkTimeline {
+        lock.lock()
+        isRecording = false
+        let capturedTimeline = timeline
+        lock.unlock()
+        return capturedTimeline
     }
 
     func snapshot() -> MDKCaptureBenchmarkTimeline {
@@ -132,10 +150,12 @@ extension MDKCaptureSession: MDKCaptureSessionControlling {}
 public enum MDKCaptureBenchmarkRunner {
     public static func run(
         configuration: MDKCaptureConfiguration,
+        warmupDuration: TimeInterval = 1.0,
         sampleDuration: TimeInterval = 1.0
     ) throws -> MDKCaptureBenchmarkResult {
         try run(
             configuration: configuration,
+            warmupDuration: warmupDuration,
             sampleDuration: sampleDuration,
             makeSession: MDKCaptureSessionFactory.makeSession(configuration:),
             timeSource: { ProcessInfo.processInfo.systemUptime },
@@ -145,31 +165,41 @@ public enum MDKCaptureBenchmarkRunner {
 
     static func run(
         configuration: MDKCaptureConfiguration,
+        warmupDuration: TimeInterval,
         sampleDuration: TimeInterval,
         makeSession: (MDKCaptureConfiguration) throws -> MDKCaptureSessionControlling,
         timeSource: @escaping @Sendable () -> TimeInterval,
         sleeper: (TimeInterval) -> Void
     ) throws -> MDKCaptureBenchmarkResult {
+        let clampedWarmupDuration = max(warmupDuration, 0)
         let clampedSampleDuration = max(sampleDuration, 0)
         let session = try makeSession(configuration)
-        let runStartedAt = timeSource()
         let timeline = MDKCaptureBenchmarkTimelineBox(timeSource: timeSource)
 
         try session.start { _ in
             timeline.recordFrame()
         }
 
+        if clampedWarmupDuration > 0 {
+            sleeper(clampedWarmupDuration)
+        }
+
+        let measurementStartedAt = timeSource()
+        let baselineStats = session.statistics
+        timeline.beginRecording()
         sleeper(clampedSampleDuration)
+        let measuredTimeline = timeline.endRecording()
+        let measuredStats = session.statistics.delta(since: baselineStats)
         session.stop()
 
-        let measuredDuration = max(timeSource() - runStartedAt, 0)
+        let measuredDuration = max(timeSource() - measurementStartedAt, 0)
         return MDKCaptureBenchmarkAnalyzer.result(
             configuration: configuration,
-            stats: session.statistics,
+            stats: measuredStats,
             sampleDuration: clampedSampleDuration,
             measuredDuration: measuredDuration,
-            timeline: timeline.snapshot(),
-            runStartedAt: runStartedAt
+            timeline: measuredTimeline,
+            runStartedAt: measurementStartedAt
         )
     }
 }

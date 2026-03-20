@@ -1,4 +1,5 @@
 import XCTest
+import CoreVideo
 @testable import MacDisplayKit
 
 final class MacDisplayKitTests: XCTestCase {
@@ -45,15 +46,22 @@ final class MacDisplayKitTests: XCTestCase {
 
     func testOptimizationTargetCanProduceCaptureConfiguration() {
         let target = MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly
-        let configuration = target.makeConfiguration(displayID: 77, pixelFormat: 0x78343230)
+        let configuration = target.makeConfiguration(displayID: 77)
 
         XCTAssertEqual(configuration.displayID, 77)
         XCTAssertEqual(configuration.width, 3840)
         XCTAssertEqual(configuration.height, 2160)
         XCTAssertEqual(configuration.frameRate, 120)
-        XCTAssertEqual(configuration.pixelFormat, 0x78343230)
+        XCTAssertEqual(configuration.pixelFormat, kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
         XCTAssertEqual(configuration.backend, .cgDisplayStream)
         XCTAssertEqual(configuration.dynamicRangeMode, .hdrCanonical)
+    }
+
+    func testOptimizationTargetExposesBenchmarkPixelFormat() {
+        XCTAssertEqual(
+            MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly.benchmarkPixelFormat,
+            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        )
     }
 
     func testBenchmarkPlannerPrioritizesRecommendedPrimaryBackend() {

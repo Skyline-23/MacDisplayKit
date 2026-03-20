@@ -1,4 +1,5 @@
 import Foundation
+import CoreVideo
 
 @objc
 public enum MDKCaptureScenarioTopology: Int {
@@ -48,9 +49,18 @@ public final class MDKCaptureOptimizationTarget: NSObject, NSCopying {
         topology == .virtualDisplay
     }
 
+    public var benchmarkPixelFormat: UInt32 {
+        switch dynamicRangeMode {
+        case .sdr:
+            return kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        case .hdrCanonical, .hdrLocal:
+            return kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        }
+    }
+
     public func makeConfiguration(
         displayID: UInt32,
-        pixelFormat: UInt32,
+        pixelFormat: UInt32? = nil,
         backend: MDKCaptureBackend? = nil
     ) -> MDKCaptureConfiguration {
         MDKCaptureConfiguration(
@@ -58,7 +68,7 @@ public final class MDKCaptureOptimizationTarget: NSObject, NSCopying {
             width: width,
             height: height,
             frameRate: frameRate,
-            pixelFormat: pixelFormat,
+            pixelFormat: pixelFormat ?? benchmarkPixelFormat,
             backend: backend ?? recommendedBackend,
             dynamicRangeMode: dynamicRangeMode
         )

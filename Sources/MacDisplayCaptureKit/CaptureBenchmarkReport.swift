@@ -28,6 +28,7 @@ public struct MDKCaptureBenchmarkSuiteReport: Codable, Equatable, Sendable {
     public let intent: String
     public let screenCaptureAccessAuthorized: Bool
     public let pixelFormat: UInt32
+    public let warmupDuration: TimeInterval
     public let sampleDuration: TimeInterval
     public let suitePassed: Bool
     public let minimumObservedFrameRateRatio: Double
@@ -72,6 +73,7 @@ public enum MDKCaptureBenchmarkReport {
             intent: intentName(suite.plan.intent),
             screenCaptureAccessAuthorized: suite.plan.screenCaptureAccessAuthorized,
             pixelFormat: suite.pixelFormat,
+            warmupDuration: suite.warmupDuration,
             sampleDuration: suite.sampleDuration,
             suitePassed: assessment.passed,
             minimumObservedFrameRateRatio: thresholds.minimumObservedFrameRateRatio,
