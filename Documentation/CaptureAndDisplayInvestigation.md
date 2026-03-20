@@ -274,6 +274,10 @@ The current host-only proxy trace records:
   - `firstPrivateQueueSource`
   - `firstPrivateQueueTimestampNanos`
   - `firstPublicSampleTimestampNanos`
+  - `firstPublicSamplePrecedingEventKind`
+  - `firstPublicSamplePrecedingEventLeadMilliseconds`
+  - `firstPublicSamplePrecedingStateSourceKind`
+  - `firstPublicSamplePrecedingStateLeadMilliseconds`
   - `privateQueueLeadMilliseconds`
   - `surfacePointerMatched`
 
@@ -309,6 +313,7 @@ Interpretation:
 - this is the safe bridge between:
   - queue/setup discovery
   - public `stream:didOutputSampleBuffer:ofType:`
+- it now also reports which event immediately preceded the first healthy public sample, plus the nearest earlier `streamState` snapshot if the immediate predecessor had no state
 
 Current use:
 
@@ -321,11 +326,20 @@ Recent passive-handshake sample on display `2`:
 - public `stream:didOutputSampleBuffer:ofType:` delivery remained healthy
 - the same run still did not observe `RPDaemonProxy proxyCoreGraphicsWithMethodType:config:machPort:completionHandler:`
 
+Recent passive-handshake sample after adding predecessor derivation on display `2`:
+
+- `sampleBufferEventCount=40`
+- immediate predecessor event kind: `stream-start-remote-microphone-receive-queue`
+- immediate predecessor lead: `84.754791 ms`
+- nearest earlier state source: `stream-post-start-remote-video-state`
+- nearest earlier state lead: `85.075125 ms`
+
 Interpretation:
 
 - queue setup and public sample delivery can be correlated in one healthy session without consuming the queue
 - `proxyCoreGraphicsWithMethodType:config:machPort:completionHandler:` is not required for the public sample path we are currently observing
 - the next useful split is no longer “can we keep public samples alive,” but “which earlier queue/setup transition best predicts the first healthy sample”
+- in the current trace, the first public sample lands about `85 ms` after the last queue-start event and the nearest earlier `streamState` snapshot
 
 ## External clues worth keeping in mind
 

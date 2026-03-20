@@ -350,10 +350,22 @@ final class MacDisplayKitTests: XCTestCase {
                     "status": NSNumber(value: 0),
                     "succeeded": NSNumber(value: true),
                     "notes": ["Proxy stream creation returned success."]
+                ],
+                [
+                    "name": "delivery-comparison",
+                    "selector": "stream:didOutputSampleBuffer:ofType:",
+                    "status": NSNumber(value: 0),
+                    "succeeded": NSNumber(value: true),
+                    "notes": [
+                        "firstPublicSamplePrecedingEventKind=post-start-stream-state",
+                        "firstPublicSamplePrecedingEventLeadMilliseconds=1.25"
+                    ]
                 ]
             ],
             "notes": [
-                "Handshake trace payload parsed."
+                "Handshake trace payload parsed.",
+                "firstPublicSamplePrecedingEventKind=post-start-stream-state",
+                "firstPublicSamplePrecedingEventLeadMilliseconds=1.25"
             ]
         ]
 
@@ -379,13 +391,24 @@ final class MacDisplayKitTests: XCTestCase {
                 "SLSHWCaptureStreamCreateProxying"
             ]
         )
-        XCTAssertEqual(trace.steps.count, 2)
+        XCTAssertEqual(trace.steps.count, 3)
         XCTAssertEqual(trace.steps[0].name, "fetch-display")
         XCTAssertEqual(trace.steps[0].selector, "fetchDisplay:withCompletionHandler:")
         XCTAssertEqual(trace.steps[0].status, 0)
         XCTAssertEqual(trace.steps[0].succeeded, true)
         XCTAssertEqual(trace.steps[1].symbol, "SLSDisplayStreamCreateProxying")
-        XCTAssertEqual(trace.notes, ["Handshake trace payload parsed."])
+        XCTAssertEqual(trace.steps[2].name, "delivery-comparison")
+        XCTAssertEqual(trace.steps[2].selector, "stream:didOutputSampleBuffer:ofType:")
+        XCTAssertTrue(trace.steps[2].notes.contains("firstPublicSamplePrecedingEventKind=post-start-stream-state"))
+        XCTAssertTrue(trace.steps[2].notes.contains("firstPublicSamplePrecedingEventLeadMilliseconds=1.25"))
+        XCTAssertEqual(
+            trace.notes,
+            [
+                "Handshake trace payload parsed.",
+                "firstPublicSamplePrecedingEventKind=post-start-stream-state",
+                "firstPublicSamplePrecedingEventLeadMilliseconds=1.25"
+            ]
+        )
     }
 
     func testPrivateCapturePrototypePlannerPrefersProxyingPathWhenAvailable() {

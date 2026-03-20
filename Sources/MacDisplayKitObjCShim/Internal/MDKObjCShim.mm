@@ -3721,9 +3721,16 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
 
     NSArray<NSDictionary<NSString *, id> *> *traceEvents = snapshot[@"events"] ?: @[];
     NSDictionary<NSString *, id> *firstPublicSampleEvent = nil;
-    for (NSDictionary<NSString *, id> *event in traceEvents) {
+    NSDictionary<NSString *, id> *firstPublicSamplePrecedingEvent = nil;
+    NSUInteger firstPublicSampleEventIndex = NSNotFound;
+    for (NSUInteger idx = 0; idx < traceEvents.count; ++idx) {
+        NSDictionary<NSString *, id> *event = traceEvents[idx];
         if ([event[@"kind"] isEqualToString:@"stream-output-sample-buffer"]) {
             firstPublicSampleEvent = event;
+            firstPublicSampleEventIndex = idx;
+            if (idx > 0 && [traceEvents[idx - 1] isKindOfClass:[NSDictionary class]]) {
+                firstPublicSamplePrecedingEvent = traceEvents[idx - 1];
+            }
             break;
         }
     }
@@ -3762,6 +3769,53 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         [firstPublicSampleBuffer[@"surface"] isKindOfClass:[NSDictionary class]] ? firstPublicSampleBuffer[@"surface"] : nil;
     NSString *firstPublicSampleSurfacePointer =
         [firstPublicSampleSurface[@"pointer"] isKindOfClass:[NSString class]] ? firstPublicSampleSurface[@"pointer"] : nil;
+    NSNumber *firstPublicSamplePrecedingEventIndexNumber =
+        (firstPublicSampleEventIndex != NSNotFound && firstPublicSampleEventIndex > 0) ? @(firstPublicSampleEventIndex - 1) : nil;
+    NSString *firstPublicSamplePrecedingEventKind =
+        [firstPublicSamplePrecedingEvent[@"kind"] isKindOfClass:[NSString class]] ? firstPublicSamplePrecedingEvent[@"kind"] : nil;
+    NSString *firstPublicSamplePrecedingEventSelector =
+        [firstPublicSamplePrecedingEvent[@"selector"] isKindOfClass:[NSString class]] ? firstPublicSamplePrecedingEvent[@"selector"] : nil;
+    NSString *firstPublicSamplePrecedingEventSymbol =
+        [firstPublicSamplePrecedingEvent[@"symbol"] isKindOfClass:[NSString class]] ? firstPublicSamplePrecedingEvent[@"symbol"] : nil;
+    NSNumber *firstPublicSamplePrecedingEventTimestampNanos =
+        [firstPublicSamplePrecedingEvent[@"timestampNanos"] isKindOfClass:[NSNumber class]] ? firstPublicSamplePrecedingEvent[@"timestampNanos"] : nil;
+    NSDictionary<NSString *, id> *firstPublicSamplePrecedingEventStreamState =
+        [firstPublicSamplePrecedingEvent[@"streamState"] isKindOfClass:[NSDictionary class]] ? firstPublicSamplePrecedingEvent[@"streamState"] : nil;
+    NSNumber *firstPublicSamplePrecedingEventLeadMilliseconds = nil;
+    if ([firstPublicSamplePrecedingEventTimestampNanos isKindOfClass:[NSNumber class]] &&
+        [firstPublicSampleTimestampNanos isKindOfClass:[NSNumber class]]) {
+        const long double deltaNanos =
+            static_cast<long double>(firstPublicSampleTimestampNanos.unsignedLongLongValue) -
+            static_cast<long double>(firstPublicSamplePrecedingEventTimestampNanos.unsignedLongLongValue);
+        firstPublicSamplePrecedingEventLeadMilliseconds = @(static_cast<double>(deltaNanos / 1.0e6L));
+    }
+
+    NSDictionary<NSString *, id> *firstPublicSamplePrecedingState = firstPublicSamplePrecedingEventStreamState;
+    NSString *firstPublicSamplePrecedingStateSourceKind = firstPublicSamplePrecedingEventKind;
+    NSNumber *firstPublicSamplePrecedingStateTimestampNanos = firstPublicSamplePrecedingEventTimestampNanos;
+    if (firstPublicSamplePrecedingState == nil && firstPublicSampleEventIndex != NSNotFound) {
+        for (NSInteger idx = static_cast<NSInteger>(firstPublicSampleEventIndex) - 1; idx >= 0; --idx) {
+            NSDictionary<NSString *, id> *event = traceEvents[static_cast<NSUInteger>(idx)];
+            if (![event[@"streamState"] isKindOfClass:[NSDictionary class]]) {
+                continue;
+            }
+
+            firstPublicSamplePrecedingState = event[@"streamState"];
+            firstPublicSamplePrecedingStateSourceKind =
+                [event[@"kind"] isKindOfClass:[NSString class]] ? event[@"kind"] : nil;
+            firstPublicSamplePrecedingStateTimestampNanos =
+                [event[@"timestampNanos"] isKindOfClass:[NSNumber class]] ? event[@"timestampNanos"] : nil;
+            break;
+        }
+    }
+    NSNumber *firstPublicSamplePrecedingStateLeadMilliseconds = nil;
+    if ([firstPublicSamplePrecedingStateTimestampNanos isKindOfClass:[NSNumber class]] &&
+        [firstPublicSampleTimestampNanos isKindOfClass:[NSNumber class]]) {
+        const long double deltaNanos =
+            static_cast<long double>(firstPublicSampleTimestampNanos.unsignedLongLongValue) -
+            static_cast<long double>(firstPublicSamplePrecedingStateTimestampNanos.unsignedLongLongValue);
+        firstPublicSamplePrecedingStateLeadMilliseconds = @(static_cast<double>(deltaNanos / 1.0e6L));
+    }
     NSString *firstPrivateQueueSurfacePointer =
         [firstPrivateQueueSurface[@"pointer"] isKindOfClass:[NSString class]] ? firstPrivateQueueSurface[@"pointer"] : nil;
     NSNumber *privateQueueLeadMilliseconds = nil;
@@ -3830,6 +3884,17 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"capturedRemoteQueueCount=%lu", (unsigned long) MDKCapturedSCKRemoteQueueCount()]];
     [notes addObject:[NSString stringWithFormat:@"privateQueueProbesEnabled=%@", includePrivateQueueProbes ? @"true" : @"false"]];
     [notes addObject:[NSString stringWithFormat:@"firstPublicSampleTimestampNanos=%@", MDKDescribeTraceValue(firstPublicSampleTimestampNanos)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingEventIndex=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingEventIndexNumber)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingEventKind=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingEventKind)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingEventSelector=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingEventSelector)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingEventSymbol=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingEventSymbol)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingEventTimestampNanos=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingEventTimestampNanos)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingEventLeadMilliseconds=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingEventLeadMilliseconds)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingEventStreamState=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingEventStreamState)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingStateSourceKind=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingStateSourceKind)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingStateTimestampNanos=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingStateTimestampNanos)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingStateLeadMilliseconds=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingStateLeadMilliseconds)]];
+    [notes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingState=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingState)]];
     [notes addObject:[NSString stringWithFormat:@"firstPrivateQueueTimestampNanos=%@", MDKDescribeTraceValue(firstPrivateQueueTimestampNanos)]];
     [notes addObject:[NSString stringWithFormat:@"firstPrivateQueueSource=%@", MDKDescribeTraceValue(firstPrivateQueueSource)]];
     [notes addObject:[NSString stringWithFormat:@"privateQueueLeadMilliseconds=%@", MDKDescribeTraceValue(privateQueueLeadMilliseconds)]];
@@ -3859,6 +3924,17 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
 
     NSMutableArray<NSString *> *deliveryComparisonNotes = [NSMutableArray array];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSampleTimestampNanos=%@", MDKDescribeTraceValue(firstPublicSampleTimestampNanos)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingEventIndex=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingEventIndexNumber)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingEventKind=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingEventKind)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingEventSelector=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingEventSelector)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingEventSymbol=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingEventSymbol)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingEventTimestampNanos=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingEventTimestampNanos)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingEventLeadMilliseconds=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingEventLeadMilliseconds)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingEventStreamState=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingEventStreamState)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingStateSourceKind=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingStateSourceKind)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingStateTimestampNanos=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingStateTimestampNanos)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingStateLeadMilliseconds=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingStateLeadMilliseconds)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPublicSamplePrecedingState=%@", MDKDescribeTraceValue(firstPublicSamplePrecedingState)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPrivateQueueTimestampNanos=%@", MDKDescribeTraceValue(firstPrivateQueueTimestampNanos)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstPrivateQueueSource=%@", MDKDescribeTraceValue(firstPrivateQueueSource)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"privateQueueLeadMilliseconds=%@", MDKDescribeTraceValue(privateQueueLeadMilliseconds)]];
@@ -3869,6 +3945,14 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     } else {
         [deliveryComparisonNotes addObject:@"surfacePointerMatched=<null>"];
     }
+    [steps addObject:MDKMakeTraceStep(
+        @"first-public-sample-predecessor",
+        firstPublicSamplePrecedingEventSelector,
+        firstPublicSamplePrecedingEventSymbol,
+        nil,
+        @(firstPublicSamplePrecedingEventKind != nil),
+        deliveryComparisonNotes
+    )];
     [steps addObject:MDKMakeTraceStep(
         @"delivery-comparison",
         @"stream:didOutputSampleBuffer:ofType:",
