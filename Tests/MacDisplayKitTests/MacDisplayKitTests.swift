@@ -1,6 +1,7 @@
 import XCTest
 import CoreVideo
 @testable import MacDisplayKit
+@testable import MacDisplayCaptureKit
 
 final class MacDisplayKitTests: XCTestCase {
     func testVersionStringIsPresent() {
@@ -109,6 +110,60 @@ final class MacDisplayKitTests: XCTestCase {
 
         XCTAssertEqual(plan.recommendedEntryPoint, .unavailable)
         XCTAssertFalse(plan.readyForIOSurfacePrototype)
+    }
+
+    func testPrivateCaptureProbeResultRoundTripsThroughJSON() throws {
+        let result = MDKPrivateCaptureProbeResult(
+            entryPoint: .displayIOSurfaceWithOptions,
+            displayID: 77,
+            surfaceWidth: 3840,
+            surfaceHeight: 2160,
+            bytesPerRow: 15360,
+            pixelFormat: kCVPixelFormatType_32BGRA,
+            sampleWord: 0xDEADBEEF,
+            captureValue: 0x12345678,
+            status: 0,
+            surfacePopulated: true,
+            requestedExtendedRange: false,
+            extendedRangeApplied: false,
+            notes: [
+                "Uses the private SDR-safe probe path."
+            ]
+        )
+
+        let data = try JSONEncoder().encode(result)
+        let decoded = try JSONDecoder().decode(MDKPrivateCaptureProbeResult.self, from: data)
+        XCTAssertEqual(decoded, result)
+    }
+
+    func testPrivateCaptureProbeResultParsesShimDictionary() throws {
+        let payload: NSDictionary = [
+            "entryPoint": "cgshw-display-iosurface-with-options",
+            "displayID": NSNumber(value: 88),
+            "surfaceWidth": NSNumber(value: 2560),
+            "surfaceHeight": NSNumber(value: 1440),
+            "bytesPerRow": NSNumber(value: 10240),
+            "pixelFormat": NSNumber(value: kCVPixelFormatType_32BGRA),
+            "sampleWord": NSNumber(value: 1234),
+            "captureValue": NSNumber(value: 5678),
+            "status": NSNumber(value: 0),
+            "surfacePopulated": NSNumber(value: true),
+            "requestedExtendedRange": NSNumber(value: false),
+            "extendedRangeApplied": NSNumber(value: false),
+            "notes": ["payload parsed"]
+        ]
+
+        let result = try MDKPrivateCaptureProbeResult(shimDictionary: payload)
+        XCTAssertEqual(result.entryPoint, .displayIOSurfaceWithOptions)
+        XCTAssertEqual(result.displayID, 88)
+        XCTAssertEqual(result.surfaceWidth, 2560)
+        XCTAssertEqual(result.surfaceHeight, 1440)
+        XCTAssertEqual(result.bytesPerRow, 10240)
+        XCTAssertEqual(result.pixelFormat, kCVPixelFormatType_32BGRA)
+        XCTAssertEqual(result.sampleWord, 1234)
+        XCTAssertEqual(result.captureValue, 5678)
+        XCTAssertTrue(result.surfacePopulated)
+        XCTAssertEqual(result.notes, ["payload parsed"])
     }
 
     func testOptimizationTargetsInclude4KHDR120CaptureOnlyBaseline() {

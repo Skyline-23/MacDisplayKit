@@ -1,10 +1,13 @@
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <CoreVideo/CoreVideo.h>
+#import <IOSurface/IOSurface.h>
 #import <dlfcn.h>
 
 #import "MDKObjCShim.h"
 
 #include <algorithm>
+#include <cstdint>
 
 #import "../LegacyRuntime/Capture/av_audio.h"
 #import "../LegacyRuntime/Capture/av_video.h"
@@ -107,6 +110,114 @@ BOOL MDKShimVideoPrivateDisplayIOSurfaceCaptureWithOptionsAvailable(void) {
 
 BOOL MDKShimVideoPrivateCaptureExtendedRangeOptionAvailable(void) {
     return MDKLookupCaptureSymbol("kSLSCaptureExtendedRange") != nullptr;
+}
+
+NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureSingleFrame(
+    NSUInteger displayID,
+    BOOL requestExtendedRange,
+    NSError * _Nullable * _Nullable error
+) {
+    using MDKPrivateCaptureDisplayIntoIOSurfaceWithOptionsFn =
+        int (*)(std::uint32_t, std::uint32_t, std::uint32_t, IOSurfaceRef, std::uint32_t *);
+    static constexpr std::uint32_t MDKPrivateCaptureExtendedRangeBit = 0x00200000;
+
+    auto symbol = reinterpret_cast<MDKPrivateCaptureDisplayIntoIOSurfaceWithOptionsFn>(
+        MDKLookupCaptureSymbol("CGSHWCaptureDisplayIntoIOSurfaceWithOptions")
+    );
+    if (symbol == nullptr) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:1
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"CGSHWCaptureDisplayIntoIOSurfaceWithOptions is unavailable."
+                                     }];
+        }
+        return nil;
+    }
+
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(static_cast<CGDirectDisplayID>(displayID));
+    if (mode == nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:2
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Unable to resolve the current display mode for the requested display."
+                                     }];
+        }
+        return nil;
+    }
+
+    const std::uint32_t width = static_cast<std::uint32_t>(std::max<std::size_t>(CGDisplayModeGetPixelWidth(mode), 1));
+    const std::uint32_t height = static_cast<std::uint32_t>(std::max<std::size_t>(CGDisplayModeGetPixelHeight(mode), 1));
+    CFRelease(mode);
+
+    NSDictionary *surfaceProperties = @{
+        (NSString *) kIOSurfaceWidth: @(width),
+        (NSString *) kIOSurfaceHeight: @(height),
+        (NSString *) kIOSurfacePixelFormat: @(kCVPixelFormatType_32BGRA),
+        (NSString *) kIOSurfaceBytesPerElement: @4,
+    };
+    IOSurfaceRef surface = IOSurfaceCreate((__bridge CFDictionaryRef) surfaceProperties);
+    if (surface == nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:3
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Failed to allocate the probe IOSurface."
+                                     }];
+        }
+        return nil;
+    }
+
+    std::uint32_t captureValue = 0;
+    const std::uint32_t optionsBits = requestExtendedRange ? MDKPrivateCaptureExtendedRangeBit : 0;
+    const int status = symbol(
+        0,
+        static_cast<std::uint32_t>(displayID),
+        optionsBits,
+        surface,
+        &captureValue
+    );
+
+    IOSurfaceLock(surface, kIOSurfaceLockReadOnly, nullptr);
+    const auto *baseAddress = static_cast<const std::uint32_t *>(IOSurfaceGetBaseAddress(surface));
+    const std::uint32_t sampleWord = baseAddress != nullptr ? baseAddress[0] : 0;
+    const BOOL surfacePopulated = sampleWord != 0;
+    const std::size_t bytesPerRow = IOSurfaceGetBytesPerRow(surface);
+    const OSType pixelFormat = IOSurfaceGetPixelFormat(surface);
+    const std::size_t surfaceWidth = IOSurfaceGetWidth(surface);
+    const std::size_t surfaceHeight = IOSurfaceGetHeight(surface);
+    IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, nullptr);
+    CFRelease(surface);
+
+    if (status != 0 && error != nullptr) {
+        *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                     code:status
+                                 userInfo:@{
+                                     NSLocalizedDescriptionKey: @"The private IOSurface capture probe returned a non-zero status."
+                                 }];
+    }
+
+    return @{
+        @"entryPoint": @"cgshw-display-iosurface-with-options",
+        @"displayID": @(displayID),
+        @"surfaceWidth": @(surfaceWidth),
+        @"surfaceHeight": @(surfaceHeight),
+        @"bytesPerRow": @(bytesPerRow),
+        @"pixelFormat": @(pixelFormat),
+        @"sampleWord": @(sampleWord),
+        @"captureValue": @(captureValue),
+        @"status": @(status),
+        @"surfacePopulated": @(surfacePopulated),
+        @"requestedExtendedRange": @(requestExtendedRange),
+        @"extendedRangeApplied": @(requestExtendedRange && status == 0),
+        @"notes": @[
+            @"Uses CGSHWCaptureDisplayIntoIOSurfaceWithOptions with option bits and a direct IOSurface target.",
+            requestExtendedRange
+                ? @"Extended-range capture was requested with the 0x00200000 private option bit."
+                : @"The probe is running in the SDR-safe private capture mode."
+        ]
+    };
 }
 
 NSArray<NSString *> *MDKShimMicrophoneNames(void) {

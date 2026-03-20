@@ -307,7 +307,6 @@ public enum MDKCaptureBenchmarkRunner {
         let clampedSampleDuration = max(sampleDuration, 0)
         let session = try makeSession(configuration)
         let recorder = MDKCaptureBenchmarkRecorder()
-        let pendingRecordings = DispatchGroup()
         let processor = try makeProcessor()
 
         try session.start { frame in
@@ -319,12 +318,11 @@ public enum MDKCaptureBenchmarkRunner {
                 processingSucceeded = false
             }
 
-            pendingRecordings.enter()
             let frameWidth = frame.width
             let frameHeight = frame.height
             let framePixelFormat = frame.pixelFormat
             let frameTime = timeSource()
-            Task {
+            MDKCaptureBenchmarkActorBridge.wait {
                 await recorder.recordFrame(
                     at: frameTime,
                     width: frameWidth,
@@ -332,7 +330,6 @@ public enum MDKCaptureBenchmarkRunner {
                     pixelFormat: framePixelFormat,
                     processingSucceeded: processingSucceeded
                 )
-                pendingRecordings.leave()
             }
         }
 
@@ -340,7 +337,6 @@ public enum MDKCaptureBenchmarkRunner {
             sleeper(clampedWarmupDuration)
         }
 
-        pendingRecordings.wait()
         let baselineStats = session.statistics
         MDKCaptureBenchmarkActorBridge.wait {
             await recorder.beginRecording()
@@ -348,7 +344,6 @@ public enum MDKCaptureBenchmarkRunner {
         let measurementStartedAt = timeSource()
         sleeper(clampedSampleDuration)
         session.stop()
-        pendingRecordings.wait()
         let measuredStats = session.statistics.delta(since: baselineStats)
         let recording = MDKCaptureBenchmarkActorBridge.wait {
             await recorder.finishRecording()

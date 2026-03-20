@@ -5,6 +5,7 @@ private enum MDKHostCLICommand {
     case listDisplays
     case listTargets
     case privateCapturePlan(json: Bool)
+    case privateCaptureProbe(displayID: UInt32, requestExtendedRange: Bool, json: Bool)
     case benchmark(
         displayID: UInt32,
         targetIdentifier: String,
@@ -55,6 +56,27 @@ enum MDKHostCommandLine {
                 print(MDKHostBenchmarkFormatter.formatPrivateCapturePrototypePlan(plan))
             }
             return 0
+        case .privateCaptureProbe(let displayID, let requestExtendedRange, let json):
+            do {
+                let result = try controller.probePrivateCaptureSingleFrame(
+                    displayID: displayID,
+                    requestExtendedRange: requestExtendedRange
+                )
+                if json {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    let data = try encoder.encode(result)
+                    if let text = String(data: data, encoding: .utf8) {
+                        print(text)
+                    }
+                } else {
+                    print(MDKHostBenchmarkFormatter.formatPrivateCaptureProbeResult(result))
+                }
+                return result.status == 0 && result.surfacePopulated ? 0 : 2
+            } catch {
+                fputs("Failed to run private capture probe: \(error)\n", stderr)
+                return 1
+            }
         case .benchmark(let displayID, let targetIdentifier, let intent, let processingMode, let json):
             guard let display = controller.display(id: displayID) else {
                 fputs("Unknown display id: \(displayID)\n", stderr)
@@ -134,6 +156,16 @@ enum MDKHostCommandLine {
 
         if tokens.contains("--experimental-private-hw-capture-plan") {
             return .privateCapturePlan(json: tokens.contains("--json"))
+        }
+
+        if let probeDisplayIndex = tokens.firstIndex(of: "--experimental-private-hw-capture-probe-display"),
+           tokens.indices.contains(probeDisplayIndex + 1),
+           let displayID = UInt32(tokens[probeDisplayIndex + 1]) {
+            return .privateCaptureProbe(
+                displayID: displayID,
+                requestExtendedRange: tokens.contains("--experimental-private-hw-capture-probe-hdr"),
+                json: tokens.contains("--json")
+            )
         }
 
         if let matrixDisplayIndex = tokens.firstIndex(of: "--benchmark-matrix-display"),

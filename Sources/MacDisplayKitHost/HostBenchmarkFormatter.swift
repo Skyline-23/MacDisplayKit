@@ -2,6 +2,32 @@ import Foundation
 import MacDisplayKit
 
 enum MDKHostBenchmarkFormatter {
+    static func formatPrivateCaptureProbeResult(
+        _ result: MDKPrivateCaptureProbeResult
+    ) -> String {
+        var lines: [String] = []
+        lines.append("Private hardware capture probe")
+        lines.append("Entry point: \(result.entryPoint.displayName)")
+        lines.append("Display ID: \(result.displayID)")
+        lines.append("Surface size: \(result.surfaceWidth)x\(result.surfaceHeight)")
+        lines.append("Bytes per row: \(result.bytesPerRow)")
+        lines.append(String(format: "Pixel format: 0x%08X", result.pixelFormat))
+        lines.append(String(format: "Sample word: 0x%08X", result.sampleWord))
+        if let captureValue = result.captureValue {
+            lines.append(String(format: "Capture value: 0x%08X", captureValue))
+        }
+        lines.append("Status: \(result.status)")
+        lines.append("Surface populated: \(result.surfacePopulated ? "yes" : "no")")
+        lines.append("Requested extended range: \(result.requestedExtendedRange ? "yes" : "no")")
+        lines.append("Extended range applied: \(result.extendedRangeApplied ? "yes" : "no")")
+        lines.append("")
+        lines.append("Notes:")
+        for note in result.notes {
+            lines.append("  - \(note)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     static func formatPrivateCapturePrototypePlan(
         _ plan: MDKPrivateCapturePrototypePlan
     ) -> String {

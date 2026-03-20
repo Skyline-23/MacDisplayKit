@@ -61,4 +61,14 @@ final class MDKHostBenchmarkController {
     func privateCapturePrototypePlan() -> MDKPrivateCapturePrototypePlan {
         MDKCapabilityMatrix.privateCapturePrototypePlan()
     }
+
+    func probePrivateCaptureSingleFrame(
+        displayID: UInt32,
+        requestExtendedRange: Bool
+    ) throws -> MDKPrivateCaptureProbeResult {
+        try MDKPrivateCapturePrototypeProbe.captureSingleFrame(
+            displayID: displayID,
+            requestExtendedRange: requestExtendedRange
+        )
+    }
 }

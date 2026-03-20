@@ -15,6 +15,11 @@ FOUNDATION_EXPORT BOOL MDKShimVideoPrivateDesktopCaptureAvailable(void);
 FOUNDATION_EXPORT BOOL MDKShimVideoPrivateDisplayIOSurfaceCaptureAvailable(void);
 FOUNDATION_EXPORT BOOL MDKShimVideoPrivateDisplayIOSurfaceCaptureWithOptionsAvailable(void);
 FOUNDATION_EXPORT BOOL MDKShimVideoPrivateCaptureExtendedRangeOptionAvailable(void);
+FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureSingleFrame(
+    NSUInteger displayID,
+    BOOL requestExtendedRange,
+    NSError * _Nullable * _Nullable error
+);
 FOUNDATION_EXPORT NSArray<NSString *> *MDKShimMicrophoneNames(void);
 FOUNDATION_EXPORT NSString * _Nullable MDKShimCreateVirtualDisplay(
     NSString *clientIdentifier,

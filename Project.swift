@@ -115,7 +115,8 @@ let project = Project(
                 .sdk(name: "CoreMedia", type: .framework),
                 .sdk(name: "CoreGraphics", type: .framework),
                 .sdk(name: "CoreVideo", type: .framework),
-                .sdk(name: "Foundation", type: .framework)
+                .sdk(name: "Foundation", type: .framework),
+                .sdk(name: "IOSurface", type: .framework)
             ],
             settings: .settings(
                 base: [
