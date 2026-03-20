@@ -21,6 +21,39 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertTrue(MDKCapabilityMatrix.virtualDisplayIsOptional)
     }
 
+    func testPrivateCaptureCapabilitiesModelHardwareSurfaceAndExtendedRangeHints() {
+        let capabilities = MDKPrivateCaptureCapabilities(
+            desktopCaptureAvailable: false,
+            displayIOSurfaceCaptureAvailable: false,
+            displayIOSurfaceCaptureWithOptionsAvailable: true,
+            extendedRangeOptionAvailable: true
+        )
+
+        XCTAssertTrue(capabilities.hasAnyHardwareCaptureSurface)
+        XCTAssertTrue(capabilities.supportsIOSurfaceDisplayCapture)
+        XCTAssertTrue(capabilities.supportsHDRHardwareCaptureHints)
+    }
+
+    func testPrivateCaptureCapabilityProbeReturnsConsistentHardwareSurfaceFlags() {
+        let capabilities = MDKCapabilityMatrix.privateCaptureCapabilities()
+
+        XCTAssertEqual(
+            capabilities.hasAnyHardwareCaptureSurface,
+            capabilities.desktopCaptureAvailable ||
+                capabilities.displayIOSurfaceCaptureAvailable ||
+                capabilities.displayIOSurfaceCaptureWithOptionsAvailable
+        )
+        XCTAssertEqual(
+            capabilities.supportsIOSurfaceDisplayCapture,
+            capabilities.displayIOSurfaceCaptureAvailable ||
+                capabilities.displayIOSurfaceCaptureWithOptionsAvailable
+        )
+        if capabilities.supportsHDRHardwareCaptureHints {
+            XCTAssertTrue(capabilities.supportsIOSurfaceDisplayCapture)
+            XCTAssertTrue(capabilities.extendedRangeOptionAvailable)
+        }
+    }
+
     func testOptimizationTargetsInclude4KHDR120CaptureOnlyBaseline() {
         let target = MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly
 

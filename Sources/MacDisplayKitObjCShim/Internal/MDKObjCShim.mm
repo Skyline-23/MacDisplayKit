@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <dlfcn.h>
 
 #import "MDKObjCShim.h"
 
@@ -81,6 +82,31 @@ BOOL MDKShimVideoCGDisplayStreamAvailableForDisplay(NSUInteger displayID) {
 
     CFRelease(stream);
     return YES;
+}
+
+static void *MDKLookupCaptureSymbol(const char *symbolName) {
+    void *handle = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight", RTLD_LAZY | RTLD_LOCAL);
+    if (handle == nullptr) {
+        handle = RTLD_DEFAULT;
+    }
+
+    return dlsym(handle, symbolName);
+}
+
+BOOL MDKShimVideoPrivateDesktopCaptureAvailable(void) {
+    return MDKLookupCaptureSymbol("CGSHWCaptureDesktop") != nullptr;
+}
+
+BOOL MDKShimVideoPrivateDisplayIOSurfaceCaptureAvailable(void) {
+    return MDKLookupCaptureSymbol("CGSHWCaptureDisplayIntoIOSurface") != nullptr;
+}
+
+BOOL MDKShimVideoPrivateDisplayIOSurfaceCaptureWithOptionsAvailable(void) {
+    return MDKLookupCaptureSymbol("CGSHWCaptureDisplayIntoIOSurfaceWithOptions") != nullptr;
+}
+
+BOOL MDKShimVideoPrivateCaptureExtendedRangeOptionAvailable(void) {
+    return MDKLookupCaptureSymbol("kSLSCaptureExtendedRange") != nullptr;
 }
 
 NSArray<NSString *> *MDKShimMicrophoneNames(void) {
