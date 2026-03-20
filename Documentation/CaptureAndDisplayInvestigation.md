@@ -689,3 +689,48 @@ The current best lower-level model is now:
   - `__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke`
   - the code path that allocates or late-populates the wrapper capture slot at offset `32`
   - `__59-[SCStream(SCContentSharing) startRemoteVideoReceiveQueue:]_block_invoke`
+
+Follow-up passive trace after fixing the nested-block signature gate and allowing
+`FigRemoteOperation` blocks to interpose:
+
+- `videoQueueNestedBlockCallbackEventCount=44`
+- `videoQueueNestedBlockCallbackCadenceClassification=coalesced-or-mixed`
+- `videoQueueNestedBlockOriginalInvokeSymbol=__59-[SCStream(SCContentSharing) startRemoteVideoReceiveQueue:]_block_invoke`
+- `firstSuccessfulVideoQueueNestedBlockRescanReason=wrapper-install`
+- `firstSuccessfulVideoQueueNestedBlockRescanLeadMilliseconds=31.340458`
+- `firstVideoQueueNestedBlockCallbackTimestampNanos=16130747870416`
+- `firstVideoQueueNestedBlockLeadMilliseconds=0.597209`
+- `firstPublicSamplePrecedingEventKind=video-queue-nested-block-callback`
+- `firstPublicSamplePrecedingEventLeadMilliseconds=0.597209`
+
+Interpretation:
+
+- the nested `startRemoteVideoReceiveQueue:` block is not a dead snapshot artifact; it is
+  now confirmed live on the steady-state path
+- the first successful nested-block install happens as early as `wrapper-install`, so the
+  earlier rescan points are not the main missing piece
+- the nested ScreenCaptureKit local callback fires about `0.6 ms` before the first public
+  sample, which makes it the closest confirmed lower-level predecessor we have so far
+- its cadence classification still matches the wrapper callback (`coalesced-or-mixed`), so
+  the ceiling is still below or at the transition into this local ScreenCaptureKit receive block
+
+Most recent `1s` passive trace on the same path tightened that conclusion further:
+
+- `videoQueueWrapperCallbackCadenceClassification=60hz-like`
+- `videoQueueNestedBlockCallbackCadenceClassification=60hz-like`
+- `videoQueueWrapperToNestedLeadPairCount=49`
+- `videoQueueWrapperToNestedLeadHistogram={"0.1ms":40,"0.2ms":8,"3.7ms":1}`
+- `videoQueueWrapperToNestedLeadMinMilliseconds=0.0515`
+- `videoQueueWrapperToNestedLeadMaxMilliseconds=3.689875`
+- `firstVideoQueueNestedBlockLeadMilliseconds=0.767833`
+- `firstPublicSamplePrecedingEventKind=video-queue-nested-block-callback`
+- `firstPublicSamplePrecedingEventLeadMilliseconds=0.767833`
+
+Interpretation:
+
+- the wrapper callback and the nested ScreenCaptureKit local receive block are effectively in the
+  same scheduling slice for most frames
+- almost every wrapper-to-nested handoff is sub-millisecond, so there is no meaningful headroom in
+  that boundary
+- when this run classifies both wrapper and nested callbacks as `60hz-like`, the remaining ceiling
+  is very likely at or before `__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke`

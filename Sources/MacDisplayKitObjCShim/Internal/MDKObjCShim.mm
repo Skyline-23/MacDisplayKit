@@ -182,6 +182,7 @@ static const mach_header *MDKFindLoadedImageHeader(const char *needle) {
 static void MDKInstallRuntimeFigRemoteQueueReceiverInterposes(void);
 static NSString *MDKCopyBlockSignatureString(id block);
 static NSDictionary<NSString *, id> *MDKDescribeBlockLiteralObject(id block);
+static void MDKRescanNestedVideoQueueBlockIfPossible(id stream, NSString *reason);
 
 static void MDKAppendFilteredMethodNamesForClassToSet(Class cls, NSMutableSet<NSString *> *names) {
     if (cls == Nil) {
@@ -739,7 +740,7 @@ using MDKSCRemoteQueueSetRemoteQueueFn = void (*)(id, SEL, id);
 using MDKSCRemoteQueueSetQueueTypeFn = void (*)(id, SEL, unsigned char);
 using MDKVideoReceiveQueueCallbackBlock = void (^)(int, MDKFigRemoteQueueMessage *, void *);
 using MDKVideoReceiveQueueBlockInvokeFn = void (*)(void *, int, MDKFigRemoteQueueMessage *, void *);
-using MDKVideoQueueNestedBlockInvokeFn = void (*)(void *, int, MDKFigRemoteQueueMessage *, void *);
+using MDKVideoQueueNestedBlockInvokeFn = void (*)(void *, int, void *, void *);
 
 static MDKProxyCoreGraphicsFn MDKOriginalProxyCoreGraphics = nullptr;
 static MDKStartRemoteQueueFn MDKOriginalStartRemoteQueue = nullptr;
@@ -1550,6 +1551,19 @@ static NSString *MDKCopyBlockSignatureString(id block) {
     }
 
     return [NSString stringWithUTF8String:signature];
+}
+
+static BOOL MDKIsVideoQueueWrapperBlockSignature(NSString *signature) {
+    return signature != nil && [signature containsString:@"FigRemoteQueueMessage"];
+}
+
+static BOOL MDKIsVideoQueueNestedBlockSignature(NSString *signature) {
+    if (signature == nil) {
+        return NO;
+    }
+
+    return [signature containsString:@"FigRemoteOperation"] ||
+        [signature containsString:@"FigRemoteQueueMessage"];
 }
 
 static NSString *MDKPointerKey(id object) {
@@ -2542,10 +2556,12 @@ static void MDKSwizzledManagerStartRemoteQueue(id self, SEL _cmd, id queue, id s
     @synchronized(MDKActiveSCKTraceLock) {
         shouldWrapVideoQueueCallback = MDKActiveSCKAllowVideoQueueWrapperProbe;
     }
+    id stream = nil;
+    NSNumber *queueType = nil;
     if (shouldWrapVideoQueueCallback) {
-        NSNumber *queueType = MDKPerformUnsignedCharGetter(queue, sel_registerName("queueType"));
+        queueType = MDKPerformUnsignedCharGetter(queue, sel_registerName("queueType"));
         if (queueType != nil && queueType.unsignedCharValue == 1) {
-            id stream = ((id (*)(id, SEL, id)) objc_msgSend)(self, sel_registerName("getStreamForID:"), streamID);
+            stream = ((id (*)(id, SEL, id)) objc_msgSend)(self, sel_registerName("getStreamForID:"), streamID);
             if (stream != nil) {
                 MDKWrapVideoReceiveQueueCallbackIfPossible(stream);
             }
@@ -2553,6 +2569,9 @@ static void MDKSwizzledManagerStartRemoteQueue(id self, SEL _cmd, id queue, id s
     }
 
     MDKOriginalManagerStartRemoteQueue(self, _cmd, queue, streamID);
+    if (shouldWrapVideoQueueCallback && queueType != nil && queueType.unsignedCharValue == 1 && stream != nil) {
+        MDKRescanNestedVideoQueueBlockIfPossible(stream, @"post-manager-start-video");
+    }
 }
 
 static void MDKSwizzledManagerUpdateClientOutputType(id self, SEL _cmd, id stream, NSUInteger clientOutputType) {
@@ -2795,7 +2814,7 @@ static void MDKRecordVideoQueueWrapperCallbackEvent(
 
 static void MDKRecordVideoQueueNestedBlockCallbackEvent(
     int status,
-    const MDKFigRemoteQueueMessage *message,
+    const void *operation,
     void *context
 ) {
     BOOL shouldRecord = NO;
@@ -2810,12 +2829,9 @@ static void MDKRecordVideoQueueNestedBlockCallbackEvent(
         return;
     }
 
-    NSDictionary<NSString *, id> *surfaceSummary = message != nullptr ? MDKSummarizeIOSurface(message->surface) : @{ @"present": @NO };
-    id messageType = message != nullptr ? static_cast<id>(@(message->messageType)) : [NSNull null];
     NSDictionary<NSString *, id> *payload = @{
         @"status": @(status),
-        @"messageType": messageType,
-        @"surface": surfaceSummary,
+        @"operation": MDKSummarizePointerValue(operation),
         @"context": MDKSummarizePointerValue(context),
     };
     MDKRecordSCKTraceEvent(@"video-queue-nested-block-callback", payload);
@@ -2859,10 +2875,10 @@ static void MDKInterposedVideoQueueBlockInvoke(
 static void MDKInterposedVideoQueueNestedBlockInvoke(
     void *blockLiteral,
     int status,
-    MDKFigRemoteQueueMessage *message,
+    void *operation,
     void *context
 ) {
-    MDKRecordVideoQueueNestedBlockCallbackEvent(status, message, context);
+    MDKRecordVideoQueueNestedBlockCallbackEvent(status, operation, context);
 
     MDKVideoQueueNestedBlockInvokeFn originalInvoke = nullptr;
     @synchronized(MDKActiveSCKTraceLock) {
@@ -2879,8 +2895,51 @@ static void MDKInterposedVideoQueueNestedBlockInvoke(
     }
 
     if (originalInvoke != nullptr) {
-        originalInvoke(blockLiteral, status, message, context);
+        originalInvoke(blockLiteral, status, operation, context);
     }
+}
+
+static const void *MDKFindVideoQueueCallbackBlockPointerInWrapper(
+    const void *wrapperPointer,
+    size_t *callbackOffsetOut,
+    NSString **blockSignatureOut
+) {
+    if (callbackOffsetOut != nullptr) {
+        *callbackOffsetOut = SIZE_MAX;
+    }
+    if (blockSignatureOut != nullptr) {
+        *blockSignatureOut = nil;
+    }
+    if (wrapperPointer == nullptr) {
+        return nullptr;
+    }
+
+    uint8_t *wrapperBase = reinterpret_cast<uint8_t *>(const_cast<void *>(wrapperPointer));
+    size_t wrapperAllocationSize = malloc_size(const_cast<void *>(wrapperPointer));
+    if (wrapperAllocationSize == 0) {
+        wrapperAllocationSize = 0x80;
+    }
+    const size_t maxInspectableBytes = std::min<size_t>(wrapperAllocationSize, 0x80);
+    const size_t lastOffset = maxInspectableBytes >= sizeof(void *) ? maxInspectableBytes - sizeof(void *) : 0;
+    for (size_t offset = 0; offset <= lastOffset; offset += sizeof(void *)) {
+        void *candidatePointer = nullptr;
+        memcpy(&candidatePointer, wrapperBase + offset, sizeof(candidatePointer));
+        if (candidatePointer == nullptr) {
+            continue;
+        }
+        NSString *candidateSignature = MDKCopyBlockSignatureString((__bridge id) candidatePointer);
+        if (MDKIsVideoQueueWrapperBlockSignature(candidateSignature)) {
+            if (callbackOffsetOut != nullptr) {
+                *callbackOffsetOut = offset;
+            }
+            if (blockSignatureOut != nullptr) {
+                *blockSignatureOut = candidateSignature;
+            }
+            return candidatePointer;
+        }
+    }
+
+    return nullptr;
 }
 
 static BOOL MDKInstallNestedVideoQueueBlockAtPointer(const void *blockPointer) {
@@ -2890,7 +2949,7 @@ static BOOL MDKInstallNestedVideoQueueBlockAtPointer(const void *blockPointer) {
 
     id callbackObject = (__bridge id) blockPointer;
     NSString *signature = MDKCopyBlockSignatureString(callbackObject);
-    if (signature == nil || ![signature containsString:@"FigRemoteQueueMessage"]) {
+    if (!MDKIsVideoQueueNestedBlockSignature(signature)) {
         return NO;
     }
 
@@ -2929,56 +2988,75 @@ static BOOL MDKInstallNestedVideoQueueBlockAtPointer(const void *blockPointer) {
     return YES;
 }
 
+static BOOL MDKMaybeInstallNestedVideoQueueBlockFromWrapperPointer(const void *wrapperPointer, NSString *reason) {
+    size_t callbackOffset = SIZE_MAX;
+    NSString *callbackSignature = nil;
+    const void *callbackPointer = MDKFindVideoQueueCallbackBlockPointerInWrapper(
+        wrapperPointer,
+        &callbackOffset,
+        &callbackSignature
+    );
+
+    const auto *callbackLiteral =
+        reinterpret_cast<const MDKBlockLiteral *>(const_cast<void *>(callbackPointer));
+    uintptr_t nestedBlockRawValue = 0;
+    if (callbackLiteral != nullptr && callbackLiteral->descriptor != nullptr && callbackLiteral->descriptor->size >= 40) {
+        memcpy(&nestedBlockRawValue, reinterpret_cast<const uint8_t *>(callbackLiteral) + 32, sizeof(nestedBlockRawValue));
+    }
+
+    NSString *nestedBlockSignature = nil;
+    if (nestedBlockRawValue != 0) {
+        nestedBlockSignature = MDKCopyBlockSignatureString((__bridge id) reinterpret_cast<const void *>(nestedBlockRawValue));
+    }
+
+    const BOOL installed = nestedBlockRawValue != 0 &&
+        MDKInstallNestedVideoQueueBlockAtPointer(reinterpret_cast<const void *>(nestedBlockRawValue));
+
+    MDKRecordSCKTraceEvent(
+        @"video-queue-nested-block-rescan",
+        @{
+            @"reason": reason ?: @"",
+            @"wrapperPointer": wrapperPointer != nullptr ? [NSString stringWithFormat:@"%p", wrapperPointer] : @"",
+            @"callbackPointer": callbackPointer != nullptr ? [NSString stringWithFormat:@"%p", callbackPointer] : @"",
+            @"callbackOffset": callbackOffset == SIZE_MAX ? [NSNull null] : @(callbackOffset),
+            @"callbackSignature": callbackSignature ?: @"",
+            @"nestedBlockPointer": nestedBlockRawValue != 0 ? [NSString stringWithFormat:@"%p", reinterpret_cast<const void *>(nestedBlockRawValue)] : @"",
+            @"nestedBlockSignature": nestedBlockSignature ?: @"",
+            @"installed": @(installed),
+        }
+    );
+
+    return installed;
+}
+
 static BOOL MDKInstallVideoQueueWrapperCallbackAtPointer(const void *wrapperPointer) {
     if (wrapperPointer == nullptr) {
         return NO;
     }
 
-    uint8_t *wrapperBase = reinterpret_cast<uint8_t *>(const_cast<void *>(wrapperPointer));
-    void *callbackPointer = nullptr;
     size_t callbackOffset = SIZE_MAX;
-    size_t wrapperAllocationSize = malloc_size(const_cast<void *>(wrapperPointer));
-    if (wrapperAllocationSize == 0) {
-        wrapperAllocationSize = 0x80;
-    }
-    const size_t maxInspectableBytes = std::min<size_t>(wrapperAllocationSize, 0x80);
-    const size_t lastOffset = maxInspectableBytes >= sizeof(void *) ? maxInspectableBytes - sizeof(void *) : 0;
-    for (size_t offset = 0; offset <= lastOffset; offset += sizeof(void *)) {
-        void *candidatePointer = nullptr;
-        memcpy(&candidatePointer, wrapperBase + offset, sizeof(candidatePointer));
-        if (candidatePointer == nullptr) {
-            continue;
-        }
-        NSString *candidateSignature = MDKCopyBlockSignatureString((__bridge id) candidatePointer);
-        if (candidateSignature != nil && [candidateSignature containsString:@"FigRemoteQueueMessage"]) {
-            callbackPointer = candidatePointer;
-            callbackOffset = offset;
-            break;
-        }
-    }
+    NSString *signature = nil;
+    const void *callbackPointer = MDKFindVideoQueueCallbackBlockPointerInWrapper(
+        wrapperPointer,
+        &callbackOffset,
+        &signature
+    );
     if (callbackPointer == nullptr) {
         return NO;
     }
 
     id callbackObject = (__bridge id) callbackPointer;
-    NSString *signature = MDKCopyBlockSignatureString(callbackObject);
-    if (signature == nil || ![signature containsString:@"FigRemoteQueueMessage"]) {
+    if (!MDKIsVideoQueueWrapperBlockSignature(signature)) {
         return NO;
     }
 
     NSString *wrapperKey = [NSString stringWithFormat:@"%p", wrapperPointer];
     NSString *blockKey = [NSString stringWithFormat:@"%p", callbackPointer];
-    auto *callbackLiteral = reinterpret_cast<MDKBlockLiteral *>(callbackPointer);
+    auto *callbackLiteral = reinterpret_cast<MDKBlockLiteral *>(const_cast<void *>(callbackPointer));
     if (callbackLiteral == nullptr || callbackLiteral->invoke == nullptr) {
         return NO;
     }
-    if (callbackLiteral->descriptor != nullptr && callbackLiteral->descriptor->size >= 40) {
-        uintptr_t nestedBlockRawValue = 0;
-        memcpy(&nestedBlockRawValue, reinterpret_cast<const uint8_t *>(callbackLiteral) + 32, sizeof(nestedBlockRawValue));
-        if (nestedBlockRawValue != 0) {
-            MDKInstallNestedVideoQueueBlockAtPointer(reinterpret_cast<const void *>(nestedBlockRawValue));
-        }
-    }
+    MDKMaybeInstallNestedVideoQueueBlockFromWrapperPointer(wrapperPointer, @"wrapper-install");
     NSString *descriptorKey = MDKCopyVideoQueueBlockDescriptorKey(callbackLiteral);
     MDKVideoReceiveQueueBlockInvokeFn originalInvoke =
         reinterpret_cast<MDKVideoReceiveQueueBlockInvokeFn>(callbackLiteral->invoke);
@@ -3022,6 +3100,19 @@ static BOOL MDKWrapVideoReceiveQueueCallbackIfPossible(id stream) {
     }
 
     return MDKInstallVideoQueueWrapperCallbackAtPointer(wrapperValue.pointerValue);
+}
+
+static void MDKRescanNestedVideoQueueBlockIfPossible(id stream, NSString *reason) {
+    if (stream == nil) {
+        return;
+    }
+
+    NSValue *wrapperValue = MDKCopyRawPointerIvar(stream, "_videoReceiveQueue");
+    if (wrapperValue == nil || wrapperValue.pointerValue == nullptr) {
+        return;
+    }
+
+    MDKMaybeInstallNestedVideoQueueBlockFromWrapperPointer(wrapperValue.pointerValue, reason);
 }
 
 extern "C" void MDKInterposedFigRemoteQueueReceiverSetHandler(void *receiver, dispatch_queue_t queue, id handler);
@@ -3645,6 +3736,7 @@ static void MDKSwizzledStartRemoteVideoReceiveQueue(id self, SEL _cmd, id queue)
     MDKOriginalStartRemoteVideoReceiveQueue(self, _cmd, queue);
     if (shouldWrapVideoQueueCallback) {
         MDKWrapVideoReceiveQueueCallbackIfPossible(self);
+        MDKRescanNestedVideoQueueBlockIfPossible(self, @"post-wrap-video");
     }
     MDKRecordSCKTraceEvent(
         @"stream-post-start-remote-video-state",
@@ -3653,16 +3745,19 @@ static void MDKSwizzledStartRemoteVideoReceiveQueue(id self, SEL _cmd, id queue)
             @"streamState": MDKCopySCStreamInternalState(self),
         }
     );
+    MDKRescanNestedVideoQueueBlockIfPossible(self, @"post-start-video");
 }
 
 static void MDKSwizzledStartRemoteAudioReceiveQueue(id self, SEL _cmd, id queue) {
     MDKRecordRemoteQueueConsumerEvent(@"stream-start-remote-audio-receive-queue", queue);
     MDKOriginalStartRemoteAudioReceiveQueue(self, _cmd, queue);
+    MDKRescanNestedVideoQueueBlockIfPossible(self, @"post-start-audio");
 }
 
 static void MDKSwizzledStartRemoteMicrophoneReceiveQueue(id self, SEL _cmd, id queue) {
     MDKRecordRemoteQueueConsumerEvent(@"stream-start-remote-microphone-receive-queue", queue);
     MDKOriginalStartRemoteMicrophoneReceiveQueue(self, _cmd, queue);
+    MDKRescanNestedVideoQueueBlockIfPossible(self, @"post-start-microphone");
 }
 
 static void MDKSwizzledCollectStreamData(id self, SEL _cmd) {
@@ -3675,6 +3770,7 @@ static void MDKSwizzledCollectStreamData(id self, SEL _cmd) {
         }
     }
     if (shouldRecord) {
+        MDKRescanNestedVideoQueueBlockIfPossible(self, @"collect-enter");
         MDKRecordSCKTraceEvent(
             @"collect-stream-data-enter",
             @{
@@ -3685,6 +3781,7 @@ static void MDKSwizzledCollectStreamData(id self, SEL _cmd) {
     }
     MDKOriginalCollectStreamData(self, _cmd);
     if (shouldRecord) {
+        MDKRescanNestedVideoQueueBlockIfPossible(self, @"collect-exit");
         MDKRecordSCKTraceEvent(
             @"collect-stream-data-exit",
             @{
@@ -6013,7 +6110,8 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             [event[@"kind"] isEqualToString:@"video-queue-nested-block-callback"]) {
             firstVideoQueueNestedBlockCallbackEvent = event;
         }
-        if (![event[@"kind"] isEqualToString:@"video-queue-wrapper-callback"]) {
+        if (firstVideoQueueCallbackEvent != nil ||
+            ![event[@"kind"] isEqualToString:@"video-queue-wrapper-callback"]) {
             continue;
         }
 
@@ -6022,7 +6120,6 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         if (idx > 0 && [traceEvents[idx - 1] isKindOfClass:[NSDictionary class]]) {
             firstVideoQueueCallbackPrecedingEvent = traceEvents[idx - 1];
         }
-        break;
     }
 
     NSNumber *firstVideoQueueCallbackTimestampNanos =
@@ -6034,12 +6131,39 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     NSString *firstVideoQueueCallbackSurfacePointer =
         [firstVideoQueueCallbackSurface[@"pointer"] isKindOfClass:[NSString class]] ? firstVideoQueueCallbackSurface[@"pointer"] : nil;
     NSNumber *firstVideoQueueNestedBlockLeadMilliseconds = nil;
-    if ([firstVideoQueueCallbackTimestampNanos isKindOfClass:[NSNumber class]] &&
+    if ([firstPublicSampleTimestampNanos isKindOfClass:[NSNumber class]] &&
         [firstVideoQueueNestedBlockCallbackTimestampNanos isKindOfClass:[NSNumber class]]) {
         const long double deltaNanos =
-            static_cast<long double>(firstVideoQueueCallbackTimestampNanos.unsignedLongLongValue) -
+            static_cast<long double>(firstPublicSampleTimestampNanos.unsignedLongLongValue) -
             static_cast<long double>(firstVideoQueueNestedBlockCallbackTimestampNanos.unsignedLongLongValue);
         firstVideoQueueNestedBlockLeadMilliseconds = @(static_cast<double>(deltaNanos / 1.0e6L));
+    }
+    NSDictionary<NSString *, id> *firstSuccessfulVideoQueueNestedBlockRescan = nil;
+    if (firstVideoQueueCallbackEventIndex != NSNotFound) {
+        for (NSUInteger idx = 0; idx < firstVideoQueueCallbackEventIndex; ++idx) {
+            NSDictionary<NSString *, id> *event = traceEvents[idx];
+            if (![event[@"kind"] isEqualToString:@"video-queue-nested-block-rescan"]) {
+                continue;
+            }
+
+            NSNumber *installed = [event[@"installed"] isKindOfClass:[NSNumber class]] ? event[@"installed"] : nil;
+            if (installed != nil && installed.boolValue) {
+                firstSuccessfulVideoQueueNestedBlockRescan = event;
+                break;
+            }
+        }
+    }
+    NSString *firstSuccessfulVideoQueueNestedBlockRescanReason =
+        [firstSuccessfulVideoQueueNestedBlockRescan[@"reason"] isKindOfClass:[NSString class]] ? firstSuccessfulVideoQueueNestedBlockRescan[@"reason"] : nil;
+    NSNumber *firstSuccessfulVideoQueueNestedBlockRescanTimestampNanos =
+        [firstSuccessfulVideoQueueNestedBlockRescan[@"timestampNanos"] isKindOfClass:[NSNumber class]] ? firstSuccessfulVideoQueueNestedBlockRescan[@"timestampNanos"] : nil;
+    NSNumber *firstSuccessfulVideoQueueNestedBlockRescanLeadMilliseconds = nil;
+    if ([firstVideoQueueCallbackTimestampNanos isKindOfClass:[NSNumber class]] &&
+        [firstSuccessfulVideoQueueNestedBlockRescanTimestampNanos isKindOfClass:[NSNumber class]]) {
+        const long double deltaNanos =
+            static_cast<long double>(firstVideoQueueCallbackTimestampNanos.unsignedLongLongValue) -
+            static_cast<long double>(firstSuccessfulVideoQueueNestedBlockRescanTimestampNanos.unsignedLongLongValue);
+        firstSuccessfulVideoQueueNestedBlockRescanLeadMilliseconds = @(static_cast<double>(deltaNanos / 1.0e6L));
     }
     NSNumber *firstVideoQueueCallbackPrecedingEventIndexNumber =
         (firstVideoQueueCallbackEventIndex != NSNotFound && firstVideoQueueCallbackEventIndex > 0) ?
@@ -6265,6 +6389,60 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             @"video-queue-nested-block-callback",
         ]]
     );
+    NSMutableDictionary<NSString *, NSNumber *> *videoQueueWrapperToNestedLeadHistogramMutable = [NSMutableDictionary dictionary];
+    NSUInteger videoQueueWrapperToNestedLeadPairCount = 0;
+    double videoQueueWrapperToNestedLeadMinMilliseconds = DBL_MAX;
+    double videoQueueWrapperToNestedLeadMaxMilliseconds = 0.0;
+    for (NSUInteger idx = 0; idx < traceEvents.count; ++idx) {
+        NSDictionary<NSString *, id> *event = traceEvents[idx];
+        if (![event[@"kind"] isEqualToString:@"video-queue-wrapper-callback"]) {
+            continue;
+        }
+
+        NSNumber *wrapperTimestampNanos =
+            [event[@"timestampNanos"] isKindOfClass:[NSNumber class]] ? event[@"timestampNanos"] : nil;
+        if (wrapperTimestampNanos == nil) {
+            continue;
+        }
+
+        for (NSUInteger nextIndex = idx + 1; nextIndex < traceEvents.count; ++nextIndex) {
+            NSDictionary<NSString *, id> *nextEvent = traceEvents[nextIndex];
+            NSString *nextKind = [nextEvent[@"kind"] isKindOfClass:[NSString class]] ? nextEvent[@"kind"] : nil;
+            if ([nextKind isEqualToString:@"video-queue-wrapper-callback"]) {
+                break;
+            }
+            if (![nextKind isEqualToString:@"video-queue-nested-block-callback"]) {
+                continue;
+            }
+
+            NSNumber *nestedTimestampNanos =
+                [nextEvent[@"timestampNanos"] isKindOfClass:[NSNumber class]] ? nextEvent[@"timestampNanos"] : nil;
+            if (nestedTimestampNanos == nil ||
+                nestedTimestampNanos.unsignedLongLongValue < wrapperTimestampNanos.unsignedLongLongValue) {
+                break;
+            }
+
+            const double leadMilliseconds =
+                static_cast<double>(nestedTimestampNanos.unsignedLongLongValue - wrapperTimestampNanos.unsignedLongLongValue) / 1.0e6;
+            NSString *bucket = MDKBucketMilliseconds(leadMilliseconds);
+            videoQueueWrapperToNestedLeadHistogramMutable[bucket] =
+                @([videoQueueWrapperToNestedLeadHistogramMutable[bucket] unsignedIntegerValue] + 1);
+            videoQueueWrapperToNestedLeadPairCount += 1;
+            videoQueueWrapperToNestedLeadMinMilliseconds =
+                std::min(videoQueueWrapperToNestedLeadMinMilliseconds, leadMilliseconds);
+            videoQueueWrapperToNestedLeadMaxMilliseconds =
+                std::max(videoQueueWrapperToNestedLeadMaxMilliseconds, leadMilliseconds);
+            break;
+        }
+    }
+    NSDictionary<NSString *, NSNumber *> *videoQueueWrapperToNestedLeadHistogram =
+        [videoQueueWrapperToNestedLeadHistogramMutable copy];
+    NSNumber *videoQueueWrapperToNestedLeadMinMillisecondsNumber =
+        videoQueueWrapperToNestedLeadPairCount > 0 ? @(videoQueueWrapperToNestedLeadMinMilliseconds) : nil;
+    NSNumber *videoQueueWrapperToNestedLeadMaxMillisecondsNumber =
+        videoQueueWrapperToNestedLeadPairCount > 0 ? @(videoQueueWrapperToNestedLeadMaxMilliseconds) : nil;
+    NSNumber *videoQueueWrapperToNestedLead120HzEquivalentCount =
+        @(MDKHistogramCountInRange(videoQueueWrapperToNestedLeadHistogram, 0.0, 10.0));
     NSString *videoReceiveQueueWrapperPointer =
         [videoReceiveQueueWrapper[@"pointer"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapper[@"pointer"] : nil;
     NSNumber *videoReceiveQueueWrapperMallocSize =
@@ -6481,6 +6659,11 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackDeltaHistogram=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"deltaHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallback120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"delta120HzEquivalentCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackCadenceClassification=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLeadPairCount=%@", MDKDescribeTraceValue(@(videoQueueWrapperToNestedLeadPairCount))]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLeadHistogram=%@", MDKDescribeTraceValue(videoQueueWrapperToNestedLeadHistogram)]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLead120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueWrapperToNestedLead120HzEquivalentCount)]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLeadMinMilliseconds=%@", MDKDescribeTraceValue(videoQueueWrapperToNestedLeadMinMillisecondsNumber)]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLeadMaxMilliseconds=%@", MDKDescribeTraceValue(videoQueueWrapperToNestedLeadMaxMillisecondsNumber)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperPointer=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperPointer)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperMallocSize=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperMallocSize)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperCandidateBlockOffsets=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperCandidateBlockOffsets)]];
@@ -6530,6 +6713,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackTimestampNanos=%@", MDKDescribeTraceValue(firstVideoQueueCallbackTimestampNanos)]];
     [notes addObject:[NSString stringWithFormat:@"firstVideoQueueNestedBlockCallbackTimestampNanos=%@", MDKDescribeTraceValue(firstVideoQueueNestedBlockCallbackTimestampNanos)]];
     [notes addObject:[NSString stringWithFormat:@"firstVideoQueueNestedBlockLeadMilliseconds=%@", MDKDescribeTraceValue(firstVideoQueueNestedBlockLeadMilliseconds)]];
+    [notes addObject:[NSString stringWithFormat:@"firstSuccessfulVideoQueueNestedBlockRescanReason=%@", MDKDescribeTraceValue(firstSuccessfulVideoQueueNestedBlockRescanReason)]];
+    [notes addObject:[NSString stringWithFormat:@"firstSuccessfulVideoQueueNestedBlockRescanTimestampNanos=%@", MDKDescribeTraceValue(firstSuccessfulVideoQueueNestedBlockRescanTimestampNanos)]];
+    [notes addObject:[NSString stringWithFormat:@"firstSuccessfulVideoQueueNestedBlockRescanLeadMilliseconds=%@", MDKDescribeTraceValue(firstSuccessfulVideoQueueNestedBlockRescanLeadMilliseconds)]];
     [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackSurfacePointer=%@", MDKDescribeTraceValue(firstVideoQueueCallbackSurfacePointer)]];
     [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventIndex=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventIndexNumber)]];
     [notes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventKind=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventKind)]];
@@ -6630,6 +6816,11 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperCandidateBlockOffsets=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperCandidateBlockOffsets)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperCallbackEventCount=%@", MDKDescribeTraceValue(videoQueueWrapperCadenceSummary[@"eventCount"])]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackEventCount=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"eventCount"])]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLeadPairCount=%@", MDKDescribeTraceValue(@(videoQueueWrapperToNestedLeadPairCount))]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLeadHistogram=%@", MDKDescribeTraceValue(videoQueueWrapperToNestedLeadHistogram)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLead120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueWrapperToNestedLead120HzEquivalentCount)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLeadMinMilliseconds=%@", MDKDescribeTraceValue(videoQueueWrapperToNestedLeadMinMillisecondsNumber)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperToNestedLeadMaxMilliseconds=%@", MDKDescribeTraceValue(videoQueueWrapperToNestedLeadMaxMillisecondsNumber)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperInstalledOffset=%@", MDKDescribeTraceValue(videoQueueWrapperInstalledOffset)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperOriginalInvokeSymbol=%@", MDKDescribeTraceValue(videoQueueWrapperOriginalInvokeSymbol)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperOriginalInvokeImagePath=%@", MDKDescribeTraceValue(videoQueueWrapperOriginalInvokeImagePath)]];
@@ -6654,6 +6845,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackTimestampNanos=%@", MDKDescribeTraceValue(firstVideoQueueCallbackTimestampNanos)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueNestedBlockCallbackTimestampNanos=%@", MDKDescribeTraceValue(firstVideoQueueNestedBlockCallbackTimestampNanos)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueNestedBlockLeadMilliseconds=%@", MDKDescribeTraceValue(firstVideoQueueNestedBlockLeadMilliseconds)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstSuccessfulVideoQueueNestedBlockRescanReason=%@", MDKDescribeTraceValue(firstSuccessfulVideoQueueNestedBlockRescanReason)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstSuccessfulVideoQueueNestedBlockRescanTimestampNanos=%@", MDKDescribeTraceValue(firstSuccessfulVideoQueueNestedBlockRescanTimestampNanos)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstSuccessfulVideoQueueNestedBlockRescanLeadMilliseconds=%@", MDKDescribeTraceValue(firstSuccessfulVideoQueueNestedBlockRescanLeadMilliseconds)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackSurfacePointer=%@", MDKDescribeTraceValue(firstVideoQueueCallbackSurfacePointer)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventIndex=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventIndexNumber)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueCallbackPrecedingEventKind=%@", MDKDescribeTraceValue(firstVideoQueueCallbackPrecedingEventKind)]];
