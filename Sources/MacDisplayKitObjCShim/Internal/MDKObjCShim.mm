@@ -5,6 +5,7 @@
 #import <IOSurface/IOSurface.h>
 #import <dlfcn.h>
 #import <mach/mach.h>
+#import <malloc/malloc.h>
 #import <pthread.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -265,11 +266,10 @@ static dispatch_queue_t MDKActiveFigRemoteQueueReceiverQueue = nil;
 static dispatch_semaphore_t MDKActiveFigRemoteQueueReceiverSemaphore = nil;
 static NSMutableDictionary<NSString *, id> *MDKActiveFigRemoteQueueReceiverState = nil;
 
-struct MDKFigRemoteQueueReceiverItem {
+struct MDKFigRemoteQueueMessage {
     const void *payloadBlock;
     IOSurfaceRef surface;
-    std::uint32_t messageType;
-    std::uint32_t reserved;
+    int messageType;
 };
 
 static void MDKRecordSCKTraceEvent(NSString *kind, NSDictionary<NSString *, id> *payload);
@@ -666,6 +666,60 @@ static id MDKCopyObjectIvar(id object, const char *name) {
     return object_getIvar(object, ivar);
 }
 
+static NSDictionary<NSString *, id> *MDKDescribeRemoteQueueWrapperSlot(
+    const void *slotValue,
+    size_t offset,
+    BOOL inspectForBlockSignature
+) {
+    NSMutableDictionary<NSString *, id> *summary = [@{
+        @"offset": @(offset),
+    } mutableCopy];
+    if (slotValue == nullptr) {
+        summary[@"present"] = @NO;
+        return summary;
+    }
+
+    summary[@"present"] = @YES;
+    summary[@"pointer"] = [NSString stringWithFormat:@"%p", slotValue];
+
+    const size_t allocationSize = malloc_size(const_cast<void *>(slotValue));
+    if (allocationSize > 0) {
+        summary[@"mallocSize"] = @(allocationSize);
+    }
+
+    if (inspectForBlockSignature && allocationSize > 0) {
+        NSString *signature = MDKCopyBlockSignatureString((__bridge id) slotValue);
+        if (signature != nil) {
+            summary[@"blockSignature"] = signature;
+        }
+    }
+
+    return summary;
+}
+
+static NSDictionary<NSString *, id> *MDKDescribeRemoteQueueWrapper(const void *wrapperPointer) {
+    if (wrapperPointer == nullptr) {
+        return @{
+            @"present": @NO
+        };
+    }
+
+    NSMutableArray<NSDictionary<NSString *, id> *> *slots = [NSMutableArray array];
+    const uint8_t *base = reinterpret_cast<const uint8_t *>(wrapperPointer);
+    for (size_t offset = 0; offset <= 0x28; offset += sizeof(void *)) {
+        void *slotValue = nullptr;
+        memcpy(&slotValue, base + offset, sizeof(slotValue));
+        const BOOL inspectForBlockSignature = (offset == 0x28);
+        [slots addObject:MDKDescribeRemoteQueueWrapperSlot(slotValue, offset, inspectForBlockSignature)];
+    }
+
+    return @{
+        @"present": @YES,
+        @"pointer": [NSString stringWithFormat:@"%p", wrapperPointer],
+        @"slots": slots,
+    };
+}
+
 static NSDictionary<NSString *, id> *MDKSummarizeSampleBuffer(CMSampleBufferRef sampleBuffer) {
     if (sampleBuffer == nullptr) {
         return @{
@@ -797,6 +851,10 @@ static NSDictionary<NSString *, id> *MDKCopySCStreamInternalState(id stream) {
     [pointerIvarNames enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *ivarName, __unused BOOL *stop) {
         NSValue *value = MDKCopyRawPointerIvar(stream, ivarName.UTF8String);
         summary[key] = value != nil ? [NSString stringWithFormat:@"%p", value.pointerValue] : @"";
+        if (value != nil) {
+            NSString *wrapperKey = [key stringByReplacingOccurrencesOfString:@"Pointer" withString:@"Wrapper"];
+            summary[wrapperKey] = MDKDescribeRemoteQueueWrapper(value.pointerValue);
+        }
     }];
 
     NSDictionary<NSString *, NSString *> *objectIvarNames = @{
@@ -898,16 +956,6 @@ static NSDictionary<NSString *, id> * _Nullable MDKCopySCKTraceStateSnapshot(voi
     }
 }
 
-static id _Nullable MDKCopyCapturedSCKRemoteQueueAtIndex(NSUInteger index) {
-    @synchronized(MDKActiveSCKTraceLock) {
-        if (MDKActiveSCKRemoteQueues == nil || index >= MDKActiveSCKRemoteQueues.count) {
-            return nil;
-        }
-
-        return MDKActiveSCKRemoteQueues[index];
-    }
-}
-
 static NSUInteger MDKCapturedSCKRemoteQueueCount(void) {
     @synchronized(MDKActiveSCKTraceLock) {
         return MDKActiveSCKRemoteQueues.count;
@@ -944,7 +992,7 @@ static BOOL MDKPrimeSCRemoteQueueWrapperIfPossible(id remoteQueue) {
     void *receiverQueue = nullptr;
     BOOL createStatus = createSymbol(
         (xpc_object_t) remoteQueue,
-        ^(int status, MDKFigRemoteQueueReceiverItem *item, void *context) {
+        ^(int status, MDKFigRemoteQueueMessage *item, void *context) {
             @synchronized(MDKActiveSCKTraceLock) {
                 if (MDKActiveSCRemoteQueueWrapperState != nil) {
                     callbackCount += 1;
@@ -1020,7 +1068,7 @@ static void MDKPrimeFigRemoteQueueReceiverIfPossible(id remoteQueue) {
         );
         dispatch_semaphore_t callbackSemaphore = dispatch_semaphore_create(0);
         __block NSUInteger callbackCount = 0;
-        setHandlerSymbol(receiver, queue, ^(int status, MDKFigRemoteQueueReceiverItem *item, void *context) {
+        setHandlerSymbol(receiver, queue, ^(int status, MDKFigRemoteQueueMessage *item, void *context) {
             @synchronized(MDKActiveSCKTraceLock) {
                 if (MDKActiveFigRemoteQueueReceiverState != nil) {
                     callbackCount += 1;
@@ -1707,6 +1755,13 @@ static void MDKSwizzledStartRemoteReceiveQueue(id self, SEL _cmd, id queue) {
 static void MDKSwizzledStartRemoteVideoReceiveQueue(id self, SEL _cmd, id queue) {
     MDKRecordRemoteQueueConsumerEvent(@"stream-start-remote-video-receive-queue", queue);
     MDKOriginalStartRemoteVideoReceiveQueue(self, _cmd, queue);
+    MDKRecordSCKTraceEvent(
+        @"stream-post-start-remote-video-state",
+        @{
+            @"queue": MDKSummarizeObject(queue),
+            @"streamState": MDKCopySCStreamInternalState(self),
+        }
+    );
 }
 
 static void MDKSwizzledStartRemoteAudioReceiveQueue(id self, SEL _cmd, id queue) {
@@ -2212,7 +2267,7 @@ static void MDKInstallSCKProxyTraceHooks(void) {
 }
 
 static void MDKAttemptFigRemoteQueueReceiverProbeForCapturedVideoQueue(NSTimeInterval timeout) {
-    using MDKFigRemoteQueueReceiverDequeueFn = int (*)(void *, MDKFigRemoteQueueReceiverItem *);
+    using MDKFigRemoteQueueReceiverDequeueFn = int (*)(void *, MDKFigRemoteQueueMessage *);
     using MDKFigRemoteQueueReceiverUnsetHandlerFn = int (*)(void *);
     auto dequeueSymbol = reinterpret_cast<MDKFigRemoteQueueReceiverDequeueFn>(
         MDKLookupCMCaptureSymbol("FigRemoteQueueReceiverDequeue")
@@ -2255,7 +2310,7 @@ static void MDKAttemptFigRemoteQueueReceiverProbeForCapturedVideoQueue(NSTimeInt
         }
 
         if (dequeueSymbol != nullptr && [probeState[@"callbackCount"] unsignedIntegerValue] == 0) {
-            MDKFigRemoteQueueReceiverItem item = {};
+            MDKFigRemoteQueueMessage item = {};
             dequeueStatus = dequeueSymbol(receiver, &item);
             if (item.surface != nil) {
                 dequeuedSampleSummary = MDKSummarizeIOSurface(item.surface);
@@ -2293,6 +2348,7 @@ static void MDKAttemptFigRemoteQueueReceiverProbeForCapturedVideoQueue(NSTimeInt
 }
 
 static void MDKAttemptSCRemoteQueueWrapperProbeForCapturedVideoQueue(NSTimeInterval timeout) {
+    using MDKSCRemoteQueueCreateReceiverQueueFn = BOOL (*)(xpc_object_t, id, dispatch_queue_t, void **);
     using MDKSCRemoteQueueUpdateReceiverQueueFn = BOOL (*)(void *, dispatch_queue_t);
     using MDKSCRemoteQueueDestroyFn = void (*)(void **);
     auto updateSymbol = reinterpret_cast<MDKSCRemoteQueueUpdateReceiverQueueFn>(
@@ -3301,6 +3357,12 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
                 [NSString stringWithFormat:@"waitTimedOut=%@", MDKDescribeTraceValue(event[@"waitTimedOut"])],
                 [NSString stringWithFormat:@"updateSymbolPresent=%@", MDKDescribeTraceValue(event[@"updateSymbolPresent"])],
                 [NSString stringWithFormat:@"updateStatus=%@", MDKDescribeTraceValue(event[@"updateStatus"])],
+                [NSString stringWithFormat:@"lateCreateStatus=%@", MDKDescribeTraceValue(event[@"lateCreateStatus"])],
+                [NSString stringWithFormat:@"lateUpdateStatus=%@", MDKDescribeTraceValue(event[@"lateUpdateStatus"])],
+                [NSString stringWithFormat:@"lateCallbackObserved=%@", MDKDescribeTraceValue(event[@"lateCallbackObserved"])],
+                [NSString stringWithFormat:@"lateCallbackStatus=%@", MDKDescribeTraceValue(event[@"lateCallbackStatus"])],
+                [NSString stringWithFormat:@"lateCallbackMessageType=%@", MDKDescribeTraceValue(event[@"lateCallbackMessageType"])],
+                [NSString stringWithFormat:@"lateCallbackSurface=%@", MDKDescribeTraceValue(event[@"lateCallbackSurface"])],
                 [NSString stringWithFormat:@"destroySymbolPresent=%@", MDKDescribeTraceValue(event[@"destroySymbolPresent"])],
                 [NSString stringWithFormat:@"remoteQueue=%@", MDKDescribeTraceValue(event[@"remoteQueue"])],
             ] mutableCopy];
