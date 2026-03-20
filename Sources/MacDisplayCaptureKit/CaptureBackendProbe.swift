@@ -1,0 +1,24 @@
+import Foundation
+import MacDisplayKitObjCShim
+
+@objcMembers
+public final class MDKCaptureBackendProbe: NSObject {
+    public static func availability(
+        for display: MDKDisplayDescriptor,
+        target: MDKCaptureOptimizationTarget
+    ) -> MDKCaptureBackendAvailability {
+        let requestedFrameRate = max(target.frameRate, 1)
+
+        return MDKCaptureBackendAvailability(
+            avFoundationAvailable: MDKShimVideoAVFoundationAvailableForDisplay(
+                UInt(display.id),
+                requestedFrameRate
+            ),
+            cgDisplayStreamAvailable: false,
+            screenCaptureKitAvailable: MDKShimVideoScreenCaptureKitAvailableForDisplay(
+                UInt(display.id),
+                requestedFrameRate
+            )
+        )
+    }
+}

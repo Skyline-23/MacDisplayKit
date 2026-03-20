@@ -55,4 +55,28 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(configuration.backend, .screenCaptureKit)
         XCTAssertEqual(configuration.dynamicRangeMode, .hdrCanonical)
     }
+
+    func testBenchmarkPlannerPrefersAlternativeBackendsBeforeScreenCaptureKit() {
+        let display = MDKDisplayDescriptor(id: 77, name: "77", localizedName: "Test Display")
+        let target = MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly
+        let availability = MDKCaptureBackendAvailability(
+            avFoundationAvailable: true,
+            cgDisplayStreamAvailable: false,
+            screenCaptureKitAvailable: true
+        )
+        let plan = MDKCaptureBenchmarkPlanner.plan(
+            for: display,
+            target: target,
+            availability: availability
+        )
+
+        XCTAssertEqual(plan.intent, .replaceScreenCaptureKit)
+        XCTAssertEqual(plan.candidates.map(\.backend), [.avFoundation, .cgDisplayStream, .screenCaptureKit])
+        XCTAssertEqual(plan.preferredCandidate?.backend, .avFoundation)
+        XCTAssertEqual(plan.candidates.last?.backend, .screenCaptureKit)
+        XCTAssertEqual(
+            plan.candidates.last?.reason,
+            "ScreenCaptureKit stays in the plan only as a comparison baseline."
+        )
+    }
 }

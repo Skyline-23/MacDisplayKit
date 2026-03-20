@@ -42,6 +42,26 @@ BOOL MDKShimVideoScreenCaptureKitPreferred(void) {
     return [AVVideo shouldUseScreenCaptureKit];
 }
 
+BOOL MDKShimVideoScreenCaptureKitAvailableForDisplay(NSUInteger displayID, NSInteger frameRate) {
+#if SUNSHINE_HAVE_SCREENCAPTUREKIT
+    if (@available(macOS 12.3, *)) {
+        AVVideo *video = [[AVVideo alloc] initWithDisplay:static_cast<CGDirectDisplayID>(displayID) frameRate:static_cast<int>(frameRate)];
+        if (video == nil) {
+            return NO;
+        }
+
+        return [video screenCaptureKitAvailableForDisplay];
+    }
+#endif
+
+    return NO;
+}
+
+BOOL MDKShimVideoAVFoundationAvailableForDisplay(NSUInteger displayID, NSInteger frameRate) {
+    AVVideo *video = [[AVVideo alloc] initWithDisplay:static_cast<CGDirectDisplayID>(displayID) frameRate:static_cast<int>(frameRate)];
+    return video != nil;
+}
+
 BOOL MDKShimSystemAudioScreenCaptureKitSupported(void) {
     return [AVAudio shouldUseScreenCaptureKitAudio];
 }
