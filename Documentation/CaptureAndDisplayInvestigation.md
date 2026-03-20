@@ -570,3 +570,81 @@ Virtual display card-style scaling UI remains blocked on physical-display classi
 2. Correlate public timing traces with WindowServer/compositor activity instead of assuming static-scene coalescing is the dominant cause.
 3. If a lower-level consumer still shows the same `45-70ms` gap cluster, treat compositor cadence policy as the primary ceiling.
 4. Keep the virtual display UI/classification track separate from the capture-cadence track.
+
+## Latest lower-path sweep
+
+Two more lower-path checks were added after the passive consumer sweep.
+
+### Runtime inventory expansion
+
+The runtime inventory no longer relies only on a fixed class list. A dynamic runtime scan now adds loaded class names whose names imply queue / receiver / sink / frame / surface / capture responsibilities.
+
+That surfaced additional candidates that were not previously visible in the fixed inventory, including:
+
+- `FigScreenCaptureController`
+- `FigScreenCaptureConfiguration`
+- `CMCaptureFrameSenderClient`
+- `CMCaptureFrameSenderService`
+
+Useful method highlights from the dynamic scan:
+
+- `FigScreenCaptureController`
+  - `startCapture`
+  - `resumeCapture`
+  - `suspendCapture`
+  - `stopCapture`
+- `FigScreenCaptureConfiguration`
+  - `minFrameInterval`
+  - `numOfIdleFrames`
+  - `sourceRect`
+- `CMCaptureFrameSenderClient`
+  - `sendXCPSampleBuffer:`
+- `CMCaptureFrameSenderService`
+  - `sendFrame:`
+  - `_newSampleBufferToSendFromSampleBuffer:`
+
+Interpretation:
+
+- the live runtime contains lower capture/controller classes beyond the original public `SCStream` wrapper surface
+- the most promising new control-plane candidates are now `FigScreenCaptureController` and the `CMCaptureFrameSender*` pair
+
+### FigRemoteQueueReceiver runtime interpose status
+
+The passive trace now emits explicit `FigRemoteQueueReceiver` interpose-install notes, not just event counts. On the current public display-capture path they still show up as unresolved:
+
+- `figRemoteQueueReceiverInterposeAttempted=<null>`
+- `figRemoteQueueReceiverInterposeInstalled=<null>`
+- `figRemoteQueueReceiverHandlerCallbackEventCount=0`
+- `figRemoteQueueReceiverDequeueEventCount=0`
+
+Interpretation:
+
+- the exported `FigRemoteQueueReceiver*` path is still not proving to be the live drain for public `SCStream` display capture
+- either the runtime interpose never becomes relevant to the active path, or the hot path is using a different internal family entirely
+
+### FigScreenCaptureController lifecycle hook result
+
+`FigScreenCaptureController` lifecycle methods were hooked in the host-only trace layer:
+
+- `startCapture`
+- `resumeCapture`
+- `suspendCapture`
+- `stopCapture`
+
+Recent passive traces did not report any of these lifecycle events.
+
+Interpretation:
+
+- even though the class is loaded, the current public `SCStream` display-capture flow does not appear to call directly through `FigScreenCaptureController` in a way that the host-only trace can currently observe
+- this keeps the most plausible hot path inside `SCStream`'s own local queue-drain / consumer logic rather than a directly visible `FigScreenCaptureController` lifecycle
+
+### Working conclusion
+
+The current best lower-level model is now:
+
+- `SCStreamManager startRemoteQueue:streamID:` and `SCRemoteQueueXPCObject setRemoteQueue:/setQueueType:` are still the cleanest control-plane anchors
+- the active drain is more likely inside `SCStream` local consumer logic than in exported `FigRemoteQueueReceiver*`
+- the next most promising technical target is still the local video receive path around:
+  - `SCStream startRemoteVideoReceiveQueue:`
+  - `SCStream collectStreamData`
+  - `_videoReceiveQueue` internal wrapper state / hidden block slots

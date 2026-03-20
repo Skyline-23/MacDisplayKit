@@ -5,6 +5,7 @@
 #import <IOSurface/IOSurface.h>
 #import <dlfcn.h>
 #import <mach/mach.h>
+#import <mach-o/dyld.h>
 #import <malloc/malloc.h>
 #import <poll.h>
 #import <pthread.h>
@@ -13,6 +14,7 @@
 #import <sys/ioctl.h>
 #import <unistd.h>
 #import <xpc/xpc.h>
+#import <mach-o/loader.h>
 
 #import "MDKObjCShim.h"
 
@@ -154,6 +156,31 @@ static void *MDKLookupCMCaptureSymbol(const char *symbolName) {
     );
 }
 
+struct MDKDyldInterposeTuple {
+    const void *replacement;
+    const void *replacee;
+};
+
+static const mach_header *MDKFindLoadedImageHeader(const char *needle) {
+    if (needle == nullptr) {
+        return nullptr;
+    }
+
+    const uint32_t imageCount = _dyld_image_count();
+    for (uint32_t index = 0; index < imageCount; index += 1) {
+        const char *imageName = _dyld_get_image_name(index);
+        if (imageName == nullptr || strstr(imageName, needle) == nullptr) {
+            continue;
+        }
+
+        return _dyld_get_image_header(index);
+    }
+
+    return nullptr;
+}
+
+static void MDKInstallRuntimeFigRemoteQueueReceiverInterposes(void);
+
 static void MDKAppendFilteredMethodNamesForClassToSet(Class cls, NSMutableSet<NSString *> *names) {
     if (cls == Nil) {
         return;
@@ -220,6 +247,74 @@ static NSArray<NSString *> *MDKFilteredMethodNamesForRuntimeClass(NSString *clas
     }
 
     return [methodNames.allObjects sortedArrayUsingSelector:@selector(compare:)];
+}
+
+static NSArray<NSString *> *MDKDynamicRuntimeClassNamesMatchingKeywords(void) {
+    static NSArray<NSString *> *keywords;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        keywords = @[
+            @"queue",
+            @"receiver",
+            @"sink",
+            @"drain",
+            @"dequeue",
+            @"sample",
+            @"surface",
+            @"stream",
+            @"capture",
+            @"frame",
+            @"remote",
+            @"handler",
+            @"consumer",
+            @"pipeline",
+        ];
+    });
+
+    unsigned int classCount = 0;
+    Class *classes = objc_copyClassList(&classCount);
+    if (classes == nullptr || classCount == 0) {
+        return @[];
+    }
+
+    NSMutableSet<NSString *> *matches = [NSMutableSet set];
+    for (unsigned int index = 0; index < classCount; index += 1) {
+        Class cls = classes[index];
+        if (cls == Nil) {
+            continue;
+        }
+
+        NSString *className = NSStringFromClass(cls);
+        if (className.length == 0) {
+            continue;
+        }
+
+        NSString *lowercaseClassName = className.lowercaseString;
+        BOOL matched = NO;
+        for (NSString *keyword in keywords) {
+            if ([lowercaseClassName containsString:keyword]) {
+                matched = YES;
+                break;
+            }
+        }
+        if (!matched) {
+            continue;
+        }
+
+        if (![className hasPrefix:@"SC"] &&
+            ![className hasPrefix:@"RP"] &&
+            ![className hasPrefix:@"BW"] &&
+            ![className hasPrefix:@"Fig"] &&
+            ![className hasPrefix:@"CM"] &&
+            ![className hasPrefix:@"IOSurface"]) {
+            continue;
+        }
+
+        [matches addObject:className];
+    }
+
+    free(classes);
+    return [matches.allObjects sortedArrayUsingSelector:@selector(compare:)];
 }
 
 static NSDictionary<NSString *, NSNumber *> *MDKRuntimeSymbolAvailabilityForNames(
@@ -365,6 +460,8 @@ struct MDKFigRemoteQueueMessage {
     int messageType;
 };
 
+using MDKFigRemoteQueueReceiverHandlerBlock = void (^)(int, MDKFigRemoteQueueMessage *, void *);
+
 static void MDKRecordSCKTraceEvent(NSString *kind, NSDictionary<NSString *, id> *payload);
 static NSDictionary<NSString *, id> *MDKSummarizeSampleBuffer(CMSampleBufferRef sampleBuffer);
 static NSDictionary<NSString *, id> *MDKSummarizeIOSurface(IOSurfaceRef surface);
@@ -430,6 +527,7 @@ using MDKStreamDidStartFn = void (*)(id, SEL, id, id);
 using MDKStreamOutputEffectDidStartFn = void (*)(id, SEL, BOOL, id);
 using MDKStartRemoteReceiveQueueConsumerFn = void (*)(id, SEL, id);
 using MDKCollectStreamDataFn = void (*)(id, SEL);
+using MDKFigScreenCaptureControllerLifecycleFn = void (*)(id, SEL);
 using MDKManagerStartRemoteQueueFn = void (*)(id, SEL, id, id);
 using MDKManagerUpdateClientOutputTypeFn = void (*)(id, SEL, id, NSUInteger);
 using MDKManagerStreamUpdateWithFilterFn = void (*)(id, SEL, id, id);
@@ -471,6 +569,10 @@ static MDKStartRemoteReceiveQueueConsumerFn MDKOriginalStartRemoteVideoReceiveQu
 static MDKStartRemoteReceiveQueueConsumerFn MDKOriginalStartRemoteAudioReceiveQueue = nullptr;
 static MDKStartRemoteReceiveQueueConsumerFn MDKOriginalStartRemoteMicrophoneReceiveQueue = nullptr;
 static MDKCollectStreamDataFn MDKOriginalCollectStreamData = nullptr;
+static MDKFigScreenCaptureControllerLifecycleFn MDKOriginalFigScreenCaptureControllerStartCapture = nullptr;
+static MDKFigScreenCaptureControllerLifecycleFn MDKOriginalFigScreenCaptureControllerResumeCapture = nullptr;
+static MDKFigScreenCaptureControllerLifecycleFn MDKOriginalFigScreenCaptureControllerSuspendCapture = nullptr;
+static MDKFigScreenCaptureControllerLifecycleFn MDKOriginalFigScreenCaptureControllerStopCapture = nullptr;
 static MDKManagerStartRemoteQueueFn MDKOriginalManagerStartRemoteQueue = nullptr;
 static MDKManagerUpdateClientOutputTypeFn MDKOriginalManagerUpdateClientOutputType = nullptr;
 static MDKManagerStreamUpdateWithFilterFn MDKOriginalManagerStreamUpdateWithFilter = nullptr;
@@ -529,6 +631,26 @@ static id MDKPerformObjectGetter(id object, SEL selector) {
     }
 
     return ((id (*)(id, SEL)) objc_msgSend)(object, selector);
+}
+
+static id MDKCopyTraceFriendlyKVCDescription(id object, NSString *key) {
+    if (object == nil || key.length == 0) {
+        return [NSNull null];
+    }
+
+    @try {
+        id value = [object valueForKey:key];
+        if (value == nil) {
+            return [NSNull null];
+        }
+        if ([value isKindOfClass:[NSNumber class]] || [value isKindOfClass:[NSString class]]) {
+            return value;
+        }
+        NSString *description = [value description];
+        return description ?: [NSNull null];
+    } @catch (__unused NSException *exception) {
+        return [NSNull null];
+    }
 }
 
 static NSNumber * _Nullable MDKPerformUnsignedCharGetter(id object, SEL selector) {
@@ -1099,17 +1221,29 @@ static NSDictionary<NSString *, id> *MDKDescribeRemoteQueueWrapper(const void *w
     }
 
     NSMutableArray<NSDictionary<NSString *, id> *> *slots = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *candidateBlockOffsets = [NSMutableArray array];
     const uint8_t *base = reinterpret_cast<const uint8_t *>(wrapperPointer);
-    for (size_t offset = 0; offset <= 0x28; offset += sizeof(void *)) {
+    size_t wrapperAllocationSize = malloc_size(const_cast<void *>(wrapperPointer));
+    if (wrapperAllocationSize == 0) {
+        wrapperAllocationSize = 0x80;
+    }
+    const size_t maxInspectableBytes = std::min<size_t>(wrapperAllocationSize, 0x80);
+    const size_t lastOffset = maxInspectableBytes >= sizeof(void *) ? maxInspectableBytes - sizeof(void *) : 0;
+    for (size_t offset = 0; offset <= lastOffset; offset += sizeof(void *)) {
         void *slotValue = nullptr;
         memcpy(&slotValue, base + offset, sizeof(slotValue));
-        const BOOL inspectForBlockSignature = (offset == 0x28);
-        [slots addObject:MDKDescribeRemoteQueueWrapperSlot(slotValue, offset, inspectForBlockSignature)];
+        NSDictionary<NSString *, id> *slotSummary = MDKDescribeRemoteQueueWrapperSlot(slotValue, offset, YES);
+        if (slotSummary[@"blockSignature"] != nil) {
+            [candidateBlockOffsets addObject:@(offset)];
+        }
+        [slots addObject:slotSummary];
     }
 
     return @{
         @"present": @YES,
         @"pointer": [NSString stringWithFormat:@"%p", wrapperPointer],
+        @"mallocSize": @(wrapperAllocationSize),
+        @"candidateBlockOffsets": candidateBlockOffsets,
         @"slots": slots,
     };
 }
@@ -1384,6 +1518,7 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"videoRemoteQueueRecvFDAvailableBytesMax": @0,
             @"videoQueueWrapperCallbackEventCount": @0,
             @"videoQueueWrapperBlocks": [NSMutableDictionary dictionary],
+            @"figRemoteQueueReceiverWrappedHandlers": [NSMutableDictionary dictionary],
         } mutableCopy];
         MDKActiveSCKRemoteQueues = [NSMutableArray array];
         MDKActiveSCKRemoteQueueEntries = [NSMutableDictionary dictionary];
@@ -1414,6 +1549,29 @@ static void MDKAppendSCKTraceNote(NSString *note) {
         NSMutableArray<NSString *> *notes = MDKActiveSCKTraceState[@"notes"];
         [notes addObject:note];
     }
+}
+
+static void MDKSetSCKTraceStateValue(NSString *key, id value) {
+    if (key.length == 0 || value == nil) {
+        return;
+    }
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState == nil) {
+            return;
+        }
+
+        MDKActiveSCKTraceState[key] = value;
+    }
+}
+
+static dispatch_queue_t MDKNormalizeTraceQueue(dispatch_queue_t queue, NSString *fallbackLabel) {
+    if (queue != nil) {
+        return queue;
+    }
+
+    const char *label = fallbackLabel.UTF8String ?: "com.skyline23.MacDisplayKit.fig-remote-queue-handler";
+    return dispatch_queue_create(label, DISPATCH_QUEUE_SERIAL);
 }
 
 static void MDKRecordSCKTraceEvent(NSString *kind, NSDictionary<NSString *, id> *payload) {
@@ -2422,6 +2580,214 @@ static BOOL MDKWrapVideoReceiveQueueCallbackIfPossible(id stream) {
     return MDKInstallVideoQueueWrapperCallbackAtPointer(wrapperValue.pointerValue);
 }
 
+extern "C" void MDKInterposedFigRemoteQueueReceiverSetHandler(void *receiver, dispatch_queue_t queue, id handler);
+extern "C" int MDKInterposedFigRemoteQueueReceiverDequeue(void *receiver, MDKFigRemoteQueueMessage *message);
+extern "C" int MDKInterposedFigRemoteQueueReceiverUnsetHandler(void *receiver);
+
+static void MDKInstallRuntimeFigRemoteQueueReceiverInterposes(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        using MDKDyldDynamicInterposeFn = void (*)(const mach_header *, const MDKDyldInterposeTuple[], size_t);
+
+        MDKSetSCKTraceStateValue(@"figRemoteQueueReceiverInterposeAttempted", @YES);
+        MDKEnsureCaptureImageLoaded("/System/Library/PrivateFrameworks/CMCapture.framework/CMCapture");
+        auto dynamicInterpose =
+            reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "dyld_dynamic_interpose"));
+        if (dynamicInterpose == nullptr) {
+            dynamicInterpose =
+                reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "_dyld_dynamic_interpose"));
+        }
+        MDKSetSCKTraceStateValue(@"figRemoteQueueReceiverInterposeDyldAvailable", @(dynamicInterpose != nullptr));
+        if (dynamicInterpose == nullptr) {
+            MDKAppendSCKTraceNote(@"dyld_dynamic_interpose is unavailable, so FigRemoteQueueReceiver runtime interpose could not be installed.");
+            return;
+        }
+
+        const void *setHandler = MDKLookupCMCaptureSymbol("FigRemoteQueueReceiverSetHandler");
+        const void *dequeue = MDKLookupCMCaptureSymbol("FigRemoteQueueReceiverDequeue");
+        const void *unsetHandler = MDKLookupCMCaptureSymbol("FigRemoteQueueReceiverUnsetHandler");
+        MDKSetSCKTraceStateValue(@"figRemoteQueueReceiverInterposeSetHandlerSymbolAvailable", @(setHandler != nullptr));
+        MDKSetSCKTraceStateValue(@"figRemoteQueueReceiverInterposeDequeueSymbolAvailable", @(dequeue != nullptr));
+        MDKSetSCKTraceStateValue(@"figRemoteQueueReceiverInterposeUnsetHandlerSymbolAvailable", @(unsetHandler != nullptr));
+        if (setHandler == nullptr || dequeue == nullptr || unsetHandler == nullptr) {
+            MDKAppendSCKTraceNote(@"One or more FigRemoteQueueReceiver symbols were unavailable, so runtime interpose stayed disabled.");
+            return;
+        }
+
+        const MDKDyldInterposeTuple interposes[] = {
+            { reinterpret_cast<const void *>(&MDKInterposedFigRemoteQueueReceiverSetHandler), setHandler },
+            { reinterpret_cast<const void *>(&MDKInterposedFigRemoteQueueReceiverDequeue), dequeue },
+            { reinterpret_cast<const void *>(&MDKInterposedFigRemoteQueueReceiverUnsetHandler), unsetHandler },
+        };
+        NSUInteger installedImageCount = 0;
+        const mach_header *screenCaptureKitHeader =
+            MDKFindLoadedImageHeader("/System/Library/Frameworks/ScreenCaptureKit.framework/");
+        if (screenCaptureKitHeader != nullptr) {
+            dynamicInterpose(screenCaptureKitHeader, interposes, sizeof(interposes) / sizeof(interposes[0]));
+            installedImageCount += 1;
+        }
+        MDKSetSCKTraceStateValue(@"figRemoteQueueReceiverInterposeScreenCaptureKitImagePresent", @(screenCaptureKitHeader != nullptr));
+
+        const mach_header *cmCaptureHeader =
+            MDKFindLoadedImageHeader("/System/Library/PrivateFrameworks/CMCapture.framework/");
+        if (cmCaptureHeader != nullptr) {
+            dynamicInterpose(cmCaptureHeader, interposes, sizeof(interposes) / sizeof(interposes[0]));
+            installedImageCount += 1;
+        }
+        MDKSetSCKTraceStateValue(@"figRemoteQueueReceiverInterposeCMCaptureImagePresent", @(cmCaptureHeader != nullptr));
+        MDKSetSCKTraceStateValue(@"figRemoteQueueReceiverInterposeInstalledImageCount", @(installedImageCount));
+
+        if (installedImageCount == 0) {
+            MDKAppendSCKTraceNote(@"Neither ScreenCaptureKit nor CMCapture appeared in the loaded image list, so FigRemoteQueueReceiver runtime interpose could not be installed.");
+            return;
+        }
+
+        MDKSetSCKTraceStateValue(@"figRemoteQueueReceiverInterposeInstalled", @YES);
+        MDKAppendSCKTraceNote([NSString stringWithFormat:@"Installed FigRemoteQueueReceiver runtime interpose on %lu image(s).", (unsigned long)installedImageCount]);
+    });
+}
+
+static void (*MDKResolveOriginalFigRemoteQueueReceiverSetHandler(void))(void *, dispatch_queue_t, id) {
+    static void (*original)(void *, dispatch_queue_t, id) = nullptr;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        original = reinterpret_cast<void (*)(void *, dispatch_queue_t, id)>(dlsym(RTLD_NEXT, "FigRemoteQueueReceiverSetHandler"));
+        if (original == nullptr) {
+            original = reinterpret_cast<void (*)(void *, dispatch_queue_t, id)>(MDKLookupCMCaptureSymbol("FigRemoteQueueReceiverSetHandler"));
+        }
+    });
+    return original;
+}
+
+static int (*MDKResolveOriginalFigRemoteQueueReceiverDequeue(void))(void *, MDKFigRemoteQueueMessage *) {
+    static int (*original)(void *, MDKFigRemoteQueueMessage *) = nullptr;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        original = reinterpret_cast<int (*)(void *, MDKFigRemoteQueueMessage *)>(dlsym(RTLD_NEXT, "FigRemoteQueueReceiverDequeue"));
+        if (original == nullptr) {
+            original = reinterpret_cast<int (*)(void *, MDKFigRemoteQueueMessage *)>(MDKLookupCMCaptureSymbol("FigRemoteQueueReceiverDequeue"));
+        }
+    });
+    return original;
+}
+
+static int (*MDKResolveOriginalFigRemoteQueueReceiverUnsetHandler(void))(void *) {
+    static int (*original)(void *) = nullptr;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        original = reinterpret_cast<int (*)(void *)>(dlsym(RTLD_NEXT, "FigRemoteQueueReceiverUnsetHandler"));
+        if (original == nullptr) {
+            original = reinterpret_cast<int (*)(void *)>(MDKLookupCMCaptureSymbol("FigRemoteQueueReceiverUnsetHandler"));
+        }
+    });
+    return original;
+}
+
+static void MDKRecordFigRemoteQueueReceiverHandlerCallbackEvent(
+    void *receiver,
+    int status,
+    MDKFigRemoteQueueMessage *message,
+    void *context
+) {
+    NSDictionary<NSString *, id> *payload = @{
+        @"receiver": MDKSummarizePointerValue(receiver),
+        @"status": @(status),
+        @"context": MDKSummarizePointerValue(context),
+        @"messageType": message != nullptr ? static_cast<id>(@(message->messageType)) : [NSNull null],
+        @"surface": message != nullptr ? MDKSummarizeIOSurface(message->surface) : @{ @"present": @NO },
+    };
+    MDKRecordSCKTraceEvent(@"fig-remote-queue-receiver-handler-callback", payload);
+}
+
+extern "C" void MDKInterposedFigRemoteQueueReceiverSetHandler(void *receiver, dispatch_queue_t queue, id handler) {
+    auto original = MDKResolveOriginalFigRemoteQueueReceiverSetHandler();
+    if (original == nullptr) {
+        return;
+    }
+
+    NSString *blockSignature = MDKCopyBlockSignatureString(handler);
+    NSString *queueLabel = queue != nil ? ([NSString stringWithUTF8String:dispatch_queue_get_label(queue)] ?: @"") : @"";
+
+    id wrappedHandler = handler;
+    if (handler != nil && blockSignature != nil && [blockSignature containsString:@"FigRemoteQueueMessage"]) {
+        MDKFigRemoteQueueReceiverHandlerBlock originalHandler = handler;
+        dispatch_queue_t targetQueue = MDKNormalizeTraceQueue(queue, @"com.skyline23.MacDisplayKit.fig-remote-queue-handler");
+        MDKFigRemoteQueueReceiverHandlerBlock wrappedBlock = [^(int status, MDKFigRemoteQueueMessage *message, void *context) {
+            MDKRecordFigRemoteQueueReceiverHandlerCallbackEvent(receiver, status, message, context);
+            originalHandler(status, message, context);
+        } copy];
+        wrappedHandler = wrappedBlock;
+
+        @synchronized(MDKActiveSCKTraceLock) {
+            if (MDKActiveSCKTraceState != nil) {
+                NSMutableDictionary<NSString *, id> *wrappedHandlers = MDKActiveSCKTraceState[@"figRemoteQueueReceiverWrappedHandlers"];
+                NSString *receiverKey = [NSString stringWithFormat:@"%p", receiver];
+                wrappedHandlers[receiverKey] = wrappedBlock;
+                MDKActiveFigRemoteQueueReceiver = receiver;
+                MDKActiveFigRemoteQueueReceiverQueue = targetQueue;
+            }
+        }
+    }
+
+    MDKRecordSCKTraceEvent(
+        @"fig-remote-queue-receiver-set-handler",
+        @{
+            @"receiver": MDKSummarizePointerValue(receiver),
+            @"queue": MDKSummarizeObject(queue),
+            @"queueLabel": queueLabel,
+            @"handler": MDKSummarizeObject(handler),
+            @"handlerPointer": MDKSummarizePointerValue((__bridge const void *)handler),
+            @"handlerWrapped": @(wrappedHandler != handler),
+            @"blockSignature": blockSignature ?: [NSNull null],
+        }
+    );
+
+    original(receiver, queue, wrappedHandler);
+}
+
+extern "C" int MDKInterposedFigRemoteQueueReceiverDequeue(void *receiver, MDKFigRemoteQueueMessage *message) {
+    auto original = MDKResolveOriginalFigRemoteQueueReceiverDequeue();
+    if (original == nullptr) {
+        return -1;
+    }
+
+    const int status = original(receiver, message);
+    MDKRecordSCKTraceEvent(
+        @"fig-remote-queue-receiver-dequeue",
+        @{
+            @"receiver": MDKSummarizePointerValue(receiver),
+            @"status": @(status),
+            @"messageType": message != nullptr ? static_cast<id>(@(message->messageType)) : [NSNull null],
+            @"surface": message != nullptr ? MDKSummarizeIOSurface(message->surface) : @{ @"present": @NO },
+        }
+    );
+    return status;
+}
+
+extern "C" int MDKInterposedFigRemoteQueueReceiverUnsetHandler(void *receiver) {
+    auto original = MDKResolveOriginalFigRemoteQueueReceiverUnsetHandler();
+    if (original == nullptr) {
+        return -1;
+    }
+
+    MDKRecordSCKTraceEvent(
+        @"fig-remote-queue-receiver-unset-handler",
+        @{
+            @"receiver": MDKSummarizePointerValue(receiver),
+        }
+    );
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            NSMutableDictionary<NSString *, id> *wrappedHandlers = MDKActiveSCKTraceState[@"figRemoteQueueReceiverWrappedHandlers"];
+            NSString *receiverKey = [NSString stringWithFormat:@"%p", receiver];
+            [wrappedHandlers removeObjectForKey:receiverKey];
+        }
+    }
+
+    return original(receiver);
+}
+
 static void MDKSwizzledRPIOSurfaceSet(id self, SEL _cmd, IOSurfaceRef surface) {
     MDKRecordRPIOSurfaceEvent(@"rp-iosurface-set", surface);
     MDKOriginalRPIOSurfaceSet(self, _cmd, surface);
@@ -2859,6 +3225,37 @@ static void MDKSwizzledCollectStreamData(id self, SEL _cmd) {
     MDKOriginalCollectStreamData(self, _cmd);
 }
 
+static NSDictionary<NSString *, id> *MDKDescribeFigScreenCaptureControllerState(id controller) {
+    id configuration = MDKPerformObjectGetter(controller, sel_registerName("screenCaptureConfiguration"));
+    return @{
+        @"controller": MDKSummarizeObject(controller),
+        @"configuration": MDKSummarizeObject(configuration),
+        @"minFrameInterval": MDKCopyTraceFriendlyKVCDescription(configuration, @"minFrameInterval"),
+        @"numOfIdleFrames": MDKCopyTraceFriendlyKVCDescription(configuration, @"numOfIdleFrames"),
+        @"sourceRect": MDKCopyTraceFriendlyKVCDescription(configuration, @"sourceRect"),
+    };
+}
+
+static void MDKSwizzledFigScreenCaptureControllerStartCapture(id self, SEL _cmd) {
+    MDKRecordSCKTraceEvent(@"fig-screen-capture-controller-start-capture", MDKDescribeFigScreenCaptureControllerState(self));
+    MDKOriginalFigScreenCaptureControllerStartCapture(self, _cmd);
+}
+
+static void MDKSwizzledFigScreenCaptureControllerResumeCapture(id self, SEL _cmd) {
+    MDKRecordSCKTraceEvent(@"fig-screen-capture-controller-resume-capture", MDKDescribeFigScreenCaptureControllerState(self));
+    MDKOriginalFigScreenCaptureControllerResumeCapture(self, _cmd);
+}
+
+static void MDKSwizzledFigScreenCaptureControllerSuspendCapture(id self, SEL _cmd) {
+    MDKRecordSCKTraceEvent(@"fig-screen-capture-controller-suspend-capture", MDKDescribeFigScreenCaptureControllerState(self));
+    MDKOriginalFigScreenCaptureControllerSuspendCapture(self, _cmd);
+}
+
+static void MDKSwizzledFigScreenCaptureControllerStopCapture(id self, SEL _cmd) {
+    MDKRecordSCKTraceEvent(@"fig-screen-capture-controller-stop-capture", MDKDescribeFigScreenCaptureControllerState(self));
+    MDKOriginalFigScreenCaptureControllerStopCapture(self, _cmd);
+}
+
 static void MDKInstallSCKProxyTraceHooks(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -2866,6 +3263,7 @@ static void MDKInstallSCKProxyTraceHooks(void) {
         dlopen("/System/Library/Frameworks/QuartzCore.framework/QuartzCore", RTLD_NOW | RTLD_GLOBAL);
         dlopen("/System/Library/Frameworks/IOSurface.framework/IOSurface", RTLD_NOW | RTLD_GLOBAL);
         dlopen("/System/Library/PrivateFrameworks/CMCapture.framework/CMCapture", RTLD_NOW | RTLD_GLOBAL);
+        MDKInstallRuntimeFigRemoteQueueReceiverInterposes();
         Class daemonProxyClass = NSClassFromString(@"RPDaemonProxy");
         if (daemonProxyClass == Nil) {
             return;
@@ -3040,6 +3438,61 @@ static void MDKInstallSCKProxyTraceHooks(void) {
                 collectStreamDataMethod,
                 reinterpret_cast<IMP>(MDKSwizzledCollectStreamData)
             );
+        }
+
+        Class figScreenCaptureControllerClass = NSClassFromString(@"FigScreenCaptureController");
+        if (figScreenCaptureControllerClass != Nil) {
+            Method startCaptureMethod = class_getInstanceMethod(
+                figScreenCaptureControllerClass,
+                sel_registerName("startCapture")
+            );
+            if (startCaptureMethod != nullptr) {
+                MDKOriginalFigScreenCaptureControllerStartCapture =
+                    reinterpret_cast<MDKFigScreenCaptureControllerLifecycleFn>(method_getImplementation(startCaptureMethod));
+                method_setImplementation(
+                    startCaptureMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledFigScreenCaptureControllerStartCapture)
+                );
+            }
+
+            Method resumeCaptureMethod = class_getInstanceMethod(
+                figScreenCaptureControllerClass,
+                sel_registerName("resumeCapture")
+            );
+            if (resumeCaptureMethod != nullptr) {
+                MDKOriginalFigScreenCaptureControllerResumeCapture =
+                    reinterpret_cast<MDKFigScreenCaptureControllerLifecycleFn>(method_getImplementation(resumeCaptureMethod));
+                method_setImplementation(
+                    resumeCaptureMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledFigScreenCaptureControllerResumeCapture)
+                );
+            }
+
+            Method suspendCaptureMethod = class_getInstanceMethod(
+                figScreenCaptureControllerClass,
+                sel_registerName("suspendCapture")
+            );
+            if (suspendCaptureMethod != nullptr) {
+                MDKOriginalFigScreenCaptureControllerSuspendCapture =
+                    reinterpret_cast<MDKFigScreenCaptureControllerLifecycleFn>(method_getImplementation(suspendCaptureMethod));
+                method_setImplementation(
+                    suspendCaptureMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledFigScreenCaptureControllerSuspendCapture)
+                );
+            }
+
+            Method stopCaptureMethod = class_getInstanceMethod(
+                figScreenCaptureControllerClass,
+                sel_registerName("stopCapture")
+            );
+            if (stopCaptureMethod != nullptr) {
+                MDKOriginalFigScreenCaptureControllerStopCapture =
+                    reinterpret_cast<MDKFigScreenCaptureControllerLifecycleFn>(method_getImplementation(stopCaptureMethod));
+                method_setImplementation(
+                    stopCaptureMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledFigScreenCaptureControllerStopCapture)
+                );
+            }
         }
 
         Class streamManagerClass = NSClassFromString(@"SCStreamManager");
@@ -4670,6 +5123,32 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             continue;
         }
 
+        if ([kind isEqualToString:@"fig-screen-capture-controller-start-capture"] ||
+            [kind isEqualToString:@"fig-screen-capture-controller-resume-capture"] ||
+            [kind isEqualToString:@"fig-screen-capture-controller-suspend-capture"] ||
+            [kind isEqualToString:@"fig-screen-capture-controller-stop-capture"]) {
+            NSString *selector = @"startCapture";
+            if ([kind isEqualToString:@"fig-screen-capture-controller-resume-capture"]) {
+                selector = @"resumeCapture";
+            } else if ([kind isEqualToString:@"fig-screen-capture-controller-suspend-capture"]) {
+                selector = @"suspendCapture";
+            } else if ([kind isEqualToString:@"fig-screen-capture-controller-stop-capture"]) {
+                selector = @"stopCapture";
+            }
+            [selectors addObject:selector];
+            [symbols addObject:@"FigScreenCaptureController"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"controller=%@", MDKDescribeTraceValue(event[@"controller"])],
+                [NSString stringWithFormat:@"configuration=%@", MDKDescribeTraceValue(event[@"configuration"])],
+                [NSString stringWithFormat:@"minFrameInterval=%@", MDKDescribeTraceValue(event[@"minFrameInterval"])],
+                [NSString stringWithFormat:@"numOfIdleFrames=%@", MDKDescribeTraceValue(event[@"numOfIdleFrames"])],
+                [NSString stringWithFormat:@"sourceRect=%@", MDKDescribeTraceValue(event[@"sourceRect"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(kind, selector, @"FigScreenCaptureController", nil, @YES, notes)];
+            continue;
+        }
+
         if ([kind isEqualToString:@"sc-remote-queue-set-remote-queue"] ||
             [kind isEqualToString:@"sc-remote-queue-set-queue-type"]) {
             NSString *selector = [kind isEqualToString:@"sc-remote-queue-set-remote-queue"] ? @"setRemoteQueue:" : @"setQueueType:";
@@ -4725,6 +5204,35 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
                 @"FigRemoteQueueReceiver",
                 (event[@"createStatus"] ?: @0),
                 event[@"callbackObserved"] ?: @NO,
+                notes
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"fig-remote-queue-receiver-set-handler"] ||
+            [kind isEqualToString:@"fig-remote-queue-receiver-unset-handler"]) {
+            NSString *symbol = [kind isEqualToString:@"fig-remote-queue-receiver-set-handler"]
+                ? @"FigRemoteQueueReceiverSetHandler"
+                : @"FigRemoteQueueReceiverUnsetHandler";
+            [symbols addObject:symbol];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"receiver=%@", MDKDescribeTraceValue(event[@"receiver"])],
+            ] mutableCopy];
+            if ([kind isEqualToString:@"fig-remote-queue-receiver-set-handler"]) {
+                [notes addObject:[NSString stringWithFormat:@"queue=%@", MDKDescribeTraceValue(event[@"queue"])]];
+                [notes addObject:[NSString stringWithFormat:@"queueLabel=%@", MDKDescribeTraceValue(event[@"queueLabel"])]];
+                [notes addObject:[NSString stringWithFormat:@"handler=%@", MDKDescribeTraceValue(event[@"handler"])]];
+                [notes addObject:[NSString stringWithFormat:@"handlerPointer=%@", MDKDescribeTraceValue(event[@"handlerPointer"])]];
+                [notes addObject:[NSString stringWithFormat:@"handlerWrapped=%@", MDKDescribeTraceValue(event[@"handlerWrapped"])]];
+                [notes addObject:[NSString stringWithFormat:@"blockSignature=%@", MDKDescribeTraceValue(event[@"blockSignature"])]];
+            }
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(
+                kind,
+                nil,
+                symbol,
+                nil,
+                @YES,
                 notes
             )];
             continue;
@@ -5030,6 +5538,30 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             @"video-queue-wrapper-callback",
         ]]
     );
+    NSDictionary<NSString *, id> *figRemoteQueueReceiverSetHandlerSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"fig-remote-queue-receiver-set-handler",
+        ]]
+    );
+    NSDictionary<NSString *, id> *figRemoteQueueReceiverHandlerCallbackSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"fig-remote-queue-receiver-handler-callback",
+        ]]
+    );
+    NSDictionary<NSString *, id> *figRemoteQueueReceiverDequeueSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"fig-remote-queue-receiver-dequeue",
+        ]]
+    );
+    NSDictionary<NSString *, id> *figRemoteQueueReceiverUnsetHandlerSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"fig-remote-queue-receiver-unset-handler",
+        ]]
+    );
     NSDictionary<NSString *, id> *videoQueueWrapperInstallSummary = MDKCopyTraceEventCadenceSummary(
         traceEvents,
         [NSSet setWithArray:@[
@@ -5115,6 +5647,27 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperCallbackDeltaHistogram=%@", MDKDescribeTraceValue(videoQueueWrapperCadenceSummary[@"deltaHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperCallback120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueWrapperCadenceSummary[@"delta120HzEquivalentCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperCallbackCadenceClassification=%@", MDKDescribeTraceValue(videoQueueWrapperCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeAttempted"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeDyldAvailable=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeDyldAvailable"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeSetHandlerSymbolAvailable=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeSetHandlerSymbolAvailable"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeDequeueSymbolAvailable=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeDequeueSymbolAvailable"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeUnsetHandlerSymbolAvailable=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeUnsetHandlerSymbolAvailable"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeScreenCaptureKitImagePresent=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeScreenCaptureKitImagePresent"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeCMCaptureImagePresent=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeCMCaptureImagePresent"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeInstalledImageCount=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeInstalledImageCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeInstalled"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverSetHandlerEventCount=%@", MDKDescribeTraceValue(figRemoteQueueReceiverSetHandlerSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverHandlerCallbackEventCount=%@", MDKDescribeTraceValue(figRemoteQueueReceiverHandlerCallbackSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverHandlerCallbackDeltaCount=%@", MDKDescribeTraceValue(figRemoteQueueReceiverHandlerCallbackSummary[@"deltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverHandlerCallbackDeltaHistogram=%@", MDKDescribeTraceValue(figRemoteQueueReceiverHandlerCallbackSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverHandlerCallback120HzEquivalentCount=%@", MDKDescribeTraceValue(figRemoteQueueReceiverHandlerCallbackSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverHandlerCallbackCadenceClassification=%@", MDKDescribeTraceValue(figRemoteQueueReceiverHandlerCallbackSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverDequeueEventCount=%@", MDKDescribeTraceValue(figRemoteQueueReceiverDequeueSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverDequeueDeltaCount=%@", MDKDescribeTraceValue(figRemoteQueueReceiverDequeueSummary[@"deltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverDequeueDeltaHistogram=%@", MDKDescribeTraceValue(figRemoteQueueReceiverDequeueSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverDequeue120HzEquivalentCount=%@", MDKDescribeTraceValue(figRemoteQueueReceiverDequeueSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverDequeueCadenceClassification=%@", MDKDescribeTraceValue(figRemoteQueueReceiverDequeueSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverUnsetHandlerEventCount=%@", MDKDescribeTraceValue(figRemoteQueueReceiverUnsetHandlerSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInstalledCount=%@", MDKDescribeTraceValue(videoQueueWrapperInstallSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoSharedRegionPollCount=%@", MDKDescribeTraceValue(snapshot[@"videoSharedRegionPollCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoSharedRegionMappedSize=%@", MDKDescribeTraceValue(snapshot[@"videoSharedRegionMappedSize"])]];
@@ -5670,6 +6223,30 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKPublicTimingTrace(
             @"iosurface-remote-handle-message",
         ]]
     );
+    NSDictionary<NSString *, id> *figRemoteQueueReceiverSetHandlerSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"fig-remote-queue-receiver-set-handler",
+        ]]
+    );
+    NSDictionary<NSString *, id> *figRemoteQueueReceiverHandlerCallbackSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"fig-remote-queue-receiver-handler-callback",
+        ]]
+    );
+    NSDictionary<NSString *, id> *figRemoteQueueReceiverDequeueSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"fig-remote-queue-receiver-dequeue",
+        ]]
+    );
+    NSDictionary<NSString *, id> *figRemoteQueueReceiverUnsetHandlerSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"fig-remote-queue-receiver-unset-handler",
+        ]]
+    );
     const NSUInteger sampleBufferArrivalDeltaCount = [snapshot[@"sampleBufferArrivalDeltaCount"] unsignedIntegerValue];
     const NSUInteger sampleBufferPresentationDeltaCount = [snapshot[@"sampleBufferPresentationDeltaCount"] unsignedIntegerValue];
     NSUInteger sampleBufferArrival120HzEquivalentCount = MDKHistogramCountInRange(sampleBufferArrivalDeltaHistogram, 0.0, 10.0);
@@ -5720,6 +6297,27 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKPublicTimingTrace(
     [notes addObject:[NSString stringWithFormat:@"surfaceTransportHandleMessageDeltaHistogram=%@", MDKDescribeTraceValue(surfaceTransportHandleMessageCadenceSummary[@"deltaHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"surfaceTransportHandleMessageDelta120HzEquivalentCount=%@", MDKDescribeTraceValue(surfaceTransportHandleMessageCadenceSummary[@"delta120HzEquivalentCount"])]];
     [notes addObject:[NSString stringWithFormat:@"surfaceTransportHandleMessageCadenceClassification=%@", MDKDescribeTraceValue(surfaceTransportHandleMessageCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeAttempted"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeDyldAvailable=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeDyldAvailable"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeSetHandlerSymbolAvailable=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeSetHandlerSymbolAvailable"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeDequeueSymbolAvailable=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeDequeueSymbolAvailable"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeUnsetHandlerSymbolAvailable=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeUnsetHandlerSymbolAvailable"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeScreenCaptureKitImagePresent=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeScreenCaptureKitImagePresent"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeCMCaptureImagePresent=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeCMCaptureImagePresent"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeInstalledImageCount=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeInstalledImageCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"figRemoteQueueReceiverInterposeInstalled"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverSetHandlerEventCount=%@", MDKDescribeTraceValue(figRemoteQueueReceiverSetHandlerSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverHandlerCallbackEventCount=%@", MDKDescribeTraceValue(figRemoteQueueReceiverHandlerCallbackSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverHandlerCallbackDeltaCount=%@", MDKDescribeTraceValue(figRemoteQueueReceiverHandlerCallbackSummary[@"deltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverHandlerCallbackDeltaHistogram=%@", MDKDescribeTraceValue(figRemoteQueueReceiverHandlerCallbackSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverHandlerCallbackDelta120HzEquivalentCount=%@", MDKDescribeTraceValue(figRemoteQueueReceiverHandlerCallbackSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverHandlerCallbackCadenceClassification=%@", MDKDescribeTraceValue(figRemoteQueueReceiverHandlerCallbackSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverDequeueEventCount=%@", MDKDescribeTraceValue(figRemoteQueueReceiverDequeueSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverDequeueDeltaCount=%@", MDKDescribeTraceValue(figRemoteQueueReceiverDequeueSummary[@"deltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverDequeueDeltaHistogram=%@", MDKDescribeTraceValue(figRemoteQueueReceiverDequeueSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverDequeueDelta120HzEquivalentCount=%@", MDKDescribeTraceValue(figRemoteQueueReceiverDequeueSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverDequeueCadenceClassification=%@", MDKDescribeTraceValue(figRemoteQueueReceiverDequeueSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"figRemoteQueueReceiverUnsetHandlerEventCount=%@", MDKDescribeTraceValue(figRemoteQueueReceiverUnsetHandlerSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkEventCount=%@", MDKDescribeTraceValue(remoteQueueSinkCadenceSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkDeltaCount=%@", MDKDescribeTraceValue(remoteQueueSinkCadenceSummary[@"deltaCount"])]];
     [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkDeltaHistogram=%@", MDKDescribeTraceValue(remoteQueueSinkCadenceSummary[@"deltaHistogram"])]];
@@ -6305,8 +6903,11 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoInspectScreenCaptureKitRunt
         @"FigRemoteQueueReceiverCopyLatestItem",
     ];
 
-    NSMutableArray<NSDictionary<NSString *, id> *> *classes = [NSMutableArray arrayWithCapacity:classNames.count];
-    for (NSString *className in classNames) {
+    NSMutableOrderedSet<NSString *> *runtimeClassNames = [NSMutableOrderedSet orderedSetWithArray:classNames];
+    [runtimeClassNames addObjectsFromArray:MDKDynamicRuntimeClassNamesMatchingKeywords()];
+
+    NSMutableArray<NSDictionary<NSString *, id> *> *classes = [NSMutableArray arrayWithCapacity:runtimeClassNames.count];
+    for (NSString *className in runtimeClassNames) {
         NSArray<NSString *> *methods = MDKFilteredMethodNamesForRuntimeClass(className);
         [classes addObject:@{
             @"className": className,
@@ -6327,7 +6928,8 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoInspectScreenCaptureKitRunt
         @"cmCaptureSymbols": cmCaptureSymbols,
         @"notes": @[
             @"Lists keyword-filtered Objective-C methods for the loaded ScreenCaptureKit runtime classes.",
-            @"Lists the presence of guessed private queue symbols so host-only experiments can pick likely next entry points."
+            @"Lists the presence of guessed private queue symbols so host-only experiments can pick likely next entry points.",
+            [NSString stringWithFormat:@"Dynamic runtime scan added %lu class name(s) beyond the hard-coded ScreenCaptureKit inventory.", (unsigned long)(runtimeClassNames.count - classNames.count)]
         ],
     };
 
