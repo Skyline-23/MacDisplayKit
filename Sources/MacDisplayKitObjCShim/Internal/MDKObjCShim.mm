@@ -6,9 +6,11 @@
 #import <dlfcn.h>
 #import <mach/mach.h>
 #import <malloc/malloc.h>
+#import <poll.h>
 #import <pthread.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import <sys/ioctl.h>
 #import <unistd.h>
 #import <xpc/xpc.h>
 
@@ -344,6 +346,7 @@ static dispatch_queue_t MDKActiveFigRemoteQueueReceiverQueue = nil;
 static dispatch_semaphore_t MDKActiveFigRemoteQueueReceiverSemaphore = nil;
 static NSMutableDictionary<NSString *, id> *MDKActiveFigRemoteQueueReceiverState = nil;
 static BOOL MDKActiveSCKAllowPrivateQueueProbes = NO;
+static BOOL MDKActiveSCKAllowVideoQueueWrapperProbe = NO;
 
 struct MDKFigRemoteQueueMessage {
     const void *payloadBlock;
@@ -361,8 +364,12 @@ static NSDictionary<NSString *, id> *MDKSummarizePointerValue(const void *pointe
 static NSString *MDKCopyBlockSignatureString(id block);
 static NSDictionary<NSString *, id> *MDKCopySCKRemoteQueueEntrySummaryForType(unsigned char queueType);
 static NSDictionary<NSString *, id> *MDKCopySCKRemoteQueueEntryForType(unsigned char queueType);
+static int MDKDuplicateVideoRemoteQueueFD(const char *name);
+static void MDKObserveVideoRemoteQueueReceiveFD(int receiveFD);
+static void MDKObserveVideoRemoteQueueSharedRegion(void);
 static void MDKUpdateSCKSampleBufferDiagnostics(CMSampleBufferRef sampleBuffer);
 static BOOL MDKPrimeSCRemoteQueueWrapperIfPossible(id remoteQueue);
+static BOOL MDKWrapVideoReceiveQueueCallbackIfPossible(id stream);
 static NSString *MDKBucketMilliseconds(double milliseconds);
 static void MDKIncrementMutableHistogram(NSMutableDictionary<NSString *, NSNumber *> *histogram, NSString *bucket);
 static NSString *MDKClassifyCadenceHistogram(NSDictionary<NSString *, NSNumber *> *histogram, NSUInteger deltaCount);
@@ -431,6 +438,7 @@ using MDKBWHandleDroppedSampleFn = void (*)(id, SEL, id, id);
 using MDKFigSetSinkNodeFn = void (*)(id, SEL, id);
 using MDKSCRemoteQueueSetRemoteQueueFn = void (*)(id, SEL, id);
 using MDKSCRemoteQueueSetQueueTypeFn = void (*)(id, SEL, unsigned char);
+using MDKVideoReceiveQueueCallbackBlock = void (^)(int, MDKFigRemoteQueueMessage *, void *);
 
 static MDKProxyCoreGraphicsFn MDKOriginalProxyCoreGraphics = nullptr;
 static MDKStartRemoteQueueFn MDKOriginalStartRemoteQueue = nullptr;
@@ -628,6 +636,276 @@ static NSDictionary<NSString *, id> *MDKSummarizeXPCObject(xpc_object_t object) 
     }
 
     return summary;
+}
+
+static std::uint64_t MDKFNV1a64(const std::uint8_t *bytes, size_t length) {
+    if (bytes == nullptr || length == 0) {
+        return 0;
+    }
+
+    std::uint64_t hash = 1469598103934665603ULL;
+    for (size_t index = 0; index < length; ++index) {
+        hash ^= static_cast<std::uint64_t>(bytes[index]);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static NSDictionary<NSString *, id> * _Nullable MDKCopyVideoRemoteQueueSharedRegionSnapshot(void) {
+    NSDictionary<NSString *, id> *videoQueueEntry = MDKCopySCKRemoteQueueEntryForType(1);
+    id remoteQueue = videoQueueEntry[@"remoteQueue"];
+    if (remoteQueue == nil || ![NSStringFromClass([remoteQueue class]) hasPrefix:@"OS_xpc_"]) {
+        return nil;
+    }
+
+    xpc_object_t remoteQueueObject = (xpc_object_t) remoteQueue;
+    xpc_object_t sharedRegion = xpc_dictionary_get_value(remoteQueueObject, "SharedRegion");
+    if (sharedRegion == nullptr || xpc_get_type(sharedRegion) != XPC_TYPE_SHMEM) {
+        return nil;
+    }
+
+    std::uint64_t queueOffset = 0;
+    xpc_object_t queueOffsetValue = xpc_dictionary_get_value(remoteQueueObject, "QueueOffset");
+    if (queueOffsetValue != nullptr && xpc_get_type(queueOffsetValue) == XPC_TYPE_UINT64) {
+        queueOffset = xpc_uint64_get_value(queueOffsetValue);
+    }
+
+    void *mappedRegion = nullptr;
+    const size_t mappedSize = xpc_shmem_map(sharedRegion, &mappedRegion);
+    if (mappedRegion == nullptr || mappedSize <= queueOffset) {
+        return nil;
+    }
+
+    const size_t inspectionSize = std::min<size_t>(4096, mappedSize - static_cast<size_t>(queueOffset));
+    if (inspectionSize == 0) {
+        return nil;
+    }
+
+    const std::uint8_t *bytes =
+        reinterpret_cast<const std::uint8_t *>(mappedRegion) + static_cast<size_t>(queueOffset);
+    NSData *snapshotData = [NSData dataWithBytes:bytes length:inspectionSize];
+    const std::uint64_t fingerprint = MDKFNV1a64(bytes, inspectionSize);
+
+    return @{
+        @"remoteQueuePointer": [NSString stringWithFormat:@"%p", (__bridge const void *) remoteQueue],
+        @"mappedSize": @(mappedSize),
+        @"queueOffset": @(queueOffset),
+        @"inspectionSize": @(inspectionSize),
+        @"fingerprint": @(fingerprint),
+        @"snapshotData": snapshotData,
+    };
+}
+
+static int MDKDuplicateVideoRemoteQueueFD(const char *name) {
+    if (name == nullptr) {
+        return -1;
+    }
+
+    NSDictionary<NSString *, id> *videoQueueEntry = MDKCopySCKRemoteQueueEntryForType(1);
+    id remoteQueue = videoQueueEntry[@"remoteQueue"];
+    if (remoteQueue == nil || ![NSStringFromClass([remoteQueue class]) hasPrefix:@"OS_xpc_"]) {
+        return -1;
+    }
+
+    xpc_object_t remoteQueueObject = (xpc_object_t) remoteQueue;
+    xpc_object_t fdValue = xpc_dictionary_get_value(remoteQueueObject, name);
+    if (fdValue == nullptr || xpc_get_type(fdValue) != XPC_TYPE_FD) {
+        return -1;
+    }
+
+    return xpc_fd_dup(fdValue);
+}
+
+static NSArray<NSNumber *> *MDKCopyChangedWordOffsets(NSData *previousData, NSData *currentData) {
+    if (previousData == nil || currentData == nil || previousData.length == 0 || currentData.length == 0) {
+        return @[];
+    }
+
+    const size_t comparableLength = std::min(previousData.length, currentData.length);
+    const std::uint8_t *previousBytes = reinterpret_cast<const std::uint8_t *>(previousData.bytes);
+    const std::uint8_t *currentBytes = reinterpret_cast<const std::uint8_t *>(currentData.bytes);
+    NSMutableArray<NSNumber *> *offsets = [NSMutableArray array];
+    for (size_t offset = 0; offset < comparableLength; offset += sizeof(std::uint64_t)) {
+        const size_t remaining = comparableLength - offset;
+        const size_t chunkLength = std::min(remaining, sizeof(std::uint64_t));
+        if (memcmp(previousBytes + offset, currentBytes + offset, chunkLength) != 0) {
+            [offsets addObject:@(offset)];
+            if (offsets.count >= 12) {
+                break;
+            }
+        }
+    }
+    return offsets;
+}
+
+static void MDKObserveVideoRemoteQueueSharedRegion(void) {
+    NSDictionary<NSString *, id> *snapshot = MDKCopyVideoRemoteQueueSharedRegionSnapshot();
+    if (snapshot == nil) {
+        return;
+    }
+
+    NSData *snapshotData = snapshot[@"snapshotData"];
+    NSNumber *fingerprint = snapshot[@"fingerprint"];
+    NSArray<NSNumber *> *changedWordOffsets = @[];
+    NSNumber *lastChangeTimestamp = nil;
+    NSNumber *changeTimestamp = nil;
+    BOOL shouldRecord = NO;
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState == nil) {
+            return;
+        }
+
+        MDKActiveSCKTraceState[@"videoSharedRegionPollCount"] =
+            @([MDKActiveSCKTraceState[@"videoSharedRegionPollCount"] unsignedIntegerValue] + 1);
+        MDKActiveSCKTraceState[@"videoSharedRegionMappedSize"] = snapshot[@"mappedSize"];
+        MDKActiveSCKTraceState[@"videoSharedRegionQueueOffset"] = snapshot[@"queueOffset"];
+        MDKActiveSCKTraceState[@"videoSharedRegionInspectionSize"] = snapshot[@"inspectionSize"];
+        MDKActiveSCKTraceState[@"videoSharedRegionLastRemoteQueuePointer"] = snapshot[@"remoteQueuePointer"];
+
+        NSData *previousData = MDKActiveSCKTraceState[@"videoSharedRegionPreviousSnapshotData"];
+        NSNumber *previousFingerprint = MDKActiveSCKTraceState[@"videoSharedRegionLastFingerprint"];
+        if (previousData == nil || previousFingerprint == nil) {
+            MDKActiveSCKTraceState[@"videoSharedRegionPreviousSnapshotData"] = snapshotData;
+            MDKActiveSCKTraceState[@"videoSharedRegionLastFingerprint"] = fingerprint;
+            return;
+        }
+
+        if ([previousFingerprint isEqualToNumber:fingerprint]) {
+            return;
+        }
+
+        changedWordOffsets = MDKCopyChangedWordOffsets(previousData, snapshotData);
+        MDKActiveSCKTraceState[@"videoSharedRegionChangeEventCount"] =
+            @([MDKActiveSCKTraceState[@"videoSharedRegionChangeEventCount"] unsignedIntegerValue] + 1);
+        shouldRecord = [MDKActiveSCKTraceState[@"videoSharedRegionChangeEventCount"] unsignedIntegerValue] <= 512;
+
+        const std::uint64_t timestampNanos = MDKCurrentTraceTimestampNanos();
+        changeTimestamp = @(timestampNanos);
+        lastChangeTimestamp = MDKActiveSCKTraceState[@"videoSharedRegionLastChangeTimestampNanos"];
+        if (lastChangeTimestamp != nil) {
+            const double deltaMs =
+                (static_cast<long double>(timestampNanos) - static_cast<long double>(lastChangeTimestamp.unsignedLongLongValue)) / 1.0e6L;
+            MDKIncrementMutableHistogram(
+                MDKActiveSCKTraceState[@"videoSharedRegionDeltaHistogram"],
+                MDKBucketMilliseconds(deltaMs)
+            );
+            MDKActiveSCKTraceState[@"videoSharedRegionDeltaCount"] =
+                @([MDKActiveSCKTraceState[@"videoSharedRegionDeltaCount"] unsignedIntegerValue] + 1);
+        }
+        MDKActiveSCKTraceState[@"videoSharedRegionLastChangeTimestampNanos"] = changeTimestamp;
+        MDKActiveSCKTraceState[@"videoSharedRegionPreviousSnapshotData"] = snapshotData;
+        MDKActiveSCKTraceState[@"videoSharedRegionLastFingerprint"] = fingerprint;
+
+        NSMutableDictionary<NSString *, NSNumber *> *changedOffsetHistogram = MDKActiveSCKTraceState[@"videoSharedRegionChangedOffsetHistogram"];
+        for (NSNumber *offset in changedWordOffsets) {
+            NSString *key = offset.stringValue;
+            changedOffsetHistogram[key] = @([changedOffsetHistogram[key] unsignedIntegerValue] + 1);
+        }
+    }
+
+    if (!shouldRecord) {
+        return;
+    }
+
+    MDKRecordSCKTraceEvent(
+        @"video-shared-region-change",
+        @{
+            @"remoteQueuePointer": snapshot[@"remoteQueuePointer"],
+            @"mappedSize": snapshot[@"mappedSize"],
+            @"queueOffset": snapshot[@"queueOffset"],
+            @"inspectionSize": snapshot[@"inspectionSize"],
+            @"fingerprint": fingerprint,
+            @"changedWordOffsets": changedWordOffsets,
+            @"previousChangeTimestampNanos": lastChangeTimestamp ?: [NSNull null],
+            @"changeTimestampNanos": changeTimestamp ?: [NSNull null],
+        }
+    );
+}
+
+static void MDKObserveVideoRemoteQueueReceiveFD(int receiveFD) {
+    if (receiveFD < 0) {
+        return;
+    }
+
+    struct pollfd descriptor = {};
+    descriptor.fd = receiveFD;
+    descriptor.events = POLLIN | POLLPRI | POLLHUP;
+    const int pollStatus = poll(&descriptor, 1, 0);
+
+    int availableBytes = 0;
+    if (ioctl(receiveFD, FIONREAD, &availableBytes) != 0) {
+        availableBytes = -1;
+    }
+
+    const BOOL readable =
+        pollStatus > 0 &&
+        (descriptor.revents & (POLLIN | POLLPRI | POLLHUP)) != 0;
+    NSNumber *previousSignalTimestamp = nil;
+    NSNumber *signalTimestamp = nil;
+    BOOL shouldRecord = NO;
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState == nil) {
+            return;
+        }
+
+        MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDPollCount"] =
+            @([MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDPollCount"] unsignedIntegerValue] + 1);
+        MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDLastRevents"] = @(descriptor.revents);
+
+        if (availableBytes >= 0) {
+            MDKIncrementMutableHistogram(
+                MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDAvailableBytesHistogram"],
+                [NSString stringWithFormat:@"%d", availableBytes]
+            );
+            if (availableBytes > [MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDAvailableBytesMax"] intValue]) {
+                MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDAvailableBytesMax"] = @(availableBytes);
+            }
+        }
+
+        const BOOL previousReadable = [MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDLastReadable"] boolValue];
+        NSNumber *previousAvailableBytes = MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDLastAvailableBytes"];
+        const BOOL availabilityChanged =
+            previousAvailableBytes == nil || previousAvailableBytes.intValue != availableBytes;
+        if (readable && (!previousReadable || availabilityChanged)) {
+            MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDSignalEventCount"] =
+                @([MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDSignalEventCount"] unsignedIntegerValue] + 1);
+            shouldRecord = [MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDSignalEventCount"] unsignedIntegerValue] <= 512;
+
+            const std::uint64_t timestampNanos = MDKCurrentTraceTimestampNanos();
+            signalTimestamp = @(timestampNanos);
+            previousSignalTimestamp = MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDLastSignalTimestampNanos"];
+            if (previousSignalTimestamp != nil) {
+                const double deltaMs =
+                    (static_cast<long double>(timestampNanos) - static_cast<long double>(previousSignalTimestamp.unsignedLongLongValue)) / 1.0e6L;
+                MDKIncrementMutableHistogram(
+                    MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDDeltaHistogram"],
+                    MDKBucketMilliseconds(deltaMs)
+                );
+                MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDDeltaCount"] =
+                    @([MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDDeltaCount"] unsignedIntegerValue] + 1);
+            }
+            MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDLastSignalTimestampNanos"] = signalTimestamp;
+        }
+
+        MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDLastReadable"] = @(readable);
+        MDKActiveSCKTraceState[@"videoRemoteQueueRecvFDLastAvailableBytes"] = @(availableBytes);
+    }
+
+    if (!shouldRecord) {
+        return;
+    }
+
+    MDKRecordSCKTraceEvent(
+        @"video-recv-fd-signal",
+        @{
+            @"revents": @(descriptor.revents),
+            @"availableBytes": @(availableBytes),
+            @"previousSignalTimestampNanos": previousSignalTimestamp ?: [NSNull null],
+            @"signalTimestampNanos": signalTimestamp ?: [NSNull null],
+        }
+    );
 }
 
 static NSArray<NSString *> * _Nullable MDKSortedDictionaryKeys(id object) {
@@ -1064,6 +1342,19 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"frameReceiverEventCount": @0,
             @"remoteQueueSinkEventCount": @0,
             @"remoteQueueObjectEventCount": @0,
+            @"videoSharedRegionPollCount": @0,
+            @"videoSharedRegionChangeEventCount": @0,
+            @"videoSharedRegionDeltaCount": @0,
+            @"videoSharedRegionDeltaHistogram": [NSMutableDictionary dictionary],
+            @"videoSharedRegionChangedOffsetHistogram": [NSMutableDictionary dictionary],
+            @"videoRemoteQueueRecvFDPollCount": @0,
+            @"videoRemoteQueueRecvFDSignalEventCount": @0,
+            @"videoRemoteQueueRecvFDDeltaCount": @0,
+            @"videoRemoteQueueRecvFDDeltaHistogram": [NSMutableDictionary dictionary],
+            @"videoRemoteQueueRecvFDAvailableBytesHistogram": [NSMutableDictionary dictionary],
+            @"videoRemoteQueueRecvFDAvailableBytesMax": @0,
+            @"videoQueueWrapperCallbackEventCount": @0,
+            @"videoQueueWrapperBlocks": [NSMutableDictionary dictionary],
         } mutableCopy];
         MDKActiveSCKRemoteQueues = [NSMutableArray array];
         MDKActiveSCKRemoteQueueEntries = [NSMutableDictionary dictionary];
@@ -1077,6 +1368,7 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
         MDKActiveFigRemoteQueueReceiverSemaphore = nil;
         MDKActiveFigRemoteQueueReceiverState = nil;
         MDKActiveSCKAllowPrivateQueueProbes = NO;
+        MDKActiveSCKAllowVideoQueueWrapperProbe = NO;
     }
 }
 
@@ -1224,7 +1516,7 @@ static BOOL MDKPrimeSCRemoteQueueWrapperIfPossible(id remoteQueue) {
     return createStatus && receiverQueue != nullptr;
 }
 
-static void MDKPrimeFigRemoteQueueReceiverIfPossible(id remoteQueue) {
+static void __attribute__((unused)) MDKPrimeFigRemoteQueueReceiverIfPossible(id remoteQueue) {
     using MDKFigRemoteQueueReceiverCreateFromXPCObjectFn = int (*)(CFAllocatorRef, xpc_object_t, void **);
     using MDKFigRemoteQueueReceiverSetHandlerFn = void (*)(void *, dispatch_queue_t, id);
 
@@ -1791,6 +2083,20 @@ static void MDKSwizzledManagerStartRemoteQueue(id self, SEL _cmd, id queue, id s
         }
     );
 
+    BOOL shouldWrapVideoQueueCallback = NO;
+    @synchronized(MDKActiveSCKTraceLock) {
+        shouldWrapVideoQueueCallback = MDKActiveSCKAllowVideoQueueWrapperProbe;
+    }
+    if (shouldWrapVideoQueueCallback) {
+        NSNumber *queueType = MDKPerformUnsignedCharGetter(queue, sel_registerName("queueType"));
+        if (queueType != nil && queueType.unsignedCharValue == 1) {
+            id stream = ((id (*)(id, SEL, id)) objc_msgSend)(self, sel_registerName("getStreamForID:"), streamID);
+            if (stream != nil) {
+                MDKWrapVideoReceiveQueueCallbackIfPossible(stream);
+            }
+        }
+    }
+
     MDKOriginalManagerStartRemoteQueue(self, _cmd, queue, streamID);
 }
 
@@ -1981,6 +2287,95 @@ static void MDKRecordRemoteQueueObjectEvent(NSString *kind, NSDictionary<NSStrin
     }
 
     MDKRecordSCKTraceEvent(kind, payload);
+}
+
+static void MDKRecordVideoQueueWrapperCallbackEvent(
+    int status,
+    const MDKFigRemoteQueueMessage *message,
+    void *context
+) {
+    BOOL shouldRecord = NO;
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            NSUInteger eventCount = [MDKActiveSCKTraceState[@"videoQueueWrapperCallbackEventCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"videoQueueWrapperCallbackEventCount"] = @(eventCount);
+            shouldRecord = eventCount <= 512;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    NSDictionary<NSString *, id> *surfaceSummary = message != nullptr ? MDKSummarizeIOSurface(message->surface) : @{ @"present": @NO };
+    id messageType = message != nullptr ? static_cast<id>(@(message->messageType)) : [NSNull null];
+    NSDictionary<NSString *, id> *payload = @{
+        @"status": @(status),
+        @"messageType": messageType,
+        @"surface": surfaceSummary,
+        @"context": MDKSummarizePointerValue(context),
+    };
+    MDKRecordSCKTraceEvent(@"video-queue-wrapper-callback", payload);
+}
+
+static BOOL MDKInstallVideoQueueWrapperCallbackAtPointer(const void *wrapperPointer) {
+    if (wrapperPointer == nullptr) {
+        return NO;
+    }
+
+    uint8_t *wrapperBase = reinterpret_cast<uint8_t *>(const_cast<void *>(wrapperPointer));
+    void *callbackPointer = nullptr;
+    memcpy(&callbackPointer, wrapperBase + 0x28, sizeof(callbackPointer));
+    if (callbackPointer == nullptr) {
+        return NO;
+    }
+
+    id callbackObject = (__bridge id) callbackPointer;
+    NSString *signature = MDKCopyBlockSignatureString(callbackObject);
+    if (signature == nil || ![signature containsString:@"FigRemoteQueueMessage"]) {
+        return NO;
+    }
+
+    NSString *wrapperKey = [NSString stringWithFormat:@"%p", wrapperPointer];
+    @synchronized(MDKActiveSCKTraceLock) {
+        NSMutableDictionary<NSString *, id> *wrappedBlocks = MDKActiveSCKTraceState[@"videoQueueWrapperBlocks"];
+        if (wrappedBlocks[wrapperKey] != nil) {
+            return YES;
+        }
+
+        MDKVideoReceiveQueueCallbackBlock originalBlock =
+            (__bridge MDKVideoReceiveQueueCallbackBlock) callbackPointer;
+        MDKVideoReceiveQueueCallbackBlock wrappedBlock = [^(int status, MDKFigRemoteQueueMessage *message, void *context) {
+            MDKRecordVideoQueueWrapperCallbackEvent(status, message, context);
+            originalBlock(status, message, context);
+        } copy];
+        wrappedBlocks[wrapperKey] = wrappedBlock;
+
+        void *wrappedPointer = (__bridge void *) wrappedBlock;
+        memcpy(wrapperBase + 0x28, &wrappedPointer, sizeof(wrappedPointer));
+    }
+
+    MDKRecordSCKTraceEvent(
+        @"video-queue-wrapper-installed",
+        @{
+            @"wrapperPointer": [NSString stringWithFormat:@"%p", wrapperPointer],
+            @"callbackPointer": [NSString stringWithFormat:@"%p", callbackPointer],
+            @"blockSignature": signature,
+        }
+    );
+    return YES;
+}
+
+static BOOL MDKWrapVideoReceiveQueueCallbackIfPossible(id stream) {
+    if (stream == nil) {
+        return NO;
+    }
+
+    NSValue *wrapperValue = MDKCopyRawPointerIvar(stream, "_videoReceiveQueue");
+    if (wrapperValue == nil || wrapperValue.pointerValue == nullptr) {
+        return NO;
+    }
+
+    return MDKInstallVideoQueueWrapperCallbackAtPointer(wrapperValue.pointerValue);
 }
 
 static void MDKSwizzledRPIOSurfaceSet(id self, SEL _cmd, IOSurfaceRef surface) {
@@ -2222,8 +2617,10 @@ static void MDKSwizzledStartRemoteReceiveQueue(id self, SEL _cmd, id queue) {
 
 static void MDKSwizzledStartRemoteVideoReceiveQueue(id self, SEL _cmd, id queue) {
     BOOL needsPrime = NO;
+    BOOL shouldWrapVideoQueueCallback = NO;
     @synchronized(MDKActiveSCKTraceLock) {
         needsPrime = MDKActiveSCKAllowPrivateQueueProbes && (MDKActiveSCRemoteQueueWrapper == nullptr);
+        shouldWrapVideoQueueCallback = MDKActiveSCKAllowVideoQueueWrapperProbe;
     }
     if (needsPrime) {
         NSDictionary<NSString *, id> *videoQueueEntry = MDKCopySCKRemoteQueueEntryForType(1);
@@ -2240,6 +2637,9 @@ static void MDKSwizzledStartRemoteVideoReceiveQueue(id self, SEL _cmd, id queue)
 
     MDKRecordRemoteQueueConsumerEvent(@"stream-start-remote-video-receive-queue", queue);
     MDKOriginalStartRemoteVideoReceiveQueue(self, _cmd, queue);
+    if (shouldWrapVideoQueueCallback) {
+        MDKWrapVideoReceiveQueueCallbackIfPossible(self);
+    }
     MDKRecordSCKTraceEvent(
         @"stream-post-start-remote-video-state",
         @{
@@ -3043,6 +3443,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     MDKResetSCKTraceState(displayID, timeout);
     @synchronized(MDKActiveSCKTraceLock) {
         MDKActiveSCKAllowPrivateQueueProbes = includePrivateQueueProbes;
+        MDKActiveSCKAllowVideoQueueWrapperProbe = NO;
     }
     MDKAppendSCKTraceNote([NSString stringWithFormat:@"class.BWRemoteQueueSinkNode.present=%@", NSClassFromString(@"BWRemoteQueueSinkNode") != Nil ? @"true" : @"false"]);
     MDKAppendSCKTraceNote([NSString stringWithFormat:@"class.BWRemoteQueueSinkNode.renderSampleBuffer:forInput:=%@", class_getInstanceMethod(NSClassFromString(@"BWRemoteQueueSinkNode"), sel_registerName("renderSampleBuffer:forInput:")) != nullptr ? @"true" : @"false"]);
@@ -3243,7 +3644,21 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         MDKAttemptSCRemoteQueueWrapperProbeForCapturedVideoQueue(timeout);
         MDKAttemptFigRemoteQueueReceiverProbeForCapturedVideoQueue(timeout);
     } else {
-        MDKRunCurrentRunLoopForDuration(timeout);
+        int videoRecvFD = -1;
+        const CFAbsoluteTime deadline = CFAbsoluteTimeGetCurrent() + timeout;
+        while (CFAbsoluteTimeGetCurrent() < deadline) {
+            @autoreleasepool {
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false);
+            }
+            if (videoRecvFD < 0) {
+                videoRecvFD = MDKDuplicateVideoRemoteQueueFD("RecvFd");
+            }
+            MDKObserveVideoRemoteQueueReceiveFD(videoRecvFD);
+            MDKObserveVideoRemoteQueueSharedRegion();
+        }
+        if (videoRecvFD >= 0) {
+            close(videoRecvFD);
+        }
     }
 
     MDKRecordSCKTraceEvent(
@@ -4207,6 +4622,30 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     NSDictionary *serializedFilter = MDKSummarizeObject(
         MDKPerformObjectGetter(filter, sel_registerName("serialize"))
     );
+    NSDictionary<NSString *, id> *videoQueueWrapperCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"video-queue-wrapper-callback",
+        ]]
+    );
+    NSDictionary<NSString *, id> *videoQueueWrapperInstallSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"video-queue-wrapper-installed",
+        ]]
+    );
+    NSDictionary<NSString *, id> *videoSharedRegionCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"video-shared-region-change",
+        ]]
+    );
+    NSDictionary<NSString *, id> *videoRecvFDCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"video-recv-fd-signal",
+        ]]
+    );
 
     NSMutableArray<NSString *> *notes = [snapshot[@"notes"] mutableCopy] ?: [NSMutableArray array];
     [notes addObject:[NSString stringWithFormat:@"serializedStreamProperties=%@", MDKDescribeTraceValue(serializedStreamProperties)]];
@@ -4232,6 +4671,30 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"frameReceiverEventCount=%@", MDKDescribeTraceValue(snapshot[@"frameReceiverEventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkEventCount=%@", MDKDescribeTraceValue(snapshot[@"remoteQueueSinkEventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"remoteQueueObjectEventCount=%@", MDKDescribeTraceValue(snapshot[@"remoteQueueObjectEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperCallbackEventCount=%@", MDKDescribeTraceValue(videoQueueWrapperCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperCallbackDeltaCount=%@", MDKDescribeTraceValue(videoQueueWrapperCadenceSummary[@"deltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperCallbackDeltaHistogram=%@", MDKDescribeTraceValue(videoQueueWrapperCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperCallback120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueWrapperCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperCallbackCadenceClassification=%@", MDKDescribeTraceValue(videoQueueWrapperCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInstalledCount=%@", MDKDescribeTraceValue(videoQueueWrapperInstallSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoSharedRegionPollCount=%@", MDKDescribeTraceValue(snapshot[@"videoSharedRegionPollCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoSharedRegionMappedSize=%@", MDKDescribeTraceValue(snapshot[@"videoSharedRegionMappedSize"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoSharedRegionQueueOffset=%@", MDKDescribeTraceValue(snapshot[@"videoSharedRegionQueueOffset"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoSharedRegionInspectionSize=%@", MDKDescribeTraceValue(snapshot[@"videoSharedRegionInspectionSize"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoSharedRegionChangeEventCount=%@", MDKDescribeTraceValue(videoSharedRegionCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoSharedRegionDeltaCount=%@", MDKDescribeTraceValue(videoSharedRegionCadenceSummary[@"deltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoSharedRegionDeltaHistogram=%@", MDKDescribeTraceValue(videoSharedRegionCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoSharedRegionDelta120HzEquivalentCount=%@", MDKDescribeTraceValue(videoSharedRegionCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoSharedRegionCadenceClassification=%@", MDKDescribeTraceValue(videoSharedRegionCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoSharedRegionChangedOffsetHistogram=%@", MDKDescribeTraceValue(snapshot[@"videoSharedRegionChangedOffsetHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoRemoteQueueRecvFDPollCount=%@", MDKDescribeTraceValue(snapshot[@"videoRemoteQueueRecvFDPollCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoRemoteQueueRecvFDSignalEventCount=%@", MDKDescribeTraceValue(videoRecvFDCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoRemoteQueueRecvFDDeltaCount=%@", MDKDescribeTraceValue(videoRecvFDCadenceSummary[@"deltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoRemoteQueueRecvFDDeltaHistogram=%@", MDKDescribeTraceValue(videoRecvFDCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoRemoteQueueRecvFDDelta120HzEquivalentCount=%@", MDKDescribeTraceValue(videoRecvFDCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoRemoteQueueRecvFDCadenceClassification=%@", MDKDescribeTraceValue(videoRecvFDCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoRemoteQueueRecvFDAvailableBytesHistogram=%@", MDKDescribeTraceValue(snapshot[@"videoRemoteQueueRecvFDAvailableBytesHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"videoRemoteQueueRecvFDAvailableBytesMax=%@", MDKDescribeTraceValue(snapshot[@"videoRemoteQueueRecvFDAvailableBytesMax"])]];
     [notes addObject:[NSString stringWithFormat:@"capturedRemoteQueueCount=%lu", (unsigned long) MDKCapturedSCKRemoteQueueCount()]];
     [notes addObject:[NSString stringWithFormat:@"privateQueueProbesEnabled=%@", includePrivateQueueProbes ? @"true" : @"false"]];
     [notes addObject:[NSString stringWithFormat:@"firstPublicSampleTimestampNanos=%@", MDKDescribeTraceValue(firstPublicSampleTimestampNanos)]];

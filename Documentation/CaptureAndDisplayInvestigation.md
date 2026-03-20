@@ -449,11 +449,53 @@ Interpretation:
 
 - the currently healthy public `SCStream` path is not going through the lower candidates we first expected
 - `BWRemoteQueueSinkNode`, `RPIOSurface`, `CAContentStream`, `IOSurfaceRemoteRemoteClient`, and `CMCaptureFrameReceiver` are currently dead ends for this trace
-- the best remaining on-path lower-level target is the private `videoReceiveQueueWrapper` callback block discovered inside `SCStream` state
+- the private `videoReceiveQueueWrapper` callback block is still structurally interesting, but blind replacement is not safe enough to keep using as the next probe
 - current wrapper signature in the video queue snapshot:
   - `v28@?0i8^{FigRemoteQueueMessage=^v^{__IOSurface}i}12^v20`
-- next step:
-  - instrument the `videoReceiveQueueWrapper` callback without consuming the queue so cadence can be compared directly against the public sample callback
+
+### Passive lower-path observation without consuming the queue
+
+The passive handshake trace now does two read-only lower-level observations during a healthy public `SCStream` session:
+
+- polls the video queue `SharedRegion` mapping from `SCRemoteQueueXPCObject.remoteQueue`
+- duplicates `RecvFd` from the same XPC dictionary and polls readiness / `FIONREAD` without reading from it
+
+Recent idle sample on display `2` for `3s`:
+
+- public sample presentation histogram:
+  - `{"4.2ms":1,"8.3ms":3,"16.7ms":3,"50.0ms":1,"54.2ms":1,"58.3ms":28,"62.5ms":7,"66.7ms":7,"75.0ms":1,"116.7ms":1}`
+- shared-region observation:
+  - `videoSharedRegionPollCount=1105`
+  - `videoSharedRegionChangeEventCount=4`
+  - `videoSharedRegionDeltaHistogram={"2.9ms":1,"3.1ms":1,"779.4ms":1}`
+  - `videoSharedRegionDelta120HzEquivalentCount=2`
+  - `videoSharedRegionChangedOffsetHistogram={"0":4,"16":4,"128":1,"136":1,"144":1,"152":1,"480":1,"488":1,"1568":1,"1576":1,"1584":1,"1592":1}`
+- recv-fd observation:
+  - `videoRemoteQueueRecvFDPollCount=1029`
+  - `videoRemoteQueueRecvFDSignalEventCount=2`
+  - `videoRemoteQueueRecvFDDeltaHistogram={"354.3ms":1}`
+  - `videoRemoteQueueRecvFDAvailableBytesHistogram={"0":1029,"2":2}`
+  - `videoRemoteQueueRecvFDAvailableBytesMax=2`
+
+Recent continuous Metal motion sample on display `2` for `3s`:
+
+- public sample presentation histogram:
+  - `{"4.2ms":2,"8.3ms":8,"12.5ms":3,"16.7ms":1,"20.8ms":1,"25.0ms":1,"50.0ms":9,"54.2ms":4,"58.3ms":3,"62.5ms":9,"66.7ms":4,"70.8ms":4,"75.0ms":1,"108.3ms":1,"112.5ms":1,"116.7ms":4,"120.8ms":1}`
+- shared-region observation:
+  - `videoSharedRegionChangeEventCount=0`
+  - `videoSharedRegionDeltaHistogram={}`
+- recv-fd observation:
+  - `videoRemoteQueueRecvFDSignalEventCount=0`
+  - `videoRemoteQueueRecvFDDeltaHistogram={}`
+  - `videoRemoteQueueRecvFDAvailableBytesHistogram={"0":193}`
+  - `videoRemoteQueueRecvFDAvailableBytesMax=0`
+
+Interpretation:
+
+- the public sample path still does not become `120hz-like` under continuous Metal motion
+- neither the mapped `SharedRegion` nor the duplicated `RecvFd` exposes a strong `~8.3ms` producer cadence
+- the lower observable state is either too far upstream / too passive, or the real per-frame handoff lives in the consumer callback path rather than these read-only queue artifacts
+- the next meaningful lower target is therefore the actual queue-drain / consumer callback path, not more passive polling of `SharedRegion` or `RecvFd`
 
 ## External clues worth keeping in mind
 
@@ -490,7 +532,7 @@ Virtual display card-style scaling UI remains blocked on physical-display classi
 
 ## Next experiments
 
-1. Move below the public `SCStream` consumer and keep tracing queue/surface transport behavior.
+1. Move below the passive `SharedRegion` / `RecvFd` observers and trace the real queue-drain / consumer callback path.
 2. Correlate public timing traces with WindowServer/compositor activity instead of assuming static-scene coalescing is the dominant cause.
-3. If a lower-level queue consumer still shows the same `45-70ms` gap cluster, treat compositor cadence policy as the primary ceiling.
+3. If a lower-level consumer still shows the same `45-70ms` gap cluster, treat compositor cadence policy as the primary ceiling.
 4. Keep the virtual display UI/classification track separate from the capture-cadence track.

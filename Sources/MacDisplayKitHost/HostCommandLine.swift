@@ -8,7 +8,7 @@ private enum MDKHostCLICommand {
     case listTargets
     case screenCaptureKitRuntimeInventory(json: Bool)
     case screenCaptureKitProxyHandshakeTrace(displayID: UInt32, sampleDuration: TimeInterval, json: Bool)
-    case screenCaptureKitPassiveHandshakeTrace(displayID: UInt32, sampleDuration: TimeInterval, json: Bool)
+    case screenCaptureKitPassiveHandshakeTrace(displayID: UInt32, sampleDuration: TimeInterval, json: Bool, useMetalStimulus: Bool)
     case screenCaptureKitTimingTrace(displayID: UInt32, sampleDuration: TimeInterval, json: Bool, useMetalStimulus: Bool)
     case privateCapturePlan(json: Bool)
     case privateCaptureProbe(displayID: UInt32, requestExtendedRange: Bool, json: Bool)
@@ -88,8 +88,12 @@ enum MDKHostCommandLine {
                 fputs("Failed to trace ScreenCaptureKit proxy handshake: \(error)\n", stderr)
                 return 1
             }
-        case .screenCaptureKitPassiveHandshakeTrace(let displayID, let sampleDuration, let json):
+        case .screenCaptureKitPassiveHandshakeTrace(let displayID, let sampleDuration, let json, let useMetalStimulus):
             do {
+                let stimulus = useMetalStimulus ? MDKHostMetalStimulus(displayID: displayID) : nil
+                stimulus?.start()
+                defer { stimulus?.stop() }
+
                 let trace = try controller.traceScreenCaptureKitPassiveHandshake(
                     displayID: displayID,
                     sampleDuration: sampleDuration
@@ -371,7 +375,8 @@ enum MDKHostCommandLine {
             return .screenCaptureKitPassiveHandshakeTrace(
                 displayID: displayID,
                 sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
-                json: tokens.contains("--json")
+                json: tokens.contains("--json"),
+                useMetalStimulus: tokens.contains("--with-metal-stimulus")
             )
         }
 
