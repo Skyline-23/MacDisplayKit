@@ -1,10 +1,14 @@
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <IOSurface/IOSurface.h>
 #import <dlfcn.h>
 #import <mach/mach.h>
+#import <objc/message.h>
+#import <objc/runtime.h>
 #import <unistd.h>
+#import <xpc/xpc.h>
 
 #import "MDKObjCShim.h"
 
@@ -214,6 +218,1082 @@ static NSDictionary<NSString *, id> *MDKCreateMachPortSnapshot(mach_port_t port)
         @"portSequenceNumber": status == KERN_SUCCESS ? @(receiveStatus.mps_seqno) : @0,
         @"portMessagesWaiting": @((status == KERN_SUCCESS) && (receiveStatus.mps_msgcount > 0)),
     };
+}
+
+@interface MDKShimStreamOutputCollector : NSObject
+@end
+
+@implementation MDKShimStreamOutputCollector
+
+- (void)stream:(__unused id)stream
+didOutputSampleBuffer:(__unused id)sampleBuffer
+        ofType:(__unused NSInteger)type {
+}
+
+@end
+
+static NSMutableDictionary<NSString *, id> *MDKActiveSCKTraceState = nil;
+static NSObject *MDKActiveSCKTraceLock = nil;
+
+using MDKProxyCoreGraphicsFn = void (*)(id, SEL, unsigned char, id, id, id);
+using MDKStartRemoteQueueFn = void (*)(id, SEL, id, id);
+using MDKStartCaptureProxyFn = void (*)(id, SEL, id, id, id, id, id, id, id);
+using MDKFetchDisplayFn = void (*)(id, SEL, unsigned int, id);
+using MDKUpdateStreamConfigurationFn = void (*)(id, SEL, id, id, id, id, id);
+using MDKUpdateStreamContentFilterFn = void (*)(id, SEL, id, id, id, id, id, id);
+using MDKStartRemoteReceiveQueueConsumerFn = void (*)(id, SEL, id);
+
+static MDKProxyCoreGraphicsFn MDKOriginalProxyCoreGraphics = nullptr;
+static MDKStartRemoteQueueFn MDKOriginalStartRemoteQueue = nullptr;
+static MDKStartCaptureProxyFn MDKOriginalStartCaptureProxy = nullptr;
+static MDKFetchDisplayFn MDKOriginalFetchDisplay = nullptr;
+static MDKUpdateStreamConfigurationFn MDKOriginalUpdateStreamConfiguration = nullptr;
+static MDKUpdateStreamContentFilterFn MDKOriginalUpdateStreamContentFilter = nullptr;
+static MDKStartRemoteReceiveQueueConsumerFn MDKOriginalStartRemoteReceiveQueue = nullptr;
+static MDKStartRemoteReceiveQueueConsumerFn MDKOriginalStartRemoteVideoReceiveQueue = nullptr;
+static MDKStartRemoteReceiveQueueConsumerFn MDKOriginalStartRemoteAudioReceiveQueue = nullptr;
+static MDKStartRemoteReceiveQueueConsumerFn MDKOriginalStartRemoteMicrophoneReceiveQueue = nullptr;
+
+static id MDKPerformObjectGetter(id object, SEL selector) {
+    if (object == nil || selector == nullptr || ![object respondsToSelector:selector]) {
+        return nil;
+    }
+
+    return ((id (*)(id, SEL)) objc_msgSend)(object, selector);
+}
+
+static NSNumber * _Nullable MDKPerformUnsignedCharGetter(id object, SEL selector) {
+    if (object == nil || selector == nullptr || ![object respondsToSelector:selector]) {
+        return nil;
+    }
+
+    const unsigned char value = ((unsigned char (*)(id, SEL)) objc_msgSend)(object, selector);
+    return @(value);
+}
+
+static NSArray<NSString *> * _Nullable MDKSortedDictionaryKeys(id object) {
+    if (![object isKindOfClass:[NSDictionary class]]) {
+        return nil;
+    }
+
+    NSArray<NSString *> *keys = [(NSDictionary *) object allKeys];
+    return [keys sortedArrayUsingSelector:@selector(compare:)];
+}
+
+static NSDictionary<NSString *, id> *MDKSummarizeObject(id object) {
+    if (object == nil) {
+        return @{
+            @"present": @NO
+        };
+    }
+
+    NSMutableDictionary<NSString *, id> *summary = [NSMutableDictionary dictionary];
+    summary[@"present"] = @YES;
+    summary[@"className"] = NSStringFromClass([object class]) ?: @"<unknown>";
+
+    if ([object isKindOfClass:[NSDictionary class]]) {
+        summary[@"keys"] = MDKSortedDictionaryKeys(object) ?: @[];
+    } else if ([object isKindOfClass:[NSArray class]]) {
+        summary[@"count"] = @([(NSArray *) object count]);
+    } else if ([object isKindOfClass:[NSString class]] || [object isKindOfClass:[NSNumber class]]) {
+        summary[@"value"] = object;
+    }
+
+    id serialized = MDKPerformObjectGetter(object, sel_registerName("serialize"));
+    NSArray<NSString *> *serializedKeys = MDKSortedDictionaryKeys(serialized);
+    if (serialized != nil) {
+        summary[@"serializedClassName"] = NSStringFromClass([serialized class]) ?: @"<unknown>";
+        if (serializedKeys != nil) {
+            summary[@"serializedKeys"] = serializedKeys;
+        }
+    }
+
+    id filterID = MDKPerformObjectGetter(object, sel_registerName("filterID"));
+    if ([filterID isKindOfClass:[NSString class]]) {
+        summary[@"filterID"] = filterID;
+    }
+
+    id streamID = MDKPerformObjectGetter(object, sel_registerName("streamID"));
+    if ([streamID isKindOfClass:[NSString class]]) {
+        summary[@"streamID"] = streamID;
+    }
+
+    id displayInfo = MDKPerformObjectGetter(object, sel_registerName("displayInfo"));
+    NSArray<NSString *> *displayInfoKeys = MDKSortedDictionaryKeys(displayInfo);
+    if (displayInfoKeys != nil) {
+        summary[@"displayInfoKeys"] = displayInfoKeys;
+    }
+
+    NSNumber *queueType = MDKPerformUnsignedCharGetter(object, sel_registerName("queueType"));
+    if (queueType != nil) {
+        summary[@"queueType"] = queueType;
+    }
+
+    id remoteQueue = MDKPerformObjectGetter(object, sel_registerName("remoteQueue"));
+    if (remoteQueue != nil) {
+        summary[@"remoteQueueClassName"] = NSStringFromClass([remoteQueue class]) ?: @"<unknown>";
+        summary[@"remoteQueueDescription"] = [remoteQueue description] ?: @"";
+        const char *xpcDescription = xpc_copy_description((xpc_object_t) remoteQueue);
+        if (xpcDescription != nullptr) {
+            summary[@"remoteQueueXPCDescription"] = [NSString stringWithUTF8String:xpcDescription] ?: @"";
+            free(const_cast<char *>(xpcDescription));
+        }
+    }
+
+    id machPort = MDKPerformObjectGetter(object, sel_registerName("machPort"));
+    if (machPort != nil) {
+        summary[@"wrappedMachPortClassName"] = NSStringFromClass([machPort class]) ?: @"<unknown>";
+        summary[@"wrappedMachPortDescription"] = [machPort description] ?: @"";
+    }
+
+    return summary;
+}
+
+static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        MDKActiveSCKTraceLock = [[NSObject alloc] init];
+    });
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        MDKActiveSCKTraceState = [@{
+            @"displayID": @(displayID),
+            @"timeout": @(timeout),
+            @"events": [NSMutableArray array],
+            @"notes": [NSMutableArray array],
+            @"sawStartCaptureProxy": @NO,
+            @"sawStartRemoteQueue": @NO,
+            @"sawProxyCoreGraphics": @NO,
+            @"startCaptureCompletionObserved": @NO,
+            @"startCaptureCompletionSucceeded": @NO,
+        } mutableCopy];
+    }
+}
+
+static void MDKRecordSCKTraceEvent(NSString *kind, NSDictionary<NSString *, id> *payload) {
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState == nil) {
+            return;
+        }
+
+        NSMutableArray *events = MDKActiveSCKTraceState[@"events"];
+        NSMutableDictionary<NSString *, id> *event = [payload mutableCopy];
+        event[@"kind"] = kind;
+        event[@"index"] = @(events.count);
+        [events addObject:event];
+    }
+}
+
+static NSDictionary<NSString *, id> * _Nullable MDKCopySCKTraceStateSnapshot(void) {
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState == nil) {
+            return nil;
+        }
+
+        return [MDKActiveSCKTraceState copy];
+    }
+}
+
+static NSString *MDKDescribeTraceValue(id value) {
+    if (value == nil || value == [NSNull null]) {
+        return @"<null>";
+    }
+
+    if ([value isKindOfClass:[NSString class]] || [value isKindOfClass:[NSNumber class]]) {
+        return [value description];
+    }
+
+    if ([NSJSONSerialization isValidJSONObject:value]) {
+        NSData *data = [NSJSONSerialization dataWithJSONObject:value options:NSJSONWritingSortedKeys error:nil];
+        if (data != nil) {
+            NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            if (text != nil) {
+                return text;
+            }
+        }
+    }
+
+    return [value description] ?: @"<unknown>";
+}
+
+static NSDictionary<NSString *, id> *MDKMakeTraceStep(
+    NSString *name,
+    NSString *selector,
+    NSString * _Nullable symbol,
+    NSNumber * _Nullable status,
+    NSNumber * _Nullable succeeded,
+    NSArray<NSString *> *notes
+) {
+    NSMutableDictionary<NSString *, id> *step = [@{
+        @"name": name,
+        @"selector": selector,
+        @"notes": notes,
+    } mutableCopy];
+    if (symbol != nil) {
+        step[@"symbol"] = symbol;
+    }
+    if (status != nil) {
+        step[@"status"] = status;
+    }
+    if (succeeded != nil) {
+        step[@"succeeded"] = succeeded;
+    }
+    return step;
+}
+
+static void MDKSwizzledProxyCoreGraphics(
+    id self,
+    SEL _cmd,
+    unsigned char methodType,
+    id config,
+    id machPort,
+    id completionHandler
+) {
+    MDKRecordSCKTraceEvent(
+        @"proxy-core-graphics",
+        @{
+            @"methodType": @(methodType),
+            @"config": MDKSummarizeObject(config),
+            @"machPort": MDKSummarizeObject(machPort),
+        }
+    );
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            MDKActiveSCKTraceState[@"sawProxyCoreGraphics"] = @YES;
+        }
+    }
+
+    MDKOriginalProxyCoreGraphics(self, _cmd, methodType, config, machPort, completionHandler);
+}
+
+static void MDKSwizzledStartRemoteQueue(id self, SEL _cmd, id queue, id streamID) {
+    MDKRecordSCKTraceEvent(
+        @"start-remote-queue",
+        @{
+            @"queue": MDKSummarizeObject(queue),
+            @"streamID": MDKSummarizeObject(streamID),
+        }
+    );
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            MDKActiveSCKTraceState[@"sawStartRemoteQueue"] = @YES;
+        }
+    }
+
+    MDKOriginalStartRemoteQueue(self, _cmd, queue, streamID);
+}
+
+static void MDKSwizzledStartCaptureProxy(
+    id self,
+    SEL _cmd,
+    id stream,
+    id contentFilter,
+    id preservedFilter,
+    id transactionID,
+    id properties,
+    id extensionToken,
+    id completionHandler
+) {
+    MDKRecordSCKTraceEvent(
+        @"start-capture-proxy",
+        @{
+            @"stream": MDKSummarizeObject(stream),
+            @"contentFilter": MDKSummarizeObject(contentFilter),
+            @"preservedFilter": MDKSummarizeObject(preservedFilter),
+            @"transactionID": MDKSummarizeObject(transactionID),
+            @"properties": MDKSummarizeObject(properties),
+            @"extensionToken": MDKSummarizeObject(extensionToken),
+        }
+    );
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            MDKActiveSCKTraceState[@"sawStartCaptureProxy"] = @YES;
+        }
+    }
+
+    MDKOriginalStartCaptureProxy(
+        self,
+        _cmd,
+        stream,
+        contentFilter,
+        preservedFilter,
+        transactionID,
+        properties,
+        extensionToken,
+        completionHandler
+    );
+}
+
+static void MDKSwizzledFetchDisplay(
+    id self,
+    SEL _cmd,
+    unsigned int displayID,
+    id completionHandler
+) {
+    MDKRecordSCKTraceEvent(
+        @"fetch-display",
+        @{
+            @"displayID": @(displayID),
+            @"completionHandler": MDKSummarizeObject(completionHandler),
+        }
+    );
+
+    MDKOriginalFetchDisplay(self, _cmd, displayID, completionHandler);
+}
+
+static void MDKSwizzledUpdateStreamConfiguration(
+    id self,
+    SEL _cmd,
+    id stream,
+    id configuration,
+    id transactionID,
+    id streamData,
+    id completionHandler
+) {
+    MDKRecordSCKTraceEvent(
+        @"update-stream-configuration",
+        @{
+            @"stream": MDKSummarizeObject(stream),
+            @"configuration": MDKSummarizeObject(configuration),
+            @"transactionID": MDKSummarizeObject(transactionID),
+            @"streamData": MDKSummarizeObject(streamData),
+            @"completionHandler": MDKSummarizeObject(completionHandler),
+        }
+    );
+
+    MDKOriginalUpdateStreamConfiguration(
+        self,
+        _cmd,
+        stream,
+        configuration,
+        transactionID,
+        streamData,
+        completionHandler
+    );
+}
+
+static void MDKSwizzledUpdateStreamContentFilter(
+    id self,
+    SEL _cmd,
+    id stream,
+    id contentFilter,
+    id preservedContentFilter,
+    id transactionID,
+    id streamData,
+    id completionHandler
+) {
+    MDKRecordSCKTraceEvent(
+        @"update-stream-content-filter",
+        @{
+            @"stream": MDKSummarizeObject(stream),
+            @"contentFilter": MDKSummarizeObject(contentFilter),
+            @"preservedContentFilter": MDKSummarizeObject(preservedContentFilter),
+            @"transactionID": MDKSummarizeObject(transactionID),
+            @"streamData": MDKSummarizeObject(streamData),
+            @"completionHandler": MDKSummarizeObject(completionHandler),
+        }
+    );
+
+    MDKOriginalUpdateStreamContentFilter(
+        self,
+        _cmd,
+        stream,
+        contentFilter,
+        preservedContentFilter,
+        transactionID,
+        streamData,
+        completionHandler
+    );
+}
+
+static void MDKRecordRemoteQueueConsumerEvent(NSString *kind, id queue) {
+    MDKRecordSCKTraceEvent(
+        kind,
+        @{
+            @"queue": MDKSummarizeObject(queue),
+        }
+    );
+}
+
+static void MDKSwizzledStartRemoteReceiveQueue(id self, SEL _cmd, id queue) {
+    MDKRecordRemoteQueueConsumerEvent(@"stream-start-remote-receive-queue", queue);
+    MDKOriginalStartRemoteReceiveQueue(self, _cmd, queue);
+}
+
+static void MDKSwizzledStartRemoteVideoReceiveQueue(id self, SEL _cmd, id queue) {
+    MDKRecordRemoteQueueConsumerEvent(@"stream-start-remote-video-receive-queue", queue);
+    MDKOriginalStartRemoteVideoReceiveQueue(self, _cmd, queue);
+}
+
+static void MDKSwizzledStartRemoteAudioReceiveQueue(id self, SEL _cmd, id queue) {
+    MDKRecordRemoteQueueConsumerEvent(@"stream-start-remote-audio-receive-queue", queue);
+    MDKOriginalStartRemoteAudioReceiveQueue(self, _cmd, queue);
+}
+
+static void MDKSwizzledStartRemoteMicrophoneReceiveQueue(id self, SEL _cmd, id queue) {
+    MDKRecordRemoteQueueConsumerEvent(@"stream-start-remote-microphone-receive-queue", queue);
+    MDKOriginalStartRemoteMicrophoneReceiveQueue(self, _cmd, queue);
+}
+
+static void MDKInstallSCKProxyTraceHooks(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        dlopen("/System/Library/Frameworks/ScreenCaptureKit.framework/ScreenCaptureKit", RTLD_NOW | RTLD_GLOBAL);
+        Class daemonProxyClass = NSClassFromString(@"RPDaemonProxy");
+        if (daemonProxyClass == Nil) {
+            return;
+        }
+
+        Method proxyMethod = class_getInstanceMethod(
+            daemonProxyClass,
+            sel_registerName("proxyCoreGraphicsWithMethodType:config:machPort:completionHandler:")
+        );
+        if (proxyMethod != nullptr) {
+            MDKOriginalProxyCoreGraphics = reinterpret_cast<MDKProxyCoreGraphicsFn>(method_getImplementation(proxyMethod));
+            method_setImplementation(proxyMethod, reinterpret_cast<IMP>(MDKSwizzledProxyCoreGraphics));
+        }
+
+        Method startRemoteQueueMethod = class_getInstanceMethod(
+            daemonProxyClass,
+            sel_registerName("startRemoteQueue:streamID:")
+        );
+        if (startRemoteQueueMethod != nullptr) {
+            MDKOriginalStartRemoteQueue = reinterpret_cast<MDKStartRemoteQueueFn>(method_getImplementation(startRemoteQueueMethod));
+            method_setImplementation(startRemoteQueueMethod, reinterpret_cast<IMP>(MDKSwizzledStartRemoteQueue));
+        }
+
+        Method startCaptureMethod = class_getInstanceMethod(
+            daemonProxyClass,
+            sel_registerName("startCapture:withContentFilter:preservedFilter:transactionID:properties:extensionToken:completionHandler:")
+        );
+        if (startCaptureMethod != nullptr) {
+            MDKOriginalStartCaptureProxy = reinterpret_cast<MDKStartCaptureProxyFn>(method_getImplementation(startCaptureMethod));
+            method_setImplementation(startCaptureMethod, reinterpret_cast<IMP>(MDKSwizzledStartCaptureProxy));
+        }
+
+        Method fetchDisplayMethod = class_getInstanceMethod(
+            daemonProxyClass,
+            sel_registerName("fetchDisplay:withCompletionHandler:")
+        );
+        if (fetchDisplayMethod != nullptr) {
+            MDKOriginalFetchDisplay = reinterpret_cast<MDKFetchDisplayFn>(method_getImplementation(fetchDisplayMethod));
+            method_setImplementation(fetchDisplayMethod, reinterpret_cast<IMP>(MDKSwizzledFetchDisplay));
+        }
+
+        Method updateStreamConfigurationMethod = class_getInstanceMethod(
+            daemonProxyClass,
+            sel_registerName("updateStream:withStreamConfiguration:transactionID:streamData:completionHandler:")
+        );
+        if (updateStreamConfigurationMethod != nullptr) {
+            MDKOriginalUpdateStreamConfiguration =
+                reinterpret_cast<MDKUpdateStreamConfigurationFn>(method_getImplementation(updateStreamConfigurationMethod));
+            method_setImplementation(
+                updateStreamConfigurationMethod,
+                reinterpret_cast<IMP>(MDKSwizzledUpdateStreamConfiguration)
+            );
+        }
+
+        Method updateStreamContentFilterMethod = class_getInstanceMethod(
+            daemonProxyClass,
+            sel_registerName("updateStream:withContentFilter:preservedContentFilter:transactionID:streamData:completionHandler:")
+        );
+        if (updateStreamContentFilterMethod != nullptr) {
+            MDKOriginalUpdateStreamContentFilter =
+                reinterpret_cast<MDKUpdateStreamContentFilterFn>(method_getImplementation(updateStreamContentFilterMethod));
+            method_setImplementation(
+                updateStreamContentFilterMethod,
+                reinterpret_cast<IMP>(MDKSwizzledUpdateStreamContentFilter)
+            );
+        }
+
+        Class streamClass = NSClassFromString(@"SCStream");
+        if (streamClass == Nil) {
+            return;
+        }
+
+        Method startRemoteReceiveQueueMethod = class_getInstanceMethod(
+            streamClass,
+            sel_registerName("startRemoteReceiveQueue:")
+        );
+        if (startRemoteReceiveQueueMethod != nullptr) {
+            MDKOriginalStartRemoteReceiveQueue =
+                reinterpret_cast<MDKStartRemoteReceiveQueueConsumerFn>(method_getImplementation(startRemoteReceiveQueueMethod));
+            method_setImplementation(
+                startRemoteReceiveQueueMethod,
+                reinterpret_cast<IMP>(MDKSwizzledStartRemoteReceiveQueue)
+            );
+        }
+
+        Method startRemoteVideoReceiveQueueMethod = class_getInstanceMethod(
+            streamClass,
+            sel_registerName("startRemoteVideoReceiveQueue:")
+        );
+        if (startRemoteVideoReceiveQueueMethod != nullptr) {
+            MDKOriginalStartRemoteVideoReceiveQueue =
+                reinterpret_cast<MDKStartRemoteReceiveQueueConsumerFn>(method_getImplementation(startRemoteVideoReceiveQueueMethod));
+            method_setImplementation(
+                startRemoteVideoReceiveQueueMethod,
+                reinterpret_cast<IMP>(MDKSwizzledStartRemoteVideoReceiveQueue)
+            );
+        }
+
+        Method startRemoteAudioReceiveQueueMethod = class_getInstanceMethod(
+            streamClass,
+            sel_registerName("startRemoteAudioReceiveQueue:")
+        );
+        if (startRemoteAudioReceiveQueueMethod != nullptr) {
+            MDKOriginalStartRemoteAudioReceiveQueue =
+                reinterpret_cast<MDKStartRemoteReceiveQueueConsumerFn>(method_getImplementation(startRemoteAudioReceiveQueueMethod));
+            method_setImplementation(
+                startRemoteAudioReceiveQueueMethod,
+                reinterpret_cast<IMP>(MDKSwizzledStartRemoteAudioReceiveQueue)
+            );
+        }
+
+        Method startRemoteMicrophoneReceiveQueueMethod = class_getInstanceMethod(
+            streamClass,
+            sel_registerName("startRemoteMicrophoneReceiveQueue:")
+        );
+        if (startRemoteMicrophoneReceiveQueueMethod != nullptr) {
+            MDKOriginalStartRemoteMicrophoneReceiveQueue =
+                reinterpret_cast<MDKStartRemoteReceiveQueueConsumerFn>(method_getImplementation(startRemoteMicrophoneReceiveQueueMethod));
+            method_setImplementation(
+                startRemoteMicrophoneReceiveQueueMethod,
+                reinterpret_cast<IMP>(MDKSwizzledStartRemoteMicrophoneReceiveQueue)
+            );
+        }
+    });
+}
+
+static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
+    NSUInteger displayID,
+    NSTimeInterval timeout,
+    NSError * _Nullable * _Nullable error
+) {
+    if (!CGPreflightScreenCaptureAccess()) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:7
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Screen capture access is not authorized for the public ScreenCaptureKit handshake trace."
+                                     }];
+        }
+        return nil;
+    }
+
+    if (timeout <= 0) {
+        timeout = 2.0;
+    }
+
+    MDKInstallSCKProxyTraceHooks();
+    if (MDKOriginalProxyCoreGraphics == nullptr ||
+        MDKOriginalStartRemoteQueue == nullptr ||
+        MDKOriginalStartCaptureProxy == nullptr) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:8
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Unable to install RPDaemonProxy trace hooks."
+                                     }];
+        }
+        return nil;
+    }
+
+    Class shareableContentClass = NSClassFromString(@"SCShareableContent");
+    Class filterClass = NSClassFromString(@"SCContentFilter");
+    Class configClass = NSClassFromString(@"SCStreamConfiguration");
+    Class streamClass = NSClassFromString(@"SCStream");
+    if (shareableContentClass == Nil || filterClass == Nil || configClass == Nil || streamClass == Nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:9
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Required ScreenCaptureKit classes are unavailable."
+                                     }];
+        }
+        return nil;
+    }
+
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(static_cast<CGDirectDisplayID>(displayID));
+    if (mode == nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:10
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Unable to resolve the current display mode for the ScreenCaptureKit handshake trace."
+                                     }];
+        }
+        return nil;
+    }
+
+    const NSUInteger width = std::max(static_cast<NSUInteger>(CGDisplayModeGetPixelWidth(mode)), static_cast<NSUInteger>(1));
+    const NSUInteger height = std::max(static_cast<NSUInteger>(CGDisplayModeGetPixelHeight(mode)), static_cast<NSUInteger>(1));
+    CFRelease(mode);
+
+    MDKResetSCKTraceState(displayID, timeout);
+
+    __block id display = nil;
+    __block NSError *shareableContentError = nil;
+    if ([shareableContentClass respondsToSelector:sel_registerName("getShareableContentExcludingDesktopWindows:onScreenWindowsOnly:completionHandler:")]) {
+        dispatch_semaphore_t shareableContentCompletion = dispatch_semaphore_create(0);
+        ((void (*)(id, SEL, BOOL, BOOL, id)) objc_msgSend)(
+            shareableContentClass,
+            sel_registerName("getShareableContentExcludingDesktopWindows:onScreenWindowsOnly:completionHandler:"),
+            NO,
+            YES,
+            ^(id _Nullable shareableContent, NSError * _Nullable completionError) {
+                shareableContentError = completionError;
+                if (shareableContent != nil && [shareableContent respondsToSelector:sel_registerName("displays")]) {
+                    NSArray *displays = ((id (*)(id, SEL)) objc_msgSend)(shareableContent, sel_registerName("displays"));
+                    for (id candidate in displays) {
+                        if (![candidate respondsToSelector:sel_registerName("displayID")]) {
+                            continue;
+                        }
+
+                        unsigned int candidateDisplayID = ((unsigned int (*)(id, SEL)) objc_msgSend)(
+                            candidate,
+                            sel_registerName("displayID")
+                        );
+                        if (candidateDisplayID == static_cast<unsigned int>(displayID)) {
+                            display = candidate;
+                            break;
+                        }
+                    }
+                }
+                dispatch_semaphore_signal(shareableContentCompletion);
+            }
+        );
+
+        dispatch_semaphore_wait(
+            shareableContentCompletion,
+            dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(timeout * NSEC_PER_SEC))
+        );
+    }
+
+    if (display == nil && [shareableContentClass respondsToSelector:sel_registerName("getDisplayForDisplayId:")]) {
+        display = ((id (*)(id, SEL, unsigned int)) objc_msgSend)(
+            shareableContentClass,
+            sel_registerName("getDisplayForDisplayId:"),
+            static_cast<unsigned int>(displayID)
+        );
+    }
+
+    if (display == nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:11
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: shareableContentError.localizedDescription ?: @"Unable to resolve an SCDisplay for the handshake trace."
+                                     }];
+        }
+        return nil;
+    }
+
+    id filter = ((id (*)(id, SEL, id, id, id)) objc_msgSend)(
+        ((id (*)(id, SEL)) objc_msgSend)(filterClass, sel_registerName("alloc")),
+        sel_registerName("initWithDisplay:excludingApplications:exceptingWindows:"),
+        display,
+        @[],
+        @[]
+    );
+    if (filter == nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:12
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Unable to create an SCContentFilter for the handshake trace."
+                                     }];
+        }
+        return nil;
+    }
+
+    id configuration = ((id (*)(id, SEL)) objc_msgSend)(
+        ((id (*)(id, SEL)) objc_msgSend)(configClass, sel_registerName("alloc")),
+        sel_registerName("init")
+    );
+    ((void (*)(id, SEL, NSUInteger)) objc_msgSend)(configuration, sel_registerName("setWidth:"), width);
+    ((void (*)(id, SEL, NSUInteger)) objc_msgSend)(configuration, sel_registerName("setHeight:"), height);
+    ((void (*)(id, SEL, NSInteger)) objc_msgSend)(configuration, sel_registerName("setQueueDepth:"), 3);
+    ((void (*)(id, SEL, BOOL)) objc_msgSend)(configuration, sel_registerName("setShowsCursor:"), NO);
+    ((void (*)(id, SEL, unsigned int)) objc_msgSend)(configuration, sel_registerName("setPixelFormat:"), kCVPixelFormatType_32BGRA);
+    const CMTime frameInterval = CMTimeMake(1, 60);
+    ((void (*)(id, SEL, CMTime)) objc_msgSend)(configuration, sel_registerName("setMinimumFrameInterval:"), frameInterval);
+
+    id stream = ((id (*)(id, SEL, id, id, id)) objc_msgSend)(
+        ((id (*)(id, SEL)) objc_msgSend)(streamClass, sel_registerName("alloc")),
+        sel_registerName("initWithFilter:configuration:delegate:"),
+        filter,
+        configuration,
+        nil
+    );
+    if (stream == nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:13
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Unable to create an SCStream for the handshake trace."
+                                     }];
+        }
+        return nil;
+    }
+
+    MDKRecordSCKTraceEvent(
+        @"initial-state",
+        @{
+            @"contentFilter": MDKSummarizeObject(filter),
+            @"display": MDKSummarizeObject(display),
+            @"configuration": MDKSummarizeObject(configuration),
+            @"stream": MDKSummarizeObject(stream),
+        }
+    );
+
+    dispatch_queue_t sampleQueue = dispatch_queue_create("com.skyline23.MacDisplayKit.sck-proxy-trace", DISPATCH_QUEUE_SERIAL);
+    id outputCollector = [[MDKShimStreamOutputCollector alloc] init];
+    NSError *outputError = nil;
+    const BOOL addedOutput = ((BOOL (*)(id, SEL, id, NSInteger, id, NSError **)) objc_msgSend)(
+        stream,
+        sel_registerName("addStreamOutput:type:sampleHandlerQueue:error:"),
+        outputCollector,
+        0,
+        sampleQueue,
+        &outputError
+    );
+    MDKRecordSCKTraceEvent(
+        @"add-stream-output",
+        @{
+            @"outputAdded": @(addedOutput),
+            @"errorDomain": outputError.domain ?: [NSNull null],
+            @"errorCode": @(outputError.code),
+        }
+    );
+    if (!addedOutput) {
+        if (error != nullptr) {
+            *error = outputError ?: [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                                        code:14
+                                                    userInfo:@{
+                                                        NSLocalizedDescriptionKey: @"Unable to add a screen stream output before tracing RPDaemonProxy."
+                                                    }];
+        }
+        return nil;
+    }
+
+    dispatch_semaphore_t startCompletion = dispatch_semaphore_create(0);
+    __block NSError *startError = nil;
+    ((void (*)(id, SEL, id)) objc_msgSend)(
+        stream,
+        sel_registerName("startCaptureWithCompletionHandler:"),
+        ^(NSError * _Nullable completionError) {
+            @synchronized(MDKActiveSCKTraceLock) {
+                if (MDKActiveSCKTraceState != nil) {
+                    MDKActiveSCKTraceState[@"startCaptureCompletionObserved"] = @YES;
+                    MDKActiveSCKTraceState[@"startCaptureCompletionSucceeded"] = @(completionError == nil);
+                    if (completionError != nil) {
+                        MDKActiveSCKTraceState[@"startCaptureCompletionErrorDomain"] = completionError.domain ?: @"";
+                        MDKActiveSCKTraceState[@"startCaptureCompletionErrorCode"] = @(completionError.code);
+                        MDKActiveSCKTraceState[@"startCaptureCompletionErrorDescription"] =
+                            completionError.localizedDescription ?: @"";
+                    }
+                }
+            }
+            startError = completionError;
+            dispatch_semaphore_signal(startCompletion);
+        }
+    );
+
+    dispatch_semaphore_wait(
+        startCompletion,
+        dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(timeout * NSEC_PER_SEC))
+    );
+    usleep(250 * 1000);
+
+    if ([stream respondsToSelector:sel_registerName("stopCaptureWithCompletionHandler:")]) {
+        ((void (*)(id, SEL, id)) objc_msgSend)(
+            stream,
+            sel_registerName("stopCaptureWithCompletionHandler:"),
+            ^(__unused NSError * _Nullable stopError) {
+            }
+        );
+    }
+
+    NSDictionary<NSString *, id> *snapshot = MDKCopySCKTraceStateSnapshot();
+    if (snapshot == nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:15
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Unable to snapshot the ScreenCaptureKit handshake trace."
+                                     }];
+        }
+        return nil;
+    }
+
+    NSMutableArray<NSDictionary<NSString *, id> *> *steps = [NSMutableArray array];
+    NSMutableSet<NSString *> *selectors = [NSMutableSet set];
+    NSMutableSet<NSString *> *symbols = [NSMutableSet set];
+
+    NSArray *events = snapshot[@"events"] ?: @[];
+    for (NSDictionary *event in events) {
+        NSString *kind = event[@"kind"] ?: @"unknown";
+        if ([kind isEqualToString:@"initial-state"]) {
+            [selectors addObject:@"getShareableContentExcludingDesktopWindows:onScreenWindowsOnly:completionHandler:"];
+            [selectors addObject:@"initWithDisplay:excludingApplications:exceptingWindows:"];
+            [selectors addObject:@"initWithFilter:configuration:delegate:"];
+            NSDictionary *displaySummary = event[@"display"];
+            NSDictionary *streamSummary = event[@"stream"];
+            NSDictionary *filterSummary = event[@"contentFilter"];
+            NSDictionary *configSummary = event[@"configuration"];
+            [steps addObject:MDKMakeTraceStep(
+                @"initial-state",
+                @"initWithFilter:configuration:delegate:",
+                @"ScreenCaptureKit",
+                nil,
+                @YES,
+                @[
+                    [NSString stringWithFormat:@"display=%@", MDKDescribeTraceValue(displaySummary)],
+                    [NSString stringWithFormat:@"stream=%@", MDKDescribeTraceValue(streamSummary)],
+                    [NSString stringWithFormat:@"filter=%@", MDKDescribeTraceValue(filterSummary)],
+                    [NSString stringWithFormat:@"configuration=%@", MDKDescribeTraceValue(configSummary)],
+                ]
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"add-stream-output"]) {
+            [selectors addObject:@"addStreamOutput:type:sampleHandlerQueue:error:"];
+            NSNumber *succeeded = event[@"outputAdded"];
+            [steps addObject:MDKMakeTraceStep(
+                @"add-stream-output",
+                @"addStreamOutput:type:sampleHandlerQueue:error:",
+                @"ScreenCaptureKit",
+                nil,
+                succeeded,
+                @[
+                    [NSString stringWithFormat:@"errorDomain=%@", MDKDescribeTraceValue(event[@"errorDomain"])],
+                    [NSString stringWithFormat:@"errorCode=%@", MDKDescribeTraceValue(event[@"errorCode"])],
+                ]
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"start-capture-proxy"]) {
+            [selectors addObject:@"startCapture:withContentFilter:preservedFilter:transactionID:properties:extensionToken:completionHandler:"];
+            [symbols addObject:@"RPDaemonProxy"];
+            [steps addObject:MDKMakeTraceStep(
+                @"start-capture-proxy",
+                @"startCapture:withContentFilter:preservedFilter:transactionID:properties:extensionToken:completionHandler:",
+                @"RPDaemonProxy",
+                nil,
+                @YES,
+                @[
+                    [NSString stringWithFormat:@"stream=%@", MDKDescribeTraceValue(event[@"stream"])],
+                    [NSString stringWithFormat:@"contentFilter=%@", MDKDescribeTraceValue(event[@"contentFilter"])],
+                    [NSString stringWithFormat:@"preservedFilter=%@", MDKDescribeTraceValue(event[@"preservedFilter"])],
+                    [NSString stringWithFormat:@"transactionID=%@", MDKDescribeTraceValue(event[@"transactionID"])],
+                    [NSString stringWithFormat:@"properties=%@", MDKDescribeTraceValue(event[@"properties"])],
+                    [NSString stringWithFormat:@"extensionToken=%@", MDKDescribeTraceValue(event[@"extensionToken"])],
+                ]
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"start-remote-queue"]) {
+            [selectors addObject:@"startRemoteQueue:streamID:"];
+            [symbols addObject:@"RPDaemonProxy"];
+            [steps addObject:MDKMakeTraceStep(
+                @"start-remote-queue",
+                @"startRemoteQueue:streamID:",
+                @"RPDaemonProxy",
+                nil,
+                @YES,
+                @[
+                    [NSString stringWithFormat:@"queue=%@", MDKDescribeTraceValue(event[@"queue"])],
+                    [NSString stringWithFormat:@"streamID=%@", MDKDescribeTraceValue(event[@"streamID"])],
+                ]
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"proxy-core-graphics"]) {
+            [selectors addObject:@"proxyCoreGraphicsWithMethodType:config:machPort:completionHandler:"];
+            [symbols addObject:@"RPDaemonProxy"];
+            [steps addObject:MDKMakeTraceStep(
+                @"proxy-core-graphics",
+                @"proxyCoreGraphicsWithMethodType:config:machPort:completionHandler:",
+                @"RPDaemonProxy",
+                event[@"methodType"],
+                @YES,
+                @[
+                    [NSString stringWithFormat:@"config=%@", MDKDescribeTraceValue(event[@"config"])],
+                    [NSString stringWithFormat:@"machPort=%@", MDKDescribeTraceValue(event[@"machPort"])],
+                ]
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"fetch-display"]) {
+            [selectors addObject:@"fetchDisplay:withCompletionHandler:"];
+            [symbols addObject:@"RPDaemonProxy"];
+            [steps addObject:MDKMakeTraceStep(
+                @"fetch-display",
+                @"fetchDisplay:withCompletionHandler:",
+                @"RPDaemonProxy",
+                event[@"displayID"],
+                @YES,
+                @[
+                    [NSString stringWithFormat:@"completionHandler=%@", MDKDescribeTraceValue(event[@"completionHandler"])],
+                ]
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"update-stream-configuration"]) {
+            [selectors addObject:@"updateStream:withStreamConfiguration:transactionID:streamData:completionHandler:"];
+            [symbols addObject:@"RPDaemonProxy"];
+            [steps addObject:MDKMakeTraceStep(
+                @"update-stream-configuration",
+                @"updateStream:withStreamConfiguration:transactionID:streamData:completionHandler:",
+                @"RPDaemonProxy",
+                nil,
+                @YES,
+                @[
+                    [NSString stringWithFormat:@"stream=%@", MDKDescribeTraceValue(event[@"stream"])],
+                    [NSString stringWithFormat:@"configuration=%@", MDKDescribeTraceValue(event[@"configuration"])],
+                    [NSString stringWithFormat:@"transactionID=%@", MDKDescribeTraceValue(event[@"transactionID"])],
+                    [NSString stringWithFormat:@"streamData=%@", MDKDescribeTraceValue(event[@"streamData"])],
+                    [NSString stringWithFormat:@"completionHandler=%@", MDKDescribeTraceValue(event[@"completionHandler"])],
+                ]
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"update-stream-content-filter"]) {
+            [selectors addObject:@"updateStream:withContentFilter:preservedContentFilter:transactionID:streamData:completionHandler:"];
+            [symbols addObject:@"RPDaemonProxy"];
+            [steps addObject:MDKMakeTraceStep(
+                @"update-stream-content-filter",
+                @"updateStream:withContentFilter:preservedContentFilter:transactionID:streamData:completionHandler:",
+                @"RPDaemonProxy",
+                nil,
+                @YES,
+                @[
+                    [NSString stringWithFormat:@"stream=%@", MDKDescribeTraceValue(event[@"stream"])],
+                    [NSString stringWithFormat:@"contentFilter=%@", MDKDescribeTraceValue(event[@"contentFilter"])],
+                    [NSString stringWithFormat:@"preservedContentFilter=%@", MDKDescribeTraceValue(event[@"preservedContentFilter"])],
+                    [NSString stringWithFormat:@"transactionID=%@", MDKDescribeTraceValue(event[@"transactionID"])],
+                    [NSString stringWithFormat:@"streamData=%@", MDKDescribeTraceValue(event[@"streamData"])],
+                    [NSString stringWithFormat:@"completionHandler=%@", MDKDescribeTraceValue(event[@"completionHandler"])],
+                ]
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"stream-start-remote-receive-queue"]) {
+            [selectors addObject:@"startRemoteReceiveQueue:"];
+            [symbols addObject:@"SCStream"];
+            [steps addObject:MDKMakeTraceStep(
+                @"stream-start-remote-receive-queue",
+                @"startRemoteReceiveQueue:",
+                @"SCStream",
+                nil,
+                @YES,
+                @[
+                    [NSString stringWithFormat:@"queue=%@", MDKDescribeTraceValue(event[@"queue"])],
+                ]
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"stream-start-remote-video-receive-queue"]) {
+            [selectors addObject:@"startRemoteVideoReceiveQueue:"];
+            [symbols addObject:@"SCStream"];
+            [steps addObject:MDKMakeTraceStep(
+                @"stream-start-remote-video-receive-queue",
+                @"startRemoteVideoReceiveQueue:",
+                @"SCStream",
+                nil,
+                @YES,
+                @[
+                    [NSString stringWithFormat:@"queue=%@", MDKDescribeTraceValue(event[@"queue"])],
+                ]
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"stream-start-remote-audio-receive-queue"]) {
+            [selectors addObject:@"startRemoteAudioReceiveQueue:"];
+            [symbols addObject:@"SCStream"];
+            [steps addObject:MDKMakeTraceStep(
+                @"stream-start-remote-audio-receive-queue",
+                @"startRemoteAudioReceiveQueue:",
+                @"SCStream",
+                nil,
+                @YES,
+                @[
+                    [NSString stringWithFormat:@"queue=%@", MDKDescribeTraceValue(event[@"queue"])],
+                ]
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"stream-start-remote-microphone-receive-queue"]) {
+            [selectors addObject:@"startRemoteMicrophoneReceiveQueue:"];
+            [symbols addObject:@"SCStream"];
+            [steps addObject:MDKMakeTraceStep(
+                @"stream-start-remote-microphone-receive-queue",
+                @"startRemoteMicrophoneReceiveQueue:",
+                @"SCStream",
+                nil,
+                @YES,
+                @[
+                    [NSString stringWithFormat:@"queue=%@", MDKDescribeTraceValue(event[@"queue"])],
+                ]
+            )];
+            continue;
+        }
+    }
+
+    NSString *streamID = MDKPerformObjectGetter(stream, sel_registerName("streamID")) ?: @"";
+    NSDictionary *serializedStreamProperties = MDKSummarizeObject(
+        MDKPerformObjectGetter(stream, sel_registerName("serializeStreamProperties"))
+    );
+    NSDictionary *serializedFilter = MDKSummarizeObject(
+        MDKPerformObjectGetter(filter, sel_registerName("serialize"))
+    );
+
+    NSMutableArray<NSString *> *notes = [snapshot[@"notes"] mutableCopy] ?: [NSMutableArray array];
+    [notes addObject:[NSString stringWithFormat:@"serializedStreamProperties=%@", MDKDescribeTraceValue(serializedStreamProperties)]];
+    [notes addObject:[NSString stringWithFormat:@"serializedFilter=%@", MDKDescribeTraceValue(serializedFilter)]];
+    const BOOL succeeded = [snapshot[@"sawProxyCoreGraphics"] boolValue] && startError == nil;
+    const std::int32_t status = startError != nil ? static_cast<std::int32_t>(startError.code) : (succeeded ? 0 : 1);
+    if (startError != nil) {
+        [notes addObject:[NSString stringWithFormat:@"Public SCStream start failed: %@", startError.localizedDescription ?: @"<unknown>"]];
+    } else if (succeeded) {
+        [notes addObject:@"Public SCStream start completed and reached RPDaemonProxy proxyCoreGraphicsWithMethodType:config:machPort:completionHandler:."];
+    } else {
+        [notes addObject:@"Public SCStream start completed but the trace did not observe RPDaemonProxy proxyCoreGraphicsWithMethodType:config:machPort:completionHandler: before timeout."];
+    }
+
+    NSMutableDictionary<NSString *, id> *result = [@{
+        @"displayID": @(displayID),
+        @"sampleDuration": @(timeout),
+        @"status": @(status),
+        @"succeeded": @(succeeded),
+        @"streamID": streamID,
+        @"filterID": MDKPerformObjectGetter(filter, sel_registerName("filterID")) ?: @"",
+        @"selectors": [[selectors allObjects] sortedArrayUsingSelector:@selector(compare:)],
+        @"symbols": [[symbols allObjects] sortedArrayUsingSelector:@selector(compare:)],
+        @"steps": steps,
+        @"notes": notes,
+    } mutableCopy];
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        MDKActiveSCKTraceState = nil;
+    }
+
+    return result;
 }
 
 static NSDictionary<NSString *, id> * _Nullable MDKCreatePrivateCaptureSurfacePayload(
@@ -684,6 +1764,14 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateDisplayStreamProbeWi
         @"portSequenceNumber": portSnapshot[@"portSequenceNumber"] ?: @0,
         @"portMessagesWaiting": portSnapshot[@"portMessagesWaiting"] ?: @NO,
     };
+}
+
+NSDictionary<NSString *, id> * _Nullable MDKShimVideoTraceScreenCaptureKitProxyHandshake(
+    NSUInteger displayID,
+    NSTimeInterval timeout,
+    NSError * _Nullable * _Nullable error
+) {
+    return MDKCreateSCKProxyHandshakeTrace(displayID, timeout, error);
 }
 
 NSArray<NSString *> *MDKShimMicrophoneNames(void) {
