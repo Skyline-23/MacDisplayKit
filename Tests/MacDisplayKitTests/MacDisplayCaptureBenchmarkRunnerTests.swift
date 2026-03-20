@@ -162,6 +162,129 @@ final class MacDisplayCaptureBenchmarkRunnerTests: XCTestCase {
         XCTAssertNil(suite.measurements[1].result)
         XCTAssertFalse(suite.measurements[1].available)
     }
+
+    func testJudgePassesMeasurementThatMeetsTargetThresholds() {
+        let target = MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly
+        let measurement = MDKCaptureBenchmarkMeasurement(
+            backend: .cgDisplayStream,
+            available: true,
+            reason: "Primary backend available.",
+            result: MDKCaptureBenchmarkResult(
+                backend: .cgDisplayStream,
+                requestedFrameRate: 120,
+                requestedSampleDuration: 1.0,
+                measuredDuration: 1.02,
+                callbackCount: 120,
+                deliveredFrameCount: 119,
+                skippedFrameCount: 1,
+                observedFrameRate: 114.0,
+                deliveryRatio: 0.95,
+                firstFrameLatency: 0.03
+            ),
+            errorDescription: nil
+        )
+
+        let assessment = MDKCaptureBenchmarkJudge.assess(measurement: measurement, target: target)
+
+        XCTAssertTrue(assessment.passed)
+        XCTAssertTrue(assessment.failedExpectations.isEmpty)
+        XCTAssertTrue(assessment.summary.hasPrefix("PASS"))
+    }
+
+    func testJudgeFailsMeasurementWhenThresholdsAreMissed() {
+        let target = MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly
+        let measurement = MDKCaptureBenchmarkMeasurement(
+            backend: .cgDisplayStream,
+            available: true,
+            reason: "Primary backend available.",
+            result: MDKCaptureBenchmarkResult(
+                backend: .cgDisplayStream,
+                requestedFrameRate: 120,
+                requestedSampleDuration: 1.0,
+                measuredDuration: 1.20,
+                callbackCount: 90,
+                deliveredFrameCount: 80,
+                skippedFrameCount: 10,
+                observedFrameRate: 80.0,
+                deliveryRatio: 0.66,
+                firstFrameLatency: 0.12
+            ),
+            errorDescription: nil
+        )
+
+        let assessment = MDKCaptureBenchmarkJudge.assess(measurement: measurement, target: target)
+
+        XCTAssertFalse(assessment.passed)
+        XCTAssertEqual(assessment.failedExpectations.count, 3)
+        XCTAssertTrue(assessment.summary.hasPrefix("FAIL"))
+    }
+
+    func testSuiteAssessmentRespectsPlanIntent() {
+        let display = MDKDisplayDescriptor(id: 77, name: "77", localizedName: "Test Display")
+        let target = MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly
+        let failingMeasurement = MDKCaptureBenchmarkMeasurement(
+            backend: .cgDisplayStream,
+            available: true,
+            reason: "Primary backend available.",
+            result: MDKCaptureBenchmarkResult(
+                backend: .cgDisplayStream,
+                requestedFrameRate: 120,
+                requestedSampleDuration: 1.0,
+                measuredDuration: 1.0,
+                callbackCount: 60,
+                deliveredFrameCount: 60,
+                skippedFrameCount: 0,
+                observedFrameRate: 60.0,
+                deliveryRatio: 0.50,
+                firstFrameLatency: 0.11
+            ),
+            errorDescription: nil
+        )
+        let passingMeasurement = MDKCaptureBenchmarkMeasurement(
+            backend: .avFoundation,
+            available: true,
+            reason: "Fallback available.",
+            result: MDKCaptureBenchmarkResult(
+                backend: .avFoundation,
+                requestedFrameRate: 120,
+                requestedSampleDuration: 1.0,
+                measuredDuration: 1.0,
+                callbackCount: 120,
+                deliveredFrameCount: 118,
+                skippedFrameCount: 2,
+                observedFrameRate: 114.0,
+                deliveryRatio: 0.95,
+                firstFrameLatency: 0.04
+            ),
+            errorDescription: nil
+        )
+
+        let validateSuite = MDKCaptureBenchmarkSuiteResult(
+            plan: MDKCaptureBenchmarkPlan(
+                target: target,
+                display: display,
+                intent: .validateDefaultBackend,
+                candidates: []
+            ),
+            pixelFormat: 0x78343230,
+            sampleDuration: 1.0,
+            measurements: [failingMeasurement, passingMeasurement]
+        )
+        let compareSuite = MDKCaptureBenchmarkSuiteResult(
+            plan: MDKCaptureBenchmarkPlan(
+                target: target,
+                display: display,
+                intent: .compareBackends,
+                candidates: []
+            ),
+            pixelFormat: 0x78343230,
+            sampleDuration: 1.0,
+            measurements: [failingMeasurement, passingMeasurement]
+        )
+
+        XCTAssertFalse(validateSuite.assessment.passed)
+        XCTAssertTrue(compareSuite.assessment.passed)
+    }
 }
 
 private final class FakeCaptureSession: MDKCaptureSessionControlling {

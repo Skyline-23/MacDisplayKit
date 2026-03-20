@@ -87,7 +87,7 @@ namespace platf {
 
       if (is_system_audio_sink(audio_sink)) {
         // Native macOS host-audio capture is still disabled while the kit
-        // focuses on stable video acquisition and replacement backends.
+        // focuses on stable video acquisition across its default backends.
         BOOST_LOG(warning) << "Temporarily disabling native macOS system audio capture to preserve video cadence."sv;
         return nullptr;
       }

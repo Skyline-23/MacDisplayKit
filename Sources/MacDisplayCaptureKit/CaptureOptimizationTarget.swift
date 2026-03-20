@@ -15,6 +15,7 @@ public final class MDKCaptureOptimizationTarget: NSObject, NSCopying {
     public let frameRate: Int
     public let dynamicRangeMode: MDKDynamicRangeMode
     public let recommendedBackend: MDKCaptureBackend
+    public let acceptanceThresholds: MDKCaptureBenchmarkThresholds
     public let notes: [String]
 
     public init(
@@ -25,6 +26,7 @@ public final class MDKCaptureOptimizationTarget: NSObject, NSCopying {
         frameRate: Int,
         dynamicRangeMode: MDKDynamicRangeMode,
         recommendedBackend: MDKCaptureBackend,
+        acceptanceThresholds: MDKCaptureBenchmarkThresholds,
         notes: [String]
     ) {
         self.name = name
@@ -34,6 +36,7 @@ public final class MDKCaptureOptimizationTarget: NSObject, NSCopying {
         self.frameRate = frameRate
         self.dynamicRangeMode = dynamicRangeMode
         self.recommendedBackend = recommendedBackend
+        self.acceptanceThresholds = acceptanceThresholds
         self.notes = notes
         super.init()
     }
@@ -67,6 +70,7 @@ public final class MDKCaptureOptimizationTarget: NSObject, NSCopying {
             frameRate: frameRate,
             dynamicRangeMode: dynamicRangeMode,
             recommendedBackend: recommendedBackend,
+            acceptanceThresholds: acceptanceThresholds,
             notes: notes
         )
     }
@@ -82,6 +86,11 @@ public enum MDKCaptureOptimizationTargets {
             frameRate: 120,
             dynamicRangeMode: .hdrCanonical,
             recommendedBackend: .cgDisplayStream,
+            acceptanceThresholds: MDKCaptureBenchmarkThresholds(
+                minimumObservedFrameRateRatio: 0.90,
+                minimumDeliveryRatio: 0.92,
+                maximumFirstFrameLatency: 0.080
+            ),
             notes: [
                 "Primary performance target for 4K HDR 120 capture.",
                 "Prefer CGDisplayStream first when validating the primary native capture backend."
@@ -98,6 +107,11 @@ public enum MDKCaptureOptimizationTargets {
             frameRate: 120,
             dynamicRangeMode: .hdrCanonical,
             recommendedBackend: .cgDisplayStream,
+            acceptanceThresholds: MDKCaptureBenchmarkThresholds(
+                minimumObservedFrameRateRatio: 0.85,
+                minimumDeliveryRatio: 0.88,
+                maximumFirstFrameLatency: 0.100
+            ),
             notes: [
                 "Stretch goal for virtual display capture at UHD HDR 120.",
                 "Useful for measuring the combined cost of display synthesis and frame acquisition."
@@ -114,6 +128,11 @@ public enum MDKCaptureOptimizationTargets {
             frameRate: 120,
             dynamicRangeMode: .hdrCanonical,
             recommendedBackend: .cgDisplayStream,
+            acceptanceThresholds: MDKCaptureBenchmarkThresholds(
+                minimumObservedFrameRateRatio: 0.88,
+                minimumDeliveryRatio: 0.90,
+                maximumFirstFrameLatency: 0.090
+            ),
             notes: [
                 "Fallback virtual display target while iterating toward UHD.",
                 "Use this target when validating frame cadence improvements without reducing refresh rate."
