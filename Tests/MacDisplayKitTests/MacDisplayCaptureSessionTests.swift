@@ -52,11 +52,16 @@ final class MacDisplayCaptureSessionTests: XCTestCase {
             dynamicRangeMode: .hdrCanonical
         )
 
-        let screenInputConfiguration = makeMDKAVFoundationScreenInputConfiguration(for: configuration)
+        let screenInputConfiguration = makeMDKAVFoundationScreenInputConfiguration(
+            for: configuration,
+            logicalSize: CGSize(width: 2560, height: 1440)
+        )
 
         XCTAssertEqual(screenInputConfiguration.minFrameDuration, CMTime.zero)
         XCTAssertFalse(screenInputConfiguration.capturesCursor)
         XCTAssertFalse(screenInputConfiguration.capturesMouseClicks)
+        XCTAssertEqual(screenInputConfiguration.cropRect, CGRect(x: 0, y: 0, width: 2560, height: 1440))
+        XCTAssertEqual(screenInputConfiguration.scaleFactor, 1.5, accuracy: 0.0001)
     }
 
     func testAVFoundationScreenInputConfigurationUsesExplicitFrameDurationAtSixtyFPSOrLower() {
@@ -70,9 +75,13 @@ final class MacDisplayCaptureSessionTests: XCTestCase {
             dynamicRangeMode: .sdr
         )
 
-        let screenInputConfiguration = makeMDKAVFoundationScreenInputConfiguration(for: configuration)
+        let screenInputConfiguration = makeMDKAVFoundationScreenInputConfiguration(
+            for: configuration,
+            logicalSize: CGSize(width: 1920, height: 1080)
+        )
 
         XCTAssertEqual(screenInputConfiguration.minFrameDuration, CMTime(value: 1, timescale: 60))
+        XCTAssertEqual(screenInputConfiguration.scaleFactor, 1.0, accuracy: 0.0001)
     }
 
     func testAVFoundationVideoOutputConfigurationRequestsIOSurfaceBackedMetalCompatibleFrames() {
@@ -92,8 +101,14 @@ final class MacDisplayCaptureSessionTests: XCTestCase {
             outputConfiguration.videoSettings[kCVPixelBufferPixelFormatTypeKey as String] as? NSNumber,
             NSNumber(value: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
         )
-        XCTAssertNil(outputConfiguration.videoSettings[kCVPixelBufferWidthKey as String])
-        XCTAssertNil(outputConfiguration.videoSettings[kCVPixelBufferHeightKey as String])
+        XCTAssertEqual(
+            outputConfiguration.videoSettings[kCVPixelBufferWidthKey as String] as? NSNumber,
+            NSNumber(value: 3840)
+        )
+        XCTAssertEqual(
+            outputConfiguration.videoSettings[kCVPixelBufferHeightKey as String] as? NSNumber,
+            NSNumber(value: 2160)
+        )
         XCTAssertEqual(
             outputConfiguration.videoSettings[kCVPixelBufferMetalCompatibilityKey as String] as? Bool,
             true

@@ -20,6 +20,8 @@ struct MDKAVFoundationScreenInputConfiguration: Equatable {
     let minFrameDuration: CMTime
     let capturesCursor: Bool
     let capturesMouseClicks: Bool
+    let cropRect: CGRect
+    let scaleFactor: CGFloat
 }
 
 struct MDKAVFoundationVideoOutputConfiguration: Equatable {
@@ -27,13 +29,51 @@ struct MDKAVFoundationVideoOutputConfiguration: Equatable {
     let alwaysDiscardsLateVideoFrames: Bool
 }
 
+private func MDKCaptureScaleFactor(
+    requestedWidth: Int,
+    requestedHeight: Int,
+    logicalWidth: Int,
+    logicalHeight: Int
+) -> CGFloat {
+    guard requestedWidth > 0, requestedHeight > 0, logicalWidth > 0, logicalHeight > 0 else {
+        return 1.0
+    }
+
+    let widthScale = CGFloat(requestedWidth) / CGFloat(logicalWidth)
+    let heightScale = CGFloat(requestedHeight) / CGFloat(logicalHeight)
+    let scale = min(widthScale, heightScale)
+    return max(scale, 0.01)
+}
+
+private func MDKDisplayLogicalSize(displayID: CGDirectDisplayID) -> CGSize {
+    guard let displayMode = CGDisplayCopyDisplayMode(displayID) else {
+        return CGSize(
+            width: CGFloat(CGDisplayPixelsWide(displayID)),
+            height: CGFloat(CGDisplayPixelsHigh(displayID))
+        )
+    }
+
+    return CGSize(
+        width: CGFloat(displayMode.width),
+        height: CGFloat(displayMode.height)
+    )
+}
+
 func makeMDKAVFoundationScreenInputConfiguration(
-    for configuration: MDKCaptureConfiguration
+    for configuration: MDKCaptureConfiguration,
+    logicalSize: CGSize
 ) -> MDKAVFoundationScreenInputConfiguration {
     return MDKAVFoundationScreenInputConfiguration(
         minFrameDuration: MDKFrameDuration(for: configuration.frameRate),
         capturesCursor: false,
-        capturesMouseClicks: false
+        capturesMouseClicks: false,
+        cropRect: CGRect(origin: .zero, size: logicalSize),
+        scaleFactor: MDKCaptureScaleFactor(
+            requestedWidth: configuration.width,
+            requestedHeight: configuration.height,
+            logicalWidth: Int(logicalSize.width),
+            logicalHeight: Int(logicalSize.height)
+        )
     )
 }
 
@@ -43,6 +83,8 @@ func makeMDKAVFoundationVideoOutputConfiguration(
     return MDKAVFoundationVideoOutputConfiguration(
         videoSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: configuration.pixelFormat),
+            kCVPixelBufferWidthKey as String: NSNumber(value: configuration.width),
+            kCVPixelBufferHeightKey as String: NSNumber(value: configuration.height),
             kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: AnyHashable],
             kCVPixelBufferMetalCompatibilityKey as String: true,
         ],
@@ -97,10 +139,16 @@ final class MDKAVFoundationCaptureDriver: NSObject, MDKCaptureSessionDriver {
         guard let screenInput = AVCaptureScreenInput(displayID: CGDirectDisplayID(configuration.displayID)) else {
             throw MDKCaptureSessionError.streamCreationFailed(displayID: configuration.displayID)
         }
-        let screenInputConfiguration = makeMDKAVFoundationScreenInputConfiguration(for: configuration)
+        let logicalSize = MDKDisplayLogicalSize(displayID: CGDirectDisplayID(configuration.displayID))
+        let screenInputConfiguration = makeMDKAVFoundationScreenInputConfiguration(
+            for: configuration,
+            logicalSize: logicalSize
+        )
         screenInput.minFrameDuration = screenInputConfiguration.minFrameDuration
         screenInput.capturesCursor = screenInputConfiguration.capturesCursor
         screenInput.capturesMouseClicks = screenInputConfiguration.capturesMouseClicks
+        screenInput.cropRect = screenInputConfiguration.cropRect
+        screenInput.scaleFactor = screenInputConfiguration.scaleFactor
 
         let session = AVCaptureSession()
         guard session.canAddInput(screenInput) else {
