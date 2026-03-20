@@ -2,6 +2,8 @@
 
 #import "MDKObjCShim.h"
 
+#include <algorithm>
+
 #import "../LegacyRuntime/Capture/av_audio.h"
 #import "../LegacyRuntime/Capture/av_video.h"
 #include "../LegacyRuntime/VirtualDisplay/virtual_display.h"
@@ -41,6 +43,39 @@ NSString * _Nullable MDKShimDisplayName(NSUInteger displayID) {
 BOOL MDKShimVideoAVFoundationAvailableForDisplay(NSUInteger displayID, NSInteger frameRate) {
     AVVideo *video = [[AVVideo alloc] initWithDisplay:static_cast<CGDirectDisplayID>(displayID) frameRate:static_cast<int>(frameRate)];
     return video != nil;
+}
+
+BOOL MDKShimVideoCGDisplayStreamAvailableForDisplay(NSUInteger displayID) {
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(static_cast<CGDirectDisplayID>(displayID));
+    if (mode == nil) {
+        return NO;
+    }
+
+    const size_t width = std::max(static_cast<size_t>(CGDisplayModeGetPixelWidth(mode)), static_cast<size_t>(1));
+    const size_t height = std::max(static_cast<size_t>(CGDisplayModeGetPixelHeight(mode)), static_cast<size_t>(1));
+    CFRelease(mode);
+
+    dispatch_queue_t queue = dispatch_queue_create("com.skyline23.MacDisplayKit.cgdisplaystream.probe", DISPATCH_QUEUE_SERIAL);
+    CGDisplayStreamRef stream = CGDisplayStreamCreateWithDispatchQueue(
+        static_cast<CGDirectDisplayID>(displayID),
+        width,
+        height,
+        static_cast<int32_t>(kCVPixelFormatType_32BGRA),
+        nil,
+        queue,
+        ^(__unused CGDisplayStreamFrameStatus status,
+          __unused uint64_t displayTime,
+          __unused IOSurfaceRef frameSurface,
+          __unused CGDisplayStreamUpdateRef updateRef) {
+        }
+    );
+
+    if (stream == nil) {
+        return NO;
+    }
+
+    CFRelease(stream);
+    return YES;
 }
 
 NSArray<NSString *> *MDKShimMicrophoneNames(void) {

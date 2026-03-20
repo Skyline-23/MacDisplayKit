@@ -14,7 +14,9 @@ public final class MDKCaptureBackendProbe: NSObject {
                 UInt(display.id),
                 requestedFrameRate
             ),
-            cgDisplayStreamAvailable: false
+            cgDisplayStreamAvailable: MDKShimVideoCGDisplayStreamAvailableForDisplay(
+                UInt(display.id)
+            )
         )
     }
 }

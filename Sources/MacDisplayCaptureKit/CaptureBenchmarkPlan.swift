@@ -2,8 +2,8 @@ import Foundation
 
 @objc
 public enum MDKCapturePlanIntent: Int {
-    case replaceSystemCapture = 0
-    case compareAlternatives = 1
+    case validateDefaultBackend = 0
+    case compareBackends = 1
 }
 
 @objcMembers
@@ -64,25 +64,42 @@ public enum MDKCaptureBenchmarkPlanner {
     public static func plan(
         for display: MDKDisplayDescriptor,
         target: MDKCaptureOptimizationTarget,
-        intent: MDKCapturePlanIntent = .replaceSystemCapture,
+        intent: MDKCapturePlanIntent = .validateDefaultBackend,
         availability: MDKCaptureBackendAvailability
     ) -> MDKCaptureBenchmarkPlan {
-        let candidates: [MDKCaptureBackendCandidate] = [
-            MDKCaptureBackendCandidate(
+        let candidatesByBackend: [MDKCaptureBackend: MDKCaptureBackendCandidate] = [
+            .avFoundation: MDKCaptureBackendCandidate(
                 backend: .avFoundation,
                 available: availability.avFoundationAvailable,
                 reason: availability.avFoundationAvailable
-                    ? "Legacy AVFoundation capture is available and should be evaluated first as an SCK replacement candidate."
+                    ? "Legacy AVFoundation capture is available and remains the lowest-risk native fallback."
                     : "Legacy AVFoundation capture is not available for this display."
             ),
-            MDKCaptureBackendCandidate(
+            .cgDisplayStream: MDKCaptureBackendCandidate(
                 backend: .cgDisplayStream,
                 available: availability.cgDisplayStreamAvailable,
                 reason: availability.cgDisplayStreamAvailable
-                    ? "CGDisplayStream capture is available and should be benchmarked as another native replacement candidate."
+                    ? "CGDisplayStream capture is available and should be benchmarked first as the primary native capture backend."
                     : "CGDisplayStream backend is not available for this display yet."
-            )
+            ),
         ]
+
+        let orderedBackends = [
+            target.recommendedBackend,
+            MDKCaptureBackend.avFoundation,
+            MDKCaptureBackend.cgDisplayStream,
+        ]
+
+        var seenBackends = Set<MDKCaptureBackend>()
+        var candidates: [MDKCaptureBackendCandidate] = []
+        for backend in orderedBackends {
+            guard seenBackends.insert(backend).inserted else {
+                continue
+            }
+            if let candidate = candidatesByBackend[backend] {
+                candidates.append(candidate)
+            }
+        }
 
         return MDKCaptureBenchmarkPlan(
             target: target,

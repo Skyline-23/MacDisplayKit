@@ -27,7 +27,7 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(target.height, 2160)
         XCTAssertEqual(target.frameRate, 120)
         XCTAssertEqual(target.dynamicRangeMode, .hdrCanonical)
-        XCTAssertEqual(target.recommendedBackend, .avFoundation)
+        XCTAssertEqual(target.recommendedBackend, .cgDisplayStream)
         XCTAssertFalse(target.requiresVirtualDisplay)
     }
 
@@ -52,16 +52,16 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(configuration.height, 2160)
         XCTAssertEqual(configuration.frameRate, 120)
         XCTAssertEqual(configuration.pixelFormat, 0x78343230)
-        XCTAssertEqual(configuration.backend, .avFoundation)
+        XCTAssertEqual(configuration.backend, .cgDisplayStream)
         XCTAssertEqual(configuration.dynamicRangeMode, .hdrCanonical)
     }
 
-    func testBenchmarkPlannerPrioritizesNativeReplacementBackends() {
+    func testBenchmarkPlannerPrioritizesRecommendedPrimaryBackend() {
         let display = MDKDisplayDescriptor(id: 77, name: "77", localizedName: "Test Display")
         let target = MDKCaptureOptimizationTargets.uhdHDR120CaptureOnly
         let availability = MDKCaptureBackendAvailability(
             avFoundationAvailable: true,
-            cgDisplayStreamAvailable: false
+            cgDisplayStreamAvailable: true
         )
         let plan = MDKCaptureBenchmarkPlanner.plan(
             for: display,
@@ -69,12 +69,16 @@ final class MacDisplayKitTests: XCTestCase {
             availability: availability
         )
 
-        XCTAssertEqual(plan.intent, .replaceSystemCapture)
-        XCTAssertEqual(plan.candidates.map(\.backend), [.avFoundation, .cgDisplayStream])
-        XCTAssertEqual(plan.preferredCandidate?.backend, .avFoundation)
+        XCTAssertEqual(plan.intent, .validateDefaultBackend)
+        XCTAssertEqual(plan.candidates.map(\.backend), [.cgDisplayStream, .avFoundation])
+        XCTAssertEqual(plan.preferredCandidate?.backend, .cgDisplayStream)
+        XCTAssertEqual(
+            plan.candidates.first?.reason,
+            "CGDisplayStream capture is available and should be benchmarked first as the primary native capture backend."
+        )
         XCTAssertEqual(
             plan.candidates.last?.reason,
-            "CGDisplayStream backend is not available for this display yet."
+            "Legacy AVFoundation capture is available and remains the lowest-risk native fallback."
         )
     }
 }

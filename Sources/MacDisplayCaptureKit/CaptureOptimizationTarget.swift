@@ -77,10 +77,10 @@ public enum MDKCaptureOptimizationTargets {
             height: 2160,
             frameRate: 120,
             dynamicRangeMode: .hdrCanonical,
-            recommendedBackend: .avFoundation,
+            recommendedBackend: .cgDisplayStream,
             notes: [
                 "Primary performance target for 4K HDR 120 capture.",
-                "Use this target to drive replacement backends before transport tuning."
+                "Prefer CGDisplayStream first when validating the primary native capture backend."
             ]
         )
     }
@@ -93,7 +93,7 @@ public enum MDKCaptureOptimizationTargets {
             height: 2160,
             frameRate: 120,
             dynamicRangeMode: .hdrCanonical,
-            recommendedBackend: .avFoundation,
+            recommendedBackend: .cgDisplayStream,
             notes: [
                 "Stretch goal for virtual display capture at UHD HDR 120.",
                 "Useful for measuring the combined cost of display synthesis and frame acquisition."
@@ -109,7 +109,7 @@ public enum MDKCaptureOptimizationTargets {
             height: 1440,
             frameRate: 120,
             dynamicRangeMode: .hdrCanonical,
-            recommendedBackend: .avFoundation,
+            recommendedBackend: .cgDisplayStream,
             notes: [
                 "Fallback virtual display target while iterating toward UHD.",
                 "Use this target when validating frame cadence improvements without reducing refresh rate."
