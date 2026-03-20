@@ -230,6 +230,7 @@ static NSObject *MDKActiveSCKTraceLock = nil;
 static void MDKRecordSCKTraceEvent(NSString *kind, NSDictionary<NSString *, id> *payload);
 static NSDictionary<NSString *, id> *MDKSummarizeSampleBuffer(CMSampleBufferRef sampleBuffer);
 static NSDictionary<NSString *, id> *MDKCopySCStreamInternalState(id stream);
+static NSDictionary<NSString *, id> *MDKSummarizeXPCObject(xpc_object_t object);
 
 @implementation MDKShimStreamOutputCollector
 
@@ -271,9 +272,15 @@ using MDKFetchDisplayFn = void (*)(id, SEL, unsigned int, id);
 using MDKUpdateStreamConfigurationFn = void (*)(id, SEL, id, id, id, id, id);
 using MDKUpdateStreamContentFilterFn = void (*)(id, SEL, id, id, id, id, id, id);
 using MDKStreamDidStartFn = void (*)(id, SEL, id, id);
-using MDKStreamOutputEffectDidStartFn = void (*)(id, SEL, id, id);
+using MDKStreamOutputEffectDidStartFn = void (*)(id, SEL, BOOL, id);
 using MDKStartRemoteReceiveQueueConsumerFn = void (*)(id, SEL, id);
 using MDKCollectStreamDataFn = void (*)(id, SEL);
+using MDKManagerStartRemoteQueueFn = void (*)(id, SEL, id, id);
+using MDKManagerUpdateClientOutputTypeFn = void (*)(id, SEL, id, NSUInteger);
+using MDKManagerStreamUpdateWithFilterFn = void (*)(id, SEL, id, id);
+using MDKManagerStreamOutputEffectDidStartFn = void (*)(id, SEL, BOOL, id);
+using MDKRPIOSurfaceSetFn = void (*)(id, SEL, IOSurfaceRef);
+using MDKRPIOSurfaceGetFn = IOSurfaceRef (*)(id, SEL);
 
 static MDKProxyCoreGraphicsFn MDKOriginalProxyCoreGraphics = nullptr;
 static MDKStartRemoteQueueFn MDKOriginalStartRemoteQueue = nullptr;
@@ -288,6 +295,13 @@ static MDKStartRemoteReceiveQueueConsumerFn MDKOriginalStartRemoteVideoReceiveQu
 static MDKStartRemoteReceiveQueueConsumerFn MDKOriginalStartRemoteAudioReceiveQueue = nullptr;
 static MDKStartRemoteReceiveQueueConsumerFn MDKOriginalStartRemoteMicrophoneReceiveQueue = nullptr;
 static MDKCollectStreamDataFn MDKOriginalCollectStreamData = nullptr;
+static MDKManagerStartRemoteQueueFn MDKOriginalManagerStartRemoteQueue = nullptr;
+static MDKManagerUpdateClientOutputTypeFn MDKOriginalManagerUpdateClientOutputType = nullptr;
+static MDKManagerStreamUpdateWithFilterFn MDKOriginalManagerStreamUpdateWithFilter = nullptr;
+static MDKManagerStreamUpdateWithFilterFn MDKOriginalManagerStreamDidRequestUpdateFilter = nullptr;
+static MDKManagerStreamOutputEffectDidStartFn MDKOriginalManagerStreamOutputEffectDidStart = nullptr;
+static MDKRPIOSurfaceSetFn MDKOriginalRPIOSurfaceSet = nullptr;
+static MDKRPIOSurfaceGetFn MDKOriginalRPIOSurfaceGet = nullptr;
 
 static uint64_t MDKCurrentTraceTimestampNanos(void) {
     return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
@@ -325,6 +339,133 @@ static NSNumber * _Nullable MDKPerformUnsignedCharGetter(id object, SEL selector
     return @(value);
 }
 
+static NSString *MDKStringFromXPCType(xpc_type_t type) {
+    if (type == XPC_TYPE_DICTIONARY) {
+        return @"dictionary";
+    }
+    if (type == XPC_TYPE_UINT64) {
+        return @"uint64";
+    }
+    if (type == XPC_TYPE_INT64) {
+        return @"int64";
+    }
+    if (type == XPC_TYPE_BOOL) {
+        return @"bool";
+    }
+    if (type == XPC_TYPE_STRING) {
+        return @"string";
+    }
+    if (type == XPC_TYPE_SHMEM) {
+        return @"shmem";
+    }
+    if (type == XPC_TYPE_FD) {
+        return @"fd";
+    }
+    if (type == XPC_TYPE_ARRAY) {
+        return @"array";
+    }
+    if (type == XPC_TYPE_DATA) {
+        return @"data";
+    }
+    if (type == XPC_TYPE_ERROR) {
+        return @"error";
+    }
+    if (type == XPC_TYPE_NULL) {
+        return @"null";
+    }
+    return @"unknown";
+}
+
+static NSDictionary<NSString *, id> *MDKSummarizeXPCValue(xpc_object_t value) {
+    if (value == nullptr) {
+        return @{
+            @"present": @NO
+        };
+    }
+
+    xpc_type_t type = xpc_get_type(value);
+    NSMutableDictionary<NSString *, id> *summary = [@{
+        @"present": @YES,
+        @"xpcType": MDKStringFromXPCType(type),
+    } mutableCopy];
+
+    if (type == XPC_TYPE_UINT64) {
+        summary[@"value"] = @(xpc_uint64_get_value(value));
+    } else if (type == XPC_TYPE_INT64) {
+        summary[@"value"] = @(xpc_int64_get_value(value));
+    } else if (type == XPC_TYPE_BOOL) {
+        summary[@"value"] = @(xpc_bool_get_value(value));
+    } else if (type == XPC_TYPE_STRING) {
+        const char *raw = xpc_string_get_string_ptr(value);
+        summary[@"value"] = raw != nullptr ? [NSString stringWithUTF8String:raw] ?: @"" : @"";
+    } else if (type == XPC_TYPE_SHMEM) {
+        void *mappedRegion = nullptr;
+        size_t mappedSize = xpc_shmem_map(value, &mappedRegion);
+        summary[@"mapped"] = @(mappedRegion != nullptr);
+        summary[@"size"] = @(mappedSize);
+    } else if (type == XPC_TYPE_ARRAY) {
+        summary[@"count"] = @(xpc_array_get_count(value));
+    }
+
+    const char *description = xpc_copy_description(value);
+    if (description != nullptr) {
+        summary[@"description"] = [NSString stringWithUTF8String:description] ?: @"";
+        free(const_cast<char *>(description));
+    }
+
+    return summary;
+}
+
+static NSDictionary<NSString *, id> *MDKSummarizeXPCObject(xpc_object_t object) {
+    if (object == nullptr) {
+        return @{
+            @"present": @NO
+        };
+    }
+
+    xpc_type_t type = xpc_get_type(object);
+    NSMutableDictionary<NSString *, id> *summary = [@{
+        @"present": @YES,
+        @"xpcType": MDKStringFromXPCType(type),
+    } mutableCopy];
+
+    if (type == XPC_TYPE_DICTIONARY) {
+        NSMutableArray<NSString *> *keys = [NSMutableArray array];
+        NSMutableDictionary<NSString *, id> *selectedValues = [NSMutableDictionary dictionary];
+        xpc_dictionary_apply(object, ^bool(const char *key, xpc_object_t value) {
+            if (key == nullptr) {
+                return true;
+            }
+
+            NSString *nsKey = [NSString stringWithUTF8String:key] ?: @"";
+            [keys addObject:nsKey];
+            if ([nsKey isEqualToString:@"QueueData"] ||
+                [nsKey isEqualToString:@"SharedRegion"] ||
+                [nsKey isEqualToString:@"QueueOffset"] ||
+                [nsKey isEqualToString:@"RecvFd"] ||
+                [nsKey isEqualToString:@"IOSurfaceReceiver"] ||
+                [nsKey isEqualToString:@"SendFd"]) {
+                selectedValues[nsKey] = MDKSummarizeXPCValue(value);
+            }
+            return true;
+        });
+        summary[@"xpcKeys"] = [keys sortedArrayUsingSelector:@selector(compare:)];
+        if (selectedValues.count > 0) {
+            summary[@"xpcSelectedValues"] = selectedValues;
+        }
+    } else {
+        [summary addEntriesFromDictionary:MDKSummarizeXPCValue(object)];
+    }
+
+    const char *description = xpc_copy_description(object);
+    if (description != nullptr) {
+        summary[@"description"] = [NSString stringWithUTF8String:description] ?: @"";
+        free(const_cast<char *>(description));
+    }
+
+    return summary;
+}
+
 static NSArray<NSString *> * _Nullable MDKSortedDictionaryKeys(id object) {
     if (![object isKindOfClass:[NSDictionary class]]) {
         return nil;
@@ -344,8 +485,11 @@ static NSDictionary<NSString *, id> *MDKSummarizeObject(id object) {
     NSMutableDictionary<NSString *, id> *summary = [NSMutableDictionary dictionary];
     summary[@"present"] = @YES;
     summary[@"className"] = NSStringFromClass([object class]) ?: @"<unknown>";
+    NSString *className = summary[@"className"];
 
-    if ([object isKindOfClass:[NSDictionary class]]) {
+    if ([className hasPrefix:@"OS_xpc_"]) {
+        [summary addEntriesFromDictionary:MDKSummarizeXPCObject((xpc_object_t)object)];
+    } else if ([object isKindOfClass:[NSDictionary class]]) {
         summary[@"keys"] = MDKSortedDictionaryKeys(object) ?: @[];
     } else if ([object isKindOfClass:[NSArray class]]) {
         summary[@"count"] = @([(NSArray *) object count]);
@@ -387,6 +531,9 @@ static NSDictionary<NSString *, id> *MDKSummarizeObject(id object) {
     if (remoteQueue != nil) {
         summary[@"remoteQueueClassName"] = NSStringFromClass([remoteQueue class]) ?: @"<unknown>";
         summary[@"remoteQueueDescription"] = [remoteQueue description] ?: @"";
+        if ([summary[@"remoteQueueClassName"] hasPrefix:@"OS_xpc_"]) {
+            summary[@"remoteQueueStructured"] = MDKSummarizeXPCObject((xpc_object_t) remoteQueue);
+        }
         const char *xpcDescription = xpc_copy_description((xpc_object_t) remoteQueue);
         if (xpcDescription != nullptr) {
             summary[@"remoteQueueXPCDescription"] = [NSString stringWithUTF8String:xpcDescription] ?: @"";
@@ -535,6 +682,7 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"startCaptureCompletionSucceeded": @NO,
             @"collectStreamDataCallCount": @0,
             @"sampleBufferEventCount": @0,
+            @"rpIOSurfaceEventCount": @0,
         } mutableCopy];
     }
 }
@@ -812,16 +960,124 @@ static void MDKSwizzledStreamDidStart(id self, SEL _cmd, id configuration, id co
     MDKOriginalStreamDidStart(self, _cmd, configuration, contentFilter);
 }
 
-static void MDKSwizzledStreamOutputEffectDidStart(id self, SEL _cmd, id effect, id streamID) {
+static void MDKSwizzledStreamOutputEffectDidStart(id self, SEL _cmd, BOOL started, id streamID) {
     MDKRecordSCKTraceEvent(
         @"stream-output-effect-did-start",
         @{
-            @"effect": MDKSummarizeObject(effect),
+            @"started": @(started),
             @"streamID": MDKSummarizeObject(streamID),
         }
     );
 
-    MDKOriginalStreamOutputEffectDidStart(self, _cmd, effect, streamID);
+    MDKOriginalStreamOutputEffectDidStart(self, _cmd, started, streamID);
+}
+
+static void MDKSwizzledManagerStartRemoteQueue(id self, SEL _cmd, id queue, id streamID) {
+    MDKRecordSCKTraceEvent(
+        @"manager-start-remote-queue",
+        @{
+            @"queue": MDKSummarizeObject(queue),
+            @"streamID": MDKSummarizeObject(streamID),
+        }
+    );
+
+    MDKOriginalManagerStartRemoteQueue(self, _cmd, queue, streamID);
+}
+
+static void MDKSwizzledManagerUpdateClientOutputType(id self, SEL _cmd, id stream, NSUInteger clientOutputType) {
+    MDKRecordSCKTraceEvent(
+        @"manager-update-stream-client-output-type",
+        @{
+            @"stream": MDKSummarizeObject(stream),
+            @"clientOutputType": @(clientOutputType),
+        }
+    );
+
+    MDKOriginalManagerUpdateClientOutputType(self, _cmd, stream, clientOutputType);
+}
+
+static void MDKSwizzledManagerStreamUpdateWithFilter(id self, SEL _cmd, id stream, id filter) {
+    MDKRecordSCKTraceEvent(
+        @"manager-stream-update-filter",
+        @{
+            @"stream": MDKSummarizeObject(stream),
+            @"filter": MDKSummarizeObject(filter),
+        }
+    );
+
+    MDKOriginalManagerStreamUpdateWithFilter(self, _cmd, stream, filter);
+}
+
+static void MDKSwizzledManagerStreamDidRequestUpdateFilter(id self, SEL _cmd, id stream, id filter) {
+    MDKRecordSCKTraceEvent(
+        @"manager-stream-did-request-update-filter",
+        @{
+            @"stream": MDKSummarizeObject(stream),
+            @"filter": MDKSummarizeObject(filter),
+        }
+    );
+
+    MDKOriginalManagerStreamDidRequestUpdateFilter(self, _cmd, stream, filter);
+}
+
+static void MDKSwizzledManagerStreamOutputEffectDidStart(id self, SEL _cmd, BOOL started, id streamID) {
+    MDKRecordSCKTraceEvent(
+        @"manager-stream-output-effect-did-start",
+        @{
+            @"started": @(started),
+            @"streamID": MDKSummarizeObject(streamID),
+        }
+    );
+
+    MDKOriginalManagerStreamOutputEffectDidStart(self, _cmd, started, streamID);
+}
+
+static NSDictionary<NSString *, id> *MDKSummarizeIOSurface(IOSurfaceRef surface) {
+    if (surface == nullptr) {
+        return @{
+            @"present": @NO
+        };
+    }
+
+    return @{
+        @"present": @YES,
+        @"width": @(IOSurfaceGetWidth(surface)),
+        @"height": @(IOSurfaceGetHeight(surface)),
+        @"bytesPerRow": @(IOSurfaceGetBytesPerRow(surface)),
+        @"pixelFormat": @(IOSurfaceGetPixelFormat(surface)),
+    };
+}
+
+static void MDKRecordRPIOSurfaceEvent(NSString *kind, IOSurfaceRef surface) {
+    BOOL shouldRecord = NO;
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            NSUInteger eventCount = [MDKActiveSCKTraceState[@"rpIOSurfaceEventCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"rpIOSurfaceEventCount"] = @(eventCount);
+            shouldRecord = eventCount <= 6;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    MDKRecordSCKTraceEvent(
+        kind,
+        @{
+            @"surface": MDKSummarizeIOSurface(surface),
+        }
+    );
+}
+
+static void MDKSwizzledRPIOSurfaceSet(id self, SEL _cmd, IOSurfaceRef surface) {
+    MDKRecordRPIOSurfaceEvent(@"rp-iosurface-set", surface);
+    MDKOriginalRPIOSurfaceSet(self, _cmd, surface);
+}
+
+static IOSurfaceRef MDKSwizzledRPIOSurfaceGet(id self, SEL _cmd) {
+    IOSurfaceRef surface = MDKOriginalRPIOSurfaceGet(self, _cmd);
+    MDKRecordRPIOSurfaceEvent(@"rp-iosurface-get", surface);
+    return surface;
 }
 
 static void MDKRecordRemoteQueueConsumerEvent(NSString *kind, id queue) {
@@ -1038,6 +1294,103 @@ static void MDKInstallSCKProxyTraceHooks(void) {
                 collectStreamDataMethod,
                 reinterpret_cast<IMP>(MDKSwizzledCollectStreamData)
             );
+        }
+
+        Class streamManagerClass = NSClassFromString(@"SCStreamManager");
+        if (streamManagerClass != Nil) {
+            Method managerStartRemoteQueueMethod = class_getInstanceMethod(
+                streamManagerClass,
+                sel_registerName("startRemoteQueue:streamID:")
+            );
+            if (managerStartRemoteQueueMethod != nullptr) {
+                MDKOriginalManagerStartRemoteQueue =
+                    reinterpret_cast<MDKManagerStartRemoteQueueFn>(method_getImplementation(managerStartRemoteQueueMethod));
+                method_setImplementation(
+                    managerStartRemoteQueueMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledManagerStartRemoteQueue)
+                );
+            }
+
+            Method managerUpdateClientOutputTypeMethod = class_getInstanceMethod(
+                streamManagerClass,
+                sel_registerName("updateStream:withClientOutputType:")
+            );
+            if (managerUpdateClientOutputTypeMethod != nullptr) {
+                MDKOriginalManagerUpdateClientOutputType =
+                    reinterpret_cast<MDKManagerUpdateClientOutputTypeFn>(method_getImplementation(managerUpdateClientOutputTypeMethod));
+                method_setImplementation(
+                    managerUpdateClientOutputTypeMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledManagerUpdateClientOutputType)
+                );
+            }
+
+            Method managerStreamUpdateWithFilterMethod = class_getInstanceMethod(
+                streamManagerClass,
+                sel_registerName("stream:updateWithFilter:")
+            );
+            if (managerStreamUpdateWithFilterMethod != nullptr) {
+                MDKOriginalManagerStreamUpdateWithFilter =
+                    reinterpret_cast<MDKManagerStreamUpdateWithFilterFn>(method_getImplementation(managerStreamUpdateWithFilterMethod));
+                method_setImplementation(
+                    managerStreamUpdateWithFilterMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledManagerStreamUpdateWithFilter)
+                );
+            }
+
+            Method managerStreamDidRequestUpdateFilterMethod = class_getInstanceMethod(
+                streamManagerClass,
+                sel_registerName("stream:didRequestUpdateFilter:")
+            );
+            if (managerStreamDidRequestUpdateFilterMethod != nullptr) {
+                MDKOriginalManagerStreamDidRequestUpdateFilter =
+                    reinterpret_cast<MDKManagerStreamUpdateWithFilterFn>(method_getImplementation(managerStreamDidRequestUpdateFilterMethod));
+                method_setImplementation(
+                    managerStreamDidRequestUpdateFilterMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledManagerStreamDidRequestUpdateFilter)
+                );
+            }
+
+            Method managerStreamOutputEffectDidStartMethod = class_getInstanceMethod(
+                streamManagerClass,
+                sel_registerName("streamOutputEffectDidStart:withStreamID:")
+            );
+            if (managerStreamOutputEffectDidStartMethod != nullptr) {
+                MDKOriginalManagerStreamOutputEffectDidStart =
+                    reinterpret_cast<MDKManagerStreamOutputEffectDidStartFn>(method_getImplementation(managerStreamOutputEffectDidStartMethod));
+                method_setImplementation(
+                    managerStreamOutputEffectDidStartMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledManagerStreamOutputEffectDidStart)
+                );
+            }
+        }
+
+        Class rpIOSurfaceObjectClass = NSClassFromString(@"RPIOSurfaceObject");
+        if (rpIOSurfaceObjectClass != Nil) {
+            Method setIOSurfaceMethod = class_getInstanceMethod(
+                rpIOSurfaceObjectClass,
+                sel_registerName("setIOSurface:")
+            );
+            if (setIOSurfaceMethod != nullptr) {
+                MDKOriginalRPIOSurfaceSet =
+                    reinterpret_cast<MDKRPIOSurfaceSetFn>(method_getImplementation(setIOSurfaceMethod));
+                method_setImplementation(
+                    setIOSurfaceMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledRPIOSurfaceSet)
+                );
+            }
+
+            Method ioSurfaceMethod = class_getInstanceMethod(
+                rpIOSurfaceObjectClass,
+                sel_registerName("ioSurface")
+            );
+            if (ioSurfaceMethod != nullptr) {
+                MDKOriginalRPIOSurfaceGet =
+                    reinterpret_cast<MDKRPIOSurfaceGetFn>(method_getImplementation(ioSurfaceMethod));
+                method_setImplementation(
+                    ioSurfaceMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledRPIOSurfaceGet)
+                );
+            }
         }
     });
 }
@@ -1497,7 +1850,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             [selectors addObject:@"streamOutputEffectDidStart:withStreamID:"];
             [symbols addObject:@"RPDaemonProxy"];
             NSMutableArray<NSString *> *notes = [@[
-                [NSString stringWithFormat:@"effect=%@", MDKDescribeTraceValue(event[@"effect"])],
+                [NSString stringWithFormat:@"started=%@", MDKDescribeTraceValue(event[@"started"])],
                 [NSString stringWithFormat:@"streamID=%@", MDKDescribeTraceValue(event[@"streamID"])],
             ] mutableCopy];
             [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
@@ -1505,6 +1858,101 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
                 @"stream-output-effect-did-start",
                 @"streamOutputEffectDidStart:withStreamID:",
                 @"RPDaemonProxy",
+                nil,
+                @YES,
+                notes
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"manager-start-remote-queue"]) {
+            [selectors addObject:@"startRemoteQueue:streamID:"];
+            [symbols addObject:@"SCStreamManager"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"queue=%@", MDKDescribeTraceValue(event[@"queue"])],
+                [NSString stringWithFormat:@"streamID=%@", MDKDescribeTraceValue(event[@"streamID"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(
+                @"manager-start-remote-queue",
+                @"startRemoteQueue:streamID:",
+                @"SCStreamManager",
+                nil,
+                @YES,
+                notes
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"manager-update-stream-client-output-type"]) {
+            [selectors addObject:@"updateStream:withClientOutputType:"];
+            [symbols addObject:@"SCStreamManager"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"stream=%@", MDKDescribeTraceValue(event[@"stream"])],
+                [NSString stringWithFormat:@"clientOutputType=%@", MDKDescribeTraceValue(event[@"clientOutputType"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(
+                @"manager-update-stream-client-output-type",
+                @"updateStream:withClientOutputType:",
+                @"SCStreamManager",
+                nil,
+                @YES,
+                notes
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"manager-stream-update-filter"]) {
+            [selectors addObject:@"stream:updateWithFilter:"];
+            [symbols addObject:@"SCStreamManager"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"stream=%@", MDKDescribeTraceValue(event[@"stream"])],
+                [NSString stringWithFormat:@"filter=%@", MDKDescribeTraceValue(event[@"filter"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(
+                @"manager-stream-update-filter",
+                @"stream:updateWithFilter:",
+                @"SCStreamManager",
+                nil,
+                @YES,
+                notes
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"manager-stream-did-request-update-filter"]) {
+            [selectors addObject:@"stream:didRequestUpdateFilter:"];
+            [symbols addObject:@"SCStreamManager"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"stream=%@", MDKDescribeTraceValue(event[@"stream"])],
+                [NSString stringWithFormat:@"filter=%@", MDKDescribeTraceValue(event[@"filter"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(
+                @"manager-stream-did-request-update-filter",
+                @"stream:didRequestUpdateFilter:",
+                @"SCStreamManager",
+                nil,
+                @YES,
+                notes
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"manager-stream-output-effect-did-start"]) {
+            [selectors addObject:@"streamOutputEffectDidStart:withStreamID:"];
+            [symbols addObject:@"SCStreamManager"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"started=%@", MDKDescribeTraceValue(event[@"started"])],
+                [NSString stringWithFormat:@"streamID=%@", MDKDescribeTraceValue(event[@"streamID"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(
+                @"manager-stream-output-effect-did-start",
+                @"streamOutputEffectDidStart:withStreamID:",
+                @"SCStreamManager",
                 nil,
                 @YES,
                 notes
@@ -1620,6 +2068,24 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             continue;
         }
 
+        if ([kind isEqualToString:@"rp-iosurface-set"] || [kind isEqualToString:@"rp-iosurface-get"]) {
+            [selectors addObject:[kind isEqualToString:@"rp-iosurface-set"] ? @"setIOSurface:" : @"ioSurface"];
+            [symbols addObject:@"RPIOSurfaceObject"];
+            NSMutableArray<NSString *> *notes = [@[
+                [NSString stringWithFormat:@"surface=%@", MDKDescribeTraceValue(event[@"surface"])],
+            ] mutableCopy];
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(
+                kind,
+                [kind isEqualToString:@"rp-iosurface-set"] ? @"setIOSurface:" : @"ioSurface",
+                @"RPIOSurfaceObject",
+                nil,
+                @YES,
+                notes
+            )];
+            continue;
+        }
+
         if ([kind isEqualToString:@"post-start-stream-state"]) {
             NSMutableArray<NSString *> *notes = [@[
                 [NSString stringWithFormat:@"streamState=%@", MDKDescribeTraceValue(event[@"streamState"])],
@@ -1652,6 +2118,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"serializedFilter=%@", MDKDescribeTraceValue(serializedFilter)]];
     [notes addObject:[NSString stringWithFormat:@"collectStreamDataCallCount=%@", MDKDescribeTraceValue(snapshot[@"collectStreamDataCallCount"])]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferEventCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"rpIOSurfaceEventCount=%@", MDKDescribeTraceValue(snapshot[@"rpIOSurfaceEventCount"])]];
     [notes addObject:@"stopCaptureWithCompletionHandler was intentionally skipped in the host-only trace to avoid an RPDaemonProxy stop-path NSXPCEncoder exception."];
     const BOOL succeeded = [snapshot[@"sawProxyCoreGraphics"] boolValue] && startError == nil;
     const std::int32_t status = startError != nil ? static_cast<std::int32_t>(startError.code) : (succeeded ? 0 : 1);
