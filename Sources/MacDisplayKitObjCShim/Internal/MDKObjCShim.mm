@@ -3,6 +3,7 @@
 #import <CoreVideo/CoreVideo.h>
 #import <IOSurface/IOSurface.h>
 #import <dlfcn.h>
+#import <mach/mach.h>
 
 #import "MDKObjCShim.h"
 
@@ -87,13 +88,39 @@ BOOL MDKShimVideoCGDisplayStreamAvailableForDisplay(NSUInteger displayID) {
     return YES;
 }
 
-static void *MDKLookupCaptureSymbol(const char *symbolName) {
-    void *handle = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight", RTLD_LAZY | RTLD_LOCAL);
+static void *MDKLookupCaptureSymbolInImage(const char *imagePath, const char *symbolName) {
+    void *handle = dlopen(imagePath, RTLD_LAZY | RTLD_LOCAL);
     if (handle == nullptr) {
         handle = RTLD_DEFAULT;
     }
 
     return dlsym(handle, symbolName);
+}
+
+static void *MDKLookupCaptureSymbol(const char *symbolName) {
+    return MDKLookupCaptureSymbolInImage(
+        "/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight",
+        symbolName
+    );
+}
+
+static void *MDKLookupScreenCaptureKitSymbol(const char *symbolName) {
+    return MDKLookupCaptureSymbolInImage(
+        "/System/Library/Frameworks/ScreenCaptureKit.framework/ScreenCaptureKit",
+        symbolName
+    );
+}
+
+static std::uint32_t MDKMainConnectionID(void) {
+    using MDKMainConnectionIDFn = std::uint32_t (*)(void);
+    static const auto symbol = reinterpret_cast<MDKMainConnectionIDFn>(
+        MDKLookupCaptureSymbol("SLSMainConnectionID")
+    );
+    if (symbol == nullptr) {
+        return 0;
+    }
+
+    return symbol();
 }
 
 BOOL MDKShimVideoPrivateDesktopCaptureAvailable(void) {
@@ -108,6 +135,10 @@ BOOL MDKShimVideoPrivateDisplayIOSurfaceCaptureWithOptionsAvailable(void) {
     return MDKLookupCaptureSymbol("CGSHWCaptureDisplayIntoIOSurfaceWithOptions") != nullptr;
 }
 
+BOOL MDKShimVideoPrivateDisplayIOSurfaceProxyCaptureAvailable(void) {
+    return MDKLookupScreenCaptureKitSymbol("SLSHWCaptureDisplayIntoIOSurfaceProxying") != nullptr;
+}
+
 BOOL MDKShimVideoPrivateCaptureExtendedRangeOptionAvailable(void) {
     return MDKLookupCaptureSymbol("kSLSCaptureExtendedRange") != nullptr;
 }
@@ -117,21 +148,29 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreatePrivateCaptureSurfacePa
     BOOL requestExtendedRange,
     NSError * _Nullable * _Nullable error,
     BOOL benchmarkMode,
-    NSTimeInterval sampleDuration
+    NSTimeInterval sampleDuration,
+    BOOL useDirectProxy
 ) {
     using MDKPrivateCaptureDisplayIntoIOSurfaceWithOptionsFn =
         int (*)(std::uint32_t, std::uint32_t, std::uint32_t, IOSurfaceRef, std::uint32_t *);
+    using MDKPrivateCaptureDisplayIntoIOSurfaceProxyFn =
+        int (*)(std::uint32_t, std::uint32_t, std::uint32_t, mach_port_t, std::uint32_t *, BOOL *);
     static constexpr std::uint32_t MDKPrivateCaptureExtendedRangeBit = 0x00200000;
 
     auto symbol = reinterpret_cast<MDKPrivateCaptureDisplayIntoIOSurfaceWithOptionsFn>(
         MDKLookupCaptureSymbol("CGSHWCaptureDisplayIntoIOSurfaceWithOptions")
     );
-    if (symbol == nullptr) {
+    auto proxySymbol = reinterpret_cast<MDKPrivateCaptureDisplayIntoIOSurfaceProxyFn>(
+        MDKLookupScreenCaptureKitSymbol("SLSHWCaptureDisplayIntoIOSurfaceProxying")
+    );
+    if ((!useDirectProxy && symbol == nullptr) || (useDirectProxy && proxySymbol == nullptr)) {
         if (error != nullptr) {
             *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
                                          code:1
                                      userInfo:@{
-                                         NSLocalizedDescriptionKey: @"CGSHWCaptureDisplayIntoIOSurfaceWithOptions is unavailable."
+                                         NSLocalizedDescriptionKey: useDirectProxy
+                                             ? @"SLSHWCaptureDisplayIntoIOSurfaceProxying is unavailable."
+                                             : @"CGSHWCaptureDisplayIntoIOSurfaceWithOptions is unavailable."
                                      }];
         }
         return nil;
@@ -172,30 +211,56 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreatePrivateCaptureSurfacePa
     }
 
     const std::uint32_t optionsBits = requestExtendedRange ? MDKPrivateCaptureExtendedRangeBit : 0;
+    const std::uint32_t connectionID = MDKMainConnectionID();
     std::uint32_t captureValue = 0;
     std::uint32_t sampleWord = 0;
     std::uint64_t iterationCount = 0;
     std::uint64_t populatedFrameCount = 0;
     int status = 0;
+    BOOL proxiedFrameAvailable = NO;
+    const mach_port_t surfacePort = useDirectProxy ? IOSurfaceCreateMachPort(surface) : MACH_PORT_NULL;
+    if (useDirectProxy && surfacePort == MACH_PORT_NULL) {
+        CFRelease(surface);
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:4
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Failed to create a mach port for the probe IOSurface."
+                                     }];
+        }
+        return nil;
+    }
 
     const CFAbsoluteTime startedAt = CFAbsoluteTimeGetCurrent();
     const CFAbsoluteTime targetDuration = benchmarkMode ? std::max(sampleDuration, 0.001) : 0.0;
 
     do {
         captureValue = 0;
-        status = symbol(
-            0,
-            static_cast<std::uint32_t>(displayID),
-            optionsBits,
-            surface,
-            &captureValue
-        );
+        proxiedFrameAvailable = NO;
+        if (useDirectProxy) {
+            status = proxySymbol(
+                connectionID,
+                static_cast<std::uint32_t>(displayID),
+                optionsBits,
+                surfacePort,
+                &captureValue,
+                &proxiedFrameAvailable
+            );
+        } else {
+            status = symbol(
+                connectionID,
+                static_cast<std::uint32_t>(displayID),
+                optionsBits,
+                surface,
+                &captureValue
+            );
+        }
         iterationCount += 1;
 
         IOSurfaceLock(surface, kIOSurfaceLockReadOnly, nullptr);
         const auto *baseAddress = static_cast<const std::uint32_t *>(IOSurfaceGetBaseAddress(surface));
         sampleWord = baseAddress != nullptr ? baseAddress[0] : 0;
-        if (sampleWord != 0) {
+        if (sampleWord != 0 && (!useDirectProxy || proxiedFrameAvailable)) {
             populatedFrameCount += 1;
         }
         IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, nullptr);
@@ -206,11 +271,14 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreatePrivateCaptureSurfacePa
     } while ((CFAbsoluteTimeGetCurrent() - startedAt) < targetDuration);
 
     const CFAbsoluteTime elapsed = std::max(CFAbsoluteTimeGetCurrent() - startedAt, 0.0);
-    const BOOL surfacePopulated = sampleWord != 0;
+    const BOOL surfacePopulated = sampleWord != 0 && (!useDirectProxy || proxiedFrameAvailable);
     const std::size_t bytesPerRow = IOSurfaceGetBytesPerRow(surface);
     const OSType pixelFormat = IOSurfaceGetPixelFormat(surface);
     const std::size_t surfaceWidth = IOSurfaceGetWidth(surface);
     const std::size_t surfaceHeight = IOSurfaceGetHeight(surface);
+    if (surfacePort != MACH_PORT_NULL) {
+        mach_port_deallocate(mach_task_self(), surfacePort);
+    }
     CFRelease(surface);
 
     if (status != 0 && error != nullptr) {
@@ -224,7 +292,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreatePrivateCaptureSurfacePa
     }
 
     NSMutableArray<NSString *> *notes = [NSMutableArray arrayWithObject:
-        @"Uses CGSHWCaptureDisplayIntoIOSurfaceWithOptions with option bits and a direct IOSurface target."
+        useDirectProxy
+            ? @"Uses SLSHWCaptureDisplayIntoIOSurfaceProxying with a reused IOSurface mach port."
+            : @"Uses CGSHWCaptureDisplayIntoIOSurfaceWithOptions with option bits and a direct IOSurface target."
     ];
     if (requestExtendedRange) {
         [notes addObject:@"Extended-range capture was requested with the 0x00200000 private option bit."];
@@ -234,9 +304,15 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreatePrivateCaptureSurfacePa
     if (benchmarkMode) {
         [notes addObject:@"The benchmark reuses a single IOSurface to avoid per-frame allocation noise."];
     }
+    if (useDirectProxy) {
+        [notes addObject:@"The benchmark reuses one IOSurface mach port for the full sample window to avoid wrapper-side port churn."];
+    }
 
     NSMutableDictionary<NSString *, id> *payload = [@{
-        @"entryPoint": @"cgshw-display-iosurface-with-options",
+        @"entryPoint": useDirectProxy
+            ? @"sls-display-iosurface-proxying"
+            : @"cgshw-display-iosurface-with-options",
+        @"connectionID": @(connectionID),
         @"displayID": @(displayID),
         @"surfaceWidth": @(surfaceWidth),
         @"surfaceHeight": @(surfaceHeight),
@@ -248,6 +324,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreatePrivateCaptureSurfacePa
         @"surfacePopulated": @(surfacePopulated),
         @"requestedExtendedRange": @(requestExtendedRange),
         @"extendedRangeApplied": @(requestExtendedRange && status == 0),
+        @"proxiedFrameAvailable": @(proxiedFrameAvailable),
         @"notes": notes
     } mutableCopy];
 
@@ -269,7 +346,7 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureSingleFrame(
     BOOL requestExtendedRange,
     NSError * _Nullable * _Nullable error
 ) {
-    return MDKCreatePrivateCaptureSurfacePayload(displayID, requestExtendedRange, error, NO, 0);
+    return MDKCreatePrivateCaptureSurfacePayload(displayID, requestExtendedRange, error, NO, 0, NO);
 }
 
 NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureBenchmark(
@@ -283,7 +360,32 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureBenchmark(
         requestExtendedRange,
         error,
         YES,
-        sampleDuration
+        sampleDuration,
+        NO
+    );
+}
+
+NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateProxyCaptureSingleFrame(
+    NSUInteger displayID,
+    BOOL requestExtendedRange,
+    NSError * _Nullable * _Nullable error
+) {
+    return MDKCreatePrivateCaptureSurfacePayload(displayID, requestExtendedRange, error, NO, 0, YES);
+}
+
+NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateProxyCaptureBenchmark(
+    NSUInteger displayID,
+    BOOL requestExtendedRange,
+    NSTimeInterval sampleDuration,
+    NSError * _Nullable * _Nullable error
+) {
+    return MDKCreatePrivateCaptureSurfacePayload(
+        displayID,
+        requestExtendedRange,
+        error,
+        YES,
+        sampleDuration,
+        YES
     );
 }
 

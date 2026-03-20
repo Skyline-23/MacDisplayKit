@@ -1,6 +1,7 @@
 import Foundation
 
 public enum MDKPrivateCaptureEntryPoint: String, Codable, Equatable, Sendable {
+    case displayIOSurfaceProxying = "sls-display-iosurface-proxying"
     case displayIOSurfaceWithOptions = "cgshw-display-iosurface-with-options"
     case displayIOSurface = "cgshw-display-iosurface"
     case desktopCapture = "cgshw-desktop"
@@ -8,6 +9,8 @@ public enum MDKPrivateCaptureEntryPoint: String, Codable, Equatable, Sendable {
 
     public var displayName: String {
         switch self {
+        case .displayIOSurfaceProxying:
+            return "SLSHWCaptureDisplayIntoIOSurfaceProxying"
         case .displayIOSurfaceWithOptions:
             return "CGSHWCaptureDisplayIntoIOSurfaceWithOptions"
         case .displayIOSurface:
@@ -47,6 +50,20 @@ public enum MDKPrivateCapturePrototypePlanner {
     public static func plan(
         for capabilities: MDKPrivateCaptureCapabilities
     ) -> MDKPrivateCapturePrototypePlan {
+        if capabilities.displayIOSurfaceProxyCaptureAvailable {
+            return MDKPrivateCapturePrototypePlan(
+                capabilities: capabilities,
+                recommendedEntryPoint: .displayIOSurfaceProxying,
+                readyForIOSurfacePrototype: true,
+                recommendedNotes: [
+                    "Prefer the ScreenCaptureKit proxying entry point because it bypasses the SkyLight wrapper and should avoid per-frame mach-port churn.",
+                    capabilities.extendedRangeOptionAvailable
+                        ? "Keep the extended-range option bit enabled during the first proxy benchmark so HDR behavior stays comparable to the wrapper path."
+                        : "Treat HDR as unresolved until an explicit extended-range hint becomes available."
+                ]
+            )
+        }
+
         if capabilities.displayIOSurfaceCaptureWithOptionsAvailable {
             return MDKPrivateCapturePrototypePlan(
                 capabilities: capabilities,

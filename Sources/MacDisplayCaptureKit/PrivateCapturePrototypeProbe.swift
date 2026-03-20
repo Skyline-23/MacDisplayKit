@@ -14,6 +14,7 @@ public struct MDKPrivateCaptureProbeResult: Codable, Equatable, Sendable {
     public let surfacePopulated: Bool
     public let requestedExtendedRange: Bool
     public let extendedRangeApplied: Bool
+    public let proxiedFrameAvailable: Bool?
     public let notes: [String]
 
     public init(
@@ -29,6 +30,7 @@ public struct MDKPrivateCaptureProbeResult: Codable, Equatable, Sendable {
         surfacePopulated: Bool,
         requestedExtendedRange: Bool,
         extendedRangeApplied: Bool,
+        proxiedFrameAvailable: Bool?,
         notes: [String]
     ) {
         self.entryPoint = entryPoint
@@ -43,6 +45,7 @@ public struct MDKPrivateCaptureProbeResult: Codable, Equatable, Sendable {
         self.surfacePopulated = surfacePopulated
         self.requestedExtendedRange = requestedExtendedRange
         self.extendedRangeApplied = extendedRangeApplied
+        self.proxiedFrameAvailable = proxiedFrameAvailable
         self.notes = notes
     }
 
@@ -78,6 +81,7 @@ public struct MDKPrivateCaptureProbeResult: Codable, Equatable, Sendable {
             surfacePopulated: surfacePopulatedNumber.boolValue,
             requestedExtendedRange: requestedExtendedRangeNumber.boolValue,
             extendedRangeApplied: extendedRangeAppliedNumber.boolValue,
+            proxiedFrameAvailable: (shimDictionary["proxiedFrameAvailable"] as? NSNumber)?.boolValue,
             notes: notes
         )
     }
@@ -95,6 +99,25 @@ public enum MDKPrivateCapturePrototypeProbe {
     ) throws -> MDKPrivateCaptureProbeResult {
         var nsError: NSError?
         guard let payload = MDKShimVideoPrivateCaptureSingleFrame(
+            UInt(displayID),
+            requestExtendedRange,
+            &nsError
+        ) else {
+            if let nsError {
+                throw nsError
+            }
+            throw MDKPrivateCapturePrototypeProbeError.unavailable
+        }
+
+        return try MDKPrivateCaptureProbeResult(shimDictionary: payload as NSDictionary)
+    }
+
+    public static func captureProxySingleFrame(
+        displayID: UInt32,
+        requestExtendedRange: Bool
+    ) throws -> MDKPrivateCaptureProbeResult {
+        var nsError: NSError?
+        guard let payload = MDKShimVideoPrivateProxyCaptureSingleFrame(
             UInt(displayID),
             requestExtendedRange,
             &nsError

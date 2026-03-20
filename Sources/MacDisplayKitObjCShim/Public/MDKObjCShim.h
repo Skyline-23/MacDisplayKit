@@ -14,6 +14,7 @@ FOUNDATION_EXPORT BOOL MDKShimVideoCGDisplayStreamAvailableForDisplay(NSUInteger
 FOUNDATION_EXPORT BOOL MDKShimVideoPrivateDesktopCaptureAvailable(void);
 FOUNDATION_EXPORT BOOL MDKShimVideoPrivateDisplayIOSurfaceCaptureAvailable(void);
 FOUNDATION_EXPORT BOOL MDKShimVideoPrivateDisplayIOSurfaceCaptureWithOptionsAvailable(void);
+FOUNDATION_EXPORT BOOL MDKShimVideoPrivateDisplayIOSurfaceProxyCaptureAvailable(void);
 FOUNDATION_EXPORT BOOL MDKShimVideoPrivateCaptureExtendedRangeOptionAvailable(void);
 FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureSingleFrame(
     NSUInteger displayID,
@@ -21,6 +22,17 @@ FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCa
     NSError * _Nullable * _Nullable error
 );
 FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureBenchmark(
+    NSUInteger displayID,
+    BOOL requestExtendedRange,
+    NSTimeInterval sampleDuration,
+    NSError * _Nullable * _Nullable error
+);
+FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateProxyCaptureSingleFrame(
+    NSUInteger displayID,
+    BOOL requestExtendedRange,
+    NSError * _Nullable * _Nullable error
+);
+FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateProxyCaptureBenchmark(
     NSUInteger displayID,
     BOOL requestExtendedRange,
     NSTimeInterval sampleDuration,

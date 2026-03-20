@@ -6,7 +6,9 @@ private enum MDKHostCLICommand {
     case listTargets
     case privateCapturePlan(json: Bool)
     case privateCaptureProbe(displayID: UInt32, requestExtendedRange: Bool, json: Bool)
+    case privateProxyCaptureProbe(displayID: UInt32, requestExtendedRange: Bool, json: Bool)
     case privateCaptureBenchmark(displayID: UInt32, requestExtendedRange: Bool, sampleDuration: TimeInterval, json: Bool)
+    case privateProxyCaptureBenchmark(displayID: UInt32, requestExtendedRange: Bool, sampleDuration: TimeInterval, json: Bool)
     case benchmark(
         displayID: UInt32,
         targetIdentifier: String,
@@ -78,6 +80,27 @@ enum MDKHostCommandLine {
                 fputs("Failed to run private capture probe: \(error)\n", stderr)
                 return 1
             }
+        case .privateProxyCaptureProbe(let displayID, let requestExtendedRange, let json):
+            do {
+                let result = try controller.probePrivateProxyCaptureSingleFrame(
+                    displayID: displayID,
+                    requestExtendedRange: requestExtendedRange
+                )
+                if json {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    let data = try encoder.encode(result)
+                    if let text = String(data: data, encoding: .utf8) {
+                        print(text)
+                    }
+                } else {
+                    print(MDKHostBenchmarkFormatter.formatPrivateCaptureProbeResult(result))
+                }
+                return result.status == 0 && result.surfacePopulated ? 0 : 2
+            } catch {
+                fputs("Failed to run private proxy capture probe: \(error)\n", stderr)
+                return 1
+            }
         case .privateCaptureBenchmark(let displayID, let requestExtendedRange, let sampleDuration, let json):
             do {
                 let result = try controller.benchmarkPrivateCapture(
@@ -98,6 +121,28 @@ enum MDKHostCommandLine {
                 return result.probe.status == 0 && result.probe.surfacePopulated ? 0 : 2
             } catch {
                 fputs("Failed to run private capture benchmark: \(error)\n", stderr)
+                return 1
+            }
+        case .privateProxyCaptureBenchmark(let displayID, let requestExtendedRange, let sampleDuration, let json):
+            do {
+                let result = try controller.benchmarkPrivateProxyCapture(
+                    displayID: displayID,
+                    requestExtendedRange: requestExtendedRange,
+                    sampleDuration: sampleDuration
+                )
+                if json {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    let data = try encoder.encode(result)
+                    if let text = String(data: data, encoding: .utf8) {
+                        print(text)
+                    }
+                } else {
+                    print(MDKHostBenchmarkFormatter.formatPrivateCaptureBenchmarkResult(result))
+                }
+                return result.probe.status == 0 && result.probe.surfacePopulated ? 0 : 2
+            } catch {
+                fputs("Failed to run private proxy capture benchmark: \(error)\n", stderr)
                 return 1
             }
         case .benchmark(let displayID, let targetIdentifier, let intent, let processingMode, let json):
@@ -191,12 +236,33 @@ enum MDKHostCommandLine {
             )
         }
 
+        if let probeDisplayIndex = tokens.firstIndex(of: "--experimental-private-hw-capture-proxy-probe-display"),
+           tokens.indices.contains(probeDisplayIndex + 1),
+           let displayID = UInt32(tokens[probeDisplayIndex + 1]) {
+            return .privateProxyCaptureProbe(
+                displayID: displayID,
+                requestExtendedRange: tokens.contains("--experimental-private-hw-capture-proxy-probe-hdr"),
+                json: tokens.contains("--json")
+            )
+        }
+
         if let benchmarkDisplayIndex = tokens.firstIndex(of: "--experimental-private-hw-capture-benchmark-display"),
            tokens.indices.contains(benchmarkDisplayIndex + 1),
            let displayID = UInt32(tokens[benchmarkDisplayIndex + 1]) {
             return .privateCaptureBenchmark(
                 displayID: displayID,
                 requestExtendedRange: tokens.contains("--experimental-private-hw-capture-benchmark-hdr"),
+                sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
+                json: tokens.contains("--json")
+            )
+        }
+
+        if let benchmarkDisplayIndex = tokens.firstIndex(of: "--experimental-private-hw-capture-proxy-benchmark-display"),
+           tokens.indices.contains(benchmarkDisplayIndex + 1),
+           let displayID = UInt32(tokens[benchmarkDisplayIndex + 1]) {
+            return .privateProxyCaptureBenchmark(
+                displayID: displayID,
+                requestExtendedRange: tokens.contains("--experimental-private-hw-capture-proxy-benchmark-hdr"),
                 sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
                 json: tokens.contains("--json")
             )

@@ -35,6 +35,9 @@ enum MDKHostBenchmarkFormatter {
         lines.append("Surface populated: \(result.surfacePopulated ? "yes" : "no")")
         lines.append("Requested extended range: \(result.requestedExtendedRange ? "yes" : "no")")
         lines.append("Extended range applied: \(result.extendedRangeApplied ? "yes" : "no")")
+        if let proxiedFrameAvailable = result.proxiedFrameAvailable {
+            lines.append("Proxy frame available: \(proxiedFrameAvailable ? "yes" : "no")")
+        }
         lines.append("")
         lines.append("Notes:")
         for note in result.notes {
@@ -53,6 +56,7 @@ enum MDKHostBenchmarkFormatter {
         lines.append("Desktop capture available: \(plan.capabilities.desktopCaptureAvailable ? "yes" : "no")")
         lines.append("Display->IOSurface available: \(plan.capabilities.displayIOSurfaceCaptureAvailable ? "yes" : "no")")
         lines.append("Display->IOSurface+options available: \(plan.capabilities.displayIOSurfaceCaptureWithOptionsAvailable ? "yes" : "no")")
+        lines.append("Display->IOSurface proxy available: \(plan.capabilities.displayIOSurfaceProxyCaptureAvailable ? "yes" : "no")")
         lines.append("Extended range option available: \(plan.capabilities.extendedRangeOptionAvailable ? "yes" : "no")")
         lines.append("")
         lines.append("Notes:")

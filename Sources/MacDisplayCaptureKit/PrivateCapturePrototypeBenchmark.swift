@@ -68,4 +68,25 @@ public enum MDKPrivateCapturePrototypeBenchmark {
 
         return try MDKPrivateCaptureBenchmarkResult(shimDictionary: payload as NSDictionary)
     }
+
+    public static func runProxy(
+        displayID: UInt32,
+        requestExtendedRange: Bool,
+        sampleDuration: TimeInterval
+    ) throws -> MDKPrivateCaptureBenchmarkResult {
+        var nsError: NSError?
+        guard let payload = MDKShimVideoPrivateProxyCaptureBenchmark(
+            UInt(displayID),
+            requestExtendedRange,
+            sampleDuration,
+            &nsError
+        ) else {
+            if let nsError {
+                throw nsError
+            }
+            throw MDKPrivateCapturePrototypeProbeError.unavailable
+        }
+
+        return try MDKPrivateCaptureBenchmarkResult(shimDictionary: payload as NSDictionary)
+    }
 }

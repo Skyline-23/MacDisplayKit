@@ -27,6 +27,7 @@ final class MacDisplayKitTests: XCTestCase {
             desktopCaptureAvailable: false,
             displayIOSurfaceCaptureAvailable: false,
             displayIOSurfaceCaptureWithOptionsAvailable: true,
+            displayIOSurfaceProxyCaptureAvailable: false,
             extendedRangeOptionAvailable: true
         )
 
@@ -61,6 +62,7 @@ final class MacDisplayKitTests: XCTestCase {
                 desktopCaptureAvailable: true,
                 displayIOSurfaceCaptureAvailable: true,
                 displayIOSurfaceCaptureWithOptionsAvailable: true,
+                displayIOSurfaceProxyCaptureAvailable: false,
                 extendedRangeOptionAvailable: true
             )
         )
@@ -76,6 +78,7 @@ final class MacDisplayKitTests: XCTestCase {
                 desktopCaptureAvailable: true,
                 displayIOSurfaceCaptureAvailable: true,
                 displayIOSurfaceCaptureWithOptionsAvailable: false,
+                displayIOSurfaceProxyCaptureAvailable: false,
                 extendedRangeOptionAvailable: false
             )
         )
@@ -90,6 +93,7 @@ final class MacDisplayKitTests: XCTestCase {
                 desktopCaptureAvailable: true,
                 displayIOSurfaceCaptureAvailable: false,
                 displayIOSurfaceCaptureWithOptionsAvailable: false,
+                displayIOSurfaceProxyCaptureAvailable: false,
                 extendedRangeOptionAvailable: false
             )
         )
@@ -104,6 +108,7 @@ final class MacDisplayKitTests: XCTestCase {
                 desktopCaptureAvailable: false,
                 displayIOSurfaceCaptureAvailable: false,
                 displayIOSurfaceCaptureWithOptionsAvailable: false,
+                displayIOSurfaceProxyCaptureAvailable: false,
                 extendedRangeOptionAvailable: false
             )
         )
@@ -126,6 +131,7 @@ final class MacDisplayKitTests: XCTestCase {
             surfacePopulated: true,
             requestedExtendedRange: false,
             extendedRangeApplied: false,
+            proxiedFrameAvailable: nil,
             notes: [
                 "Uses the private SDR-safe probe path."
             ]
@@ -150,6 +156,7 @@ final class MacDisplayKitTests: XCTestCase {
             "surfacePopulated": NSNumber(value: true),
             "requestedExtendedRange": NSNumber(value: false),
             "extendedRangeApplied": NSNumber(value: false),
+            "proxiedFrameAvailable": NSNumber(value: true),
             "notes": ["payload parsed"]
         ]
 
@@ -163,6 +170,7 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(result.sampleWord, 1234)
         XCTAssertEqual(result.captureValue, 5678)
         XCTAssertTrue(result.surfacePopulated)
+        XCTAssertEqual(result.proxiedFrameAvailable, true)
         XCTAssertEqual(result.notes, ["payload parsed"])
     }
 
@@ -180,6 +188,7 @@ final class MacDisplayKitTests: XCTestCase {
             "surfacePopulated": NSNumber(value: true),
             "requestedExtendedRange": NSNumber(value: true),
             "extendedRangeApplied": NSNumber(value: true),
+            "proxiedFrameAvailable": NSNumber(value: true),
             "sampleDuration": NSNumber(value: 1.25),
             "iterationCount": NSNumber(value: 150),
             "populatedFrameCount": NSNumber(value: 148),
@@ -196,6 +205,22 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(result.populatedFrameCount, 148)
         XCTAssertEqual(result.observedFrameRate, 120.0, accuracy: 0.0001)
         XCTAssertEqual(result.populatedFrameRate, 118.4, accuracy: 0.0001)
+        XCTAssertEqual(result.probe.proxiedFrameAvailable, true)
+    }
+
+    func testPrivateCapturePrototypePlannerPrefersProxyingPathWhenAvailable() {
+        let plan = MDKPrivateCapturePrototypePlanner.plan(
+            for: MDKPrivateCaptureCapabilities(
+                desktopCaptureAvailable: true,
+                displayIOSurfaceCaptureAvailable: true,
+                displayIOSurfaceCaptureWithOptionsAvailable: true,
+                displayIOSurfaceProxyCaptureAvailable: true,
+                extendedRangeOptionAvailable: true
+            )
+        )
+
+        XCTAssertEqual(plan.recommendedEntryPoint, .displayIOSurfaceProxying)
+        XCTAssertTrue(plan.readyForIOSurfacePrototype)
     }
 
     func testOptimizationTargetsInclude4KHDR120CaptureOnlyBaseline() {

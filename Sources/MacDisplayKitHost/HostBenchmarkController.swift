@@ -72,12 +72,34 @@ final class MDKHostBenchmarkController {
         )
     }
 
+    func probePrivateProxyCaptureSingleFrame(
+        displayID: UInt32,
+        requestExtendedRange: Bool
+    ) throws -> MDKPrivateCaptureProbeResult {
+        try MDKPrivateCapturePrototypeProbe.captureProxySingleFrame(
+            displayID: displayID,
+            requestExtendedRange: requestExtendedRange
+        )
+    }
+
     func benchmarkPrivateCapture(
         displayID: UInt32,
         requestExtendedRange: Bool,
         sampleDuration: TimeInterval
     ) throws -> MDKPrivateCaptureBenchmarkResult {
         try MDKPrivateCapturePrototypeBenchmark.run(
+            displayID: displayID,
+            requestExtendedRange: requestExtendedRange,
+            sampleDuration: sampleDuration
+        )
+    }
+
+    func benchmarkPrivateProxyCapture(
+        displayID: UInt32,
+        requestExtendedRange: Bool,
+        sampleDuration: TimeInterval
+    ) throws -> MDKPrivateCaptureBenchmarkResult {
+        try MDKPrivateCapturePrototypeBenchmark.runProxy(
             displayID: displayID,
             requestExtendedRange: requestExtendedRange,
             sampleDuration: sampleDuration
