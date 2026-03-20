@@ -78,16 +78,23 @@ Outcome:
 
 ### ScreenCaptureKit public trace harness
 
-The host now supports a pure public `SCStream` timing trace:
+The host now supports two `SCStream` investigation entry points:
 
 - command:
   - `MacDisplayKitHost --experimental-screencapturekit-timing-display <displayID> --sample-duration <seconds> --json`
+  - `MacDisplayKitHost --experimental-screencapturekit-timing-display <displayID> --sample-duration <seconds> --with-metal-stimulus --json`
+  - `MacDisplayKitHost --experimental-screencapturekit-proxy-handshake-display <displayID> --sample-duration <seconds> --json`
 - output includes:
   - sample buffer arrival delta histogram
   - sample buffer presentation delta histogram
   - unique IOSurface count
   - consecutive IOSurface reuse count
   - IOSurface use-count histogram
+
+Interpretation of the two entry points:
+
+- the timing trace is intentionally public-only and measures the delivery behavior visible through `stream:didOutputSampleBuffer:ofType:`
+- the proxy-handshake trace enables private queue tracing and queue-object introspection around the same `SCStream` start path
 
 Important harness bug that was fixed:
 
@@ -183,6 +190,13 @@ The host now supports a full-screen Metal stimulus window during the public timi
 - command:
   - `MacDisplayKitHost --experimental-screencapturekit-timing-display <displayID> --sample-duration <seconds> --with-metal-stimulus --json`
 
+The stimulus itself is intentionally simple:
+
+- a borderless full-screen `MTKView`
+- preferred `120 fps`
+- animated clear-color only
+- no extra compositing or scene complexity beyond forcing visible continuous motion
+
 Recent `3`-second comparison on display `2`:
 
 #### Idle trace
@@ -230,7 +244,7 @@ Interpretation:
 - this is not likely the intended fast path
 - a stream/proxy/session precondition is probably missing
 
-### Proxy and queue tracing
+### Proxy handshake and private-queue tracing
 
 The host also traces internal queue handoff behavior around `SCStream`.
 
@@ -243,6 +257,33 @@ Observed:
   - `IOSurfaceReceiver`
 - video queue setup is the critical path
 - timing of `IOSurfaceReceiver` consumption matters
+
+The current host-only proxy trace records:
+
+- `SCRemoteQueueXPCObject` setup and `queueType` changes
+- captured replayd queue payloads, including:
+  - shared memory region
+  - queue offset
+  - send/recv fds
+  - `IOSurfaceReceiver`
+- `SCRemoteQueue_CreateReceiverQueue` wrapper attach results
+- `FigRemoteQueueReceiver` attach results
+- delivery-comparison fields:
+  - `firstPrivateQueueSource`
+  - `firstPrivateQueueTimestampNanos`
+  - `firstPublicSampleTimestampNanos`
+  - `privateQueueLeadMilliseconds`
+  - `surfacePointerMatched`
+
+Current important caveat:
+
+- the host intentionally skips `stopCaptureWithCompletionHandler:` in this trace because the stop path currently triggers an `RPDaemonProxy` `NSXPCEncoder` exception
+
+Current important failure mode:
+
+- enabling the current consuming private queue probes can leave `sampleBufferEventCount=0`
+- in that same state, the post-start `videoQueueEntry` often shows `IOSurfaceReceiver` as `(consumed)`
+- current interpretation: the active probe path is stealing the receive right before public `SCStream` sample delivery begins
 
 This line of work remains useful for finding a lower-level capture consumer, but it is not yet a performance path by itself.
 
