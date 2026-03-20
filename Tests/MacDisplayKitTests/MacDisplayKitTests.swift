@@ -362,6 +362,9 @@ final class MacDisplayKitTests: XCTestCase {
                         "firstPublicSampleLastVideoEventKind=stream-post-start-remote-video-state",
                         "firstPublicSampleInterveningEventKinds=[\"stream-start-remote-audio-receive-queue\",\"stream-start-remote-microphone-receive-queue\"]",
                         "videoQueueWrapperOriginalInvokeSymbol=__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke",
+                        "videoQueueWrapperOriginalInvokeImagePath=/System/Library/Frameworks/CoreMedia.framework/CoreMedia",
+                        "videoReceiveQueuePrimaryBlockCaptureSlot32PointeeWord0ImagePath=/System/Library/Frameworks/CoreMedia.framework/CoreMedia",
+                        "videoReceiveQueuePrimaryBlockCaptureSlot32PointeeBlockInvokeImagePath=/System/Library/Frameworks/ScreenCaptureKit.framework/Versions/A/ScreenCaptureKit",
                         "lastCollectStreamDataExitLeadMilliseconds=<null>"
                     ]
                 ]
@@ -373,6 +376,9 @@ final class MacDisplayKitTests: XCTestCase {
                 "firstPublicSampleLastVideoEventKind=stream-post-start-remote-video-state",
                 "firstPublicSampleInterveningEventKinds=[\"stream-start-remote-audio-receive-queue\",\"stream-start-remote-microphone-receive-queue\"]",
                 "videoQueueWrapperOriginalInvokeSymbol=__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke",
+                "videoQueueWrapperOriginalInvokeImagePath=/System/Library/Frameworks/CoreMedia.framework/CoreMedia",
+                "videoReceiveQueuePrimaryBlockCaptureSlot32PointeeWord0ImagePath=/System/Library/Frameworks/CoreMedia.framework/CoreMedia",
+                "videoReceiveQueuePrimaryBlockCaptureSlot32PointeeBlockInvokeImagePath=/System/Library/Frameworks/ScreenCaptureKit.framework/Versions/A/ScreenCaptureKit",
                 "lastCollectStreamDataExitLeadMilliseconds=<null>",
                 "sampleBufferArrivalDelta120HzEquivalentCount=35",
                 "sampleBufferArrivalCadenceClassification=coalesced-or-mixed",
@@ -416,6 +422,9 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertTrue(trace.steps[2].notes.contains("firstPublicSampleLastVideoEventKind=stream-post-start-remote-video-state"))
         XCTAssertTrue(trace.steps[2].notes.contains("firstPublicSampleInterveningEventKinds=[\"stream-start-remote-audio-receive-queue\",\"stream-start-remote-microphone-receive-queue\"]"))
         XCTAssertTrue(trace.steps[2].notes.contains("videoQueueWrapperOriginalInvokeSymbol=__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke"))
+        XCTAssertTrue(trace.steps[2].notes.contains("videoQueueWrapperOriginalInvokeImagePath=/System/Library/Frameworks/CoreMedia.framework/CoreMedia"))
+        XCTAssertTrue(trace.steps[2].notes.contains("videoReceiveQueuePrimaryBlockCaptureSlot32PointeeWord0ImagePath=/System/Library/Frameworks/CoreMedia.framework/CoreMedia"))
+        XCTAssertTrue(trace.steps[2].notes.contains("videoReceiveQueuePrimaryBlockCaptureSlot32PointeeBlockInvokeImagePath=/System/Library/Frameworks/ScreenCaptureKit.framework/Versions/A/ScreenCaptureKit"))
         XCTAssertTrue(trace.steps[2].notes.contains("lastCollectStreamDataExitLeadMilliseconds=<null>"))
         XCTAssertEqual(
             trace.notes,
@@ -426,6 +435,9 @@ final class MacDisplayKitTests: XCTestCase {
                 "firstPublicSampleLastVideoEventKind=stream-post-start-remote-video-state",
                 "firstPublicSampleInterveningEventKinds=[\"stream-start-remote-audio-receive-queue\",\"stream-start-remote-microphone-receive-queue\"]",
                 "videoQueueWrapperOriginalInvokeSymbol=__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke",
+                "videoQueueWrapperOriginalInvokeImagePath=/System/Library/Frameworks/CoreMedia.framework/CoreMedia",
+                "videoReceiveQueuePrimaryBlockCaptureSlot32PointeeWord0ImagePath=/System/Library/Frameworks/CoreMedia.framework/CoreMedia",
+                "videoReceiveQueuePrimaryBlockCaptureSlot32PointeeBlockInvokeImagePath=/System/Library/Frameworks/ScreenCaptureKit.framework/Versions/A/ScreenCaptureKit",
                 "lastCollectStreamDataExitLeadMilliseconds=<null>",
                 "sampleBufferArrivalDelta120HzEquivalentCount=35",
                 "sampleBufferArrivalCadenceClassification=coalesced-or-mixed",

@@ -668,11 +668,24 @@ The current best lower-level model is now:
   - `videoQueueWrapperInstalledOffset=40`
 - the block currently patched at wrapper offset `40` originally points at:
   - `videoQueueWrapperOriginalInvokeSymbol=__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke`
+  - `videoQueueWrapperOriginalInvokeImagePath=/System/Library/PrivateFrameworks/CMCapture.framework/Versions/A/CMCapture`
+- wrapper capture slot `32` is not an opaque struct after all; it is another `48`-byte malloc block:
+  - `videoReceiveQueuePrimaryBlockCaptureSlot32PointeeMallocSize=48`
+  - `videoReceiveQueuePrimaryBlockCaptureSlot32PointeeWord0Symbol=_NSConcreteMallocBlock`
+  - `videoReceiveQueuePrimaryBlockCaptureSlot32PointeeWord0ImagePath=/usr/lib/system/libsystem_blocks.dylib`
+- that nested block resolves to ScreenCaptureKit's own local video receive setup:
+  - `videoReceiveQueuePrimaryBlockCaptureSlot32PointeeBlockInvokeSymbol=__59-[SCStream(SCContentSharing) startRemoteVideoReceiveQueue:]_block_invoke`
+  - `videoReceiveQueuePrimaryBlockCaptureSlot32PointeeBlockInvokeImagePath=/System/Library/Frameworks/ScreenCaptureKit.framework/Versions/A/ScreenCaptureKit`
 - `collectStreamData` does not appear to be the missing hot gate immediately before the first local drain callback:
   - `lastCollectStreamDataEnterLeadMilliseconds=<null>`
   - `lastCollectStreamDataExitLeadMilliseconds=<null>`
+- a first attempt to interpose that nested block at wrapper-install time did not fire:
+  - `videoQueueNestedBlockCallbackEventCount=0`
+  - `videoQueueNestedBlockOriginalInvokeSymbol=<null>`
+  - `firstVideoQueueNestedBlockCallbackTimestampNanos=<null>`
+- this suggests the nested `startRemoteVideoReceiveQueue:` block is discoverable in passive snapshots, but not yet stable/live at the exact moment the wrapper hook is installed
 - this shifts the next remaining ceiling from generic `collectStreamData` timing to the `FigRemoteOperationReceiverCreateMessageReceiver` path that owns the original video wrapper callback
 - the next most promising technical target is now the local video receive path around:
   - `__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke`
-  - the code path that allocates or populates the wrapper capture slot at offset `32`
-  - `SCStream startRemoteVideoReceiveQueue:`
+  - the code path that allocates or late-populates the wrapper capture slot at offset `32`
+  - `__59-[SCStream(SCContentSharing) startRemoteVideoReceiveQueue:]_block_invoke`
