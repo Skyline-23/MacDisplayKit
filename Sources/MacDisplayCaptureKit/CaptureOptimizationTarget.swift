@@ -100,7 +100,7 @@ public enum MDKCaptureOptimizationTargets {
             height: 2160,
             frameRate: 120,
             dynamicRangeMode: .hdrCanonical,
-            recommendedBackend: .cgDisplayStream,
+            recommendedBackend: .avFoundation,
             acceptanceThresholds: MDKCaptureBenchmarkThresholds(
                 minimumObservedFrameRateRatio: 0.90,
                 minimumDeliveryRatio: 0.92,
@@ -108,7 +108,7 @@ public enum MDKCaptureOptimizationTargets {
             ),
             notes: [
                 "Primary performance target for 4K HDR 120 capture.",
-                "Prefer CGDisplayStream first when validating the primary native capture backend."
+                "Prefer AVFoundation first when validating the primary native capture backend."
             ]
         )
     }

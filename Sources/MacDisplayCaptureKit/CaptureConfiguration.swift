@@ -4,6 +4,15 @@ import Foundation
 public enum MDKCaptureBackend: Int, Sendable {
     case avFoundation = 0
     case cgDisplayStream = 1
+
+    var displayName: String {
+        switch self {
+        case .avFoundation:
+            return "AVFoundation"
+        case .cgDisplayStream:
+            return "CGDisplayStream"
+        }
+    }
 }
 
 @objc

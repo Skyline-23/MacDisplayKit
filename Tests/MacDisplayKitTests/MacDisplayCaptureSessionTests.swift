@@ -1,5 +1,7 @@
 import XCTest
+import CoreMedia
 @testable import MacDisplayKit
+@testable import MacDisplayCaptureKit
 
 final class MacDisplayCaptureSessionTests: XCTestCase {
     func testFactoryCreatesCGDisplayStreamSession() throws {
@@ -36,6 +38,40 @@ final class MacDisplayCaptureSessionTests: XCTestCase {
         XCTAssertEqual(session.backend, .avFoundation)
         XCTAssertFalse(session.isRunning)
         XCTAssertEqual(session.statistics, .zero)
+    }
+
+    func testAVFoundationScreenInputConfigurationDisablesCursorAndMouseClickHighlights() {
+        let configuration = MDKCaptureConfiguration(
+            displayID: 77,
+            width: 3840,
+            height: 2160,
+            frameRate: 120,
+            pixelFormat: 0x78343230,
+            backend: .avFoundation,
+            dynamicRangeMode: .hdrCanonical
+        )
+
+        let screenInputConfiguration = makeMDKAVFoundationScreenInputConfiguration(for: configuration)
+
+        XCTAssertEqual(screenInputConfiguration.minFrameDuration, CMTime.zero)
+        XCTAssertFalse(screenInputConfiguration.capturesCursor)
+        XCTAssertFalse(screenInputConfiguration.capturesMouseClicks)
+    }
+
+    func testAVFoundationScreenInputConfigurationUsesExplicitFrameDurationAtSixtyFPSOrLower() {
+        let configuration = MDKCaptureConfiguration(
+            displayID: 77,
+            width: 1920,
+            height: 1080,
+            frameRate: 60,
+            pixelFormat: 0x42475241,
+            backend: .avFoundation,
+            dynamicRangeMode: .sdr
+        )
+
+        let screenInputConfiguration = makeMDKAVFoundationScreenInputConfiguration(for: configuration)
+
+        XCTAssertEqual(screenInputConfiguration.minFrameDuration, CMTime(value: 1, timescale: 60))
     }
 
     func testStopIsSafeBeforeStart() throws {

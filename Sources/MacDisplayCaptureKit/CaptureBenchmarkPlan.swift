@@ -74,6 +74,14 @@ public enum MDKCaptureBenchmarkPlanner {
         availability: MDKCaptureBackendAvailability
     ) -> MDKCaptureBenchmarkPlan {
         let screenCapturePermissionReason = "Screen Recording permission is not granted for this host process."
+        func availableReason(for backend: MDKCaptureBackend) -> String {
+            if backend == target.recommendedBackend {
+                return "\(backend.displayName) capture is available and should be benchmarked first as the default native capture backend."
+            }
+
+            return "\(backend.displayName) capture is available and should be benchmarked as an alternate native capture backend."
+        }
+
         let candidatesByBackend: [MDKCaptureBackend: MDKCaptureBackendCandidate] = [
             .avFoundation: MDKCaptureBackendCandidate(
                 backend: .avFoundation,
@@ -81,7 +89,7 @@ public enum MDKCaptureBenchmarkPlanner {
                 reason: !availability.screenCaptureAccessAuthorized
                     ? screenCapturePermissionReason
                     : availability.avFoundationAvailable
-                    ? "Legacy AVFoundation capture is available and remains the lowest-risk native fallback."
+                    ? availableReason(for: .avFoundation)
                     : "Legacy AVFoundation capture is not available for this display."
             ),
             .cgDisplayStream: MDKCaptureBackendCandidate(
@@ -90,7 +98,7 @@ public enum MDKCaptureBenchmarkPlanner {
                 reason: !availability.screenCaptureAccessAuthorized
                     ? screenCapturePermissionReason
                     : availability.cgDisplayStreamAvailable
-                    ? "CGDisplayStream capture is available and should be benchmarked first as the primary native capture backend."
+                    ? availableReason(for: .cgDisplayStream)
                     : "CGDisplayStream backend is not available for this display yet."
             ),
         ]

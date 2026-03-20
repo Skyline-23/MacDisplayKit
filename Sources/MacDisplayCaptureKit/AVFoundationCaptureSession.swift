@@ -16,6 +16,22 @@ private func MDKFrameDuration(for frameRate: Int) -> CMTime {
     return CMTime(value: 1, timescale: CMTimeScale(frameRate))
 }
 
+struct MDKAVFoundationScreenInputConfiguration: Equatable {
+    let minFrameDuration: CMTime
+    let capturesCursor: Bool
+    let capturesMouseClicks: Bool
+}
+
+func makeMDKAVFoundationScreenInputConfiguration(
+    for configuration: MDKCaptureConfiguration
+) -> MDKAVFoundationScreenInputConfiguration {
+    MDKAVFoundationScreenInputConfiguration(
+        minFrameDuration: MDKFrameDuration(for: configuration.frameRate),
+        capturesCursor: false,
+        capturesMouseClicks: false
+    )
+}
+
 final class MDKAVFoundationCaptureDriver: NSObject, MDKCaptureSessionDriver {
     let backend: MDKCaptureBackend = .avFoundation
 
@@ -63,7 +79,10 @@ final class MDKAVFoundationCaptureDriver: NSObject, MDKCaptureSessionDriver {
         guard let screenInput = AVCaptureScreenInput(displayID: CGDirectDisplayID(configuration.displayID)) else {
             throw MDKCaptureSessionError.streamCreationFailed(displayID: configuration.displayID)
         }
-        screenInput.minFrameDuration = MDKFrameDuration(for: configuration.frameRate)
+        let screenInputConfiguration = makeMDKAVFoundationScreenInputConfiguration(for: configuration)
+        screenInput.minFrameDuration = screenInputConfiguration.minFrameDuration
+        screenInput.capturesCursor = screenInputConfiguration.capturesCursor
+        screenInput.capturesMouseClicks = screenInputConfiguration.capturesMouseClicks
 
         let session = AVCaptureSession()
         guard session.canAddInput(screenInput) else {

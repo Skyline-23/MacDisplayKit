@@ -28,7 +28,7 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(target.height, 2160)
         XCTAssertEqual(target.frameRate, 120)
         XCTAssertEqual(target.dynamicRangeMode, .hdrCanonical)
-        XCTAssertEqual(target.recommendedBackend, .cgDisplayStream)
+        XCTAssertEqual(target.recommendedBackend, .avFoundation)
         XCTAssertFalse(target.requiresVirtualDisplay)
     }
 
@@ -53,7 +53,7 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(configuration.height, 2160)
         XCTAssertEqual(configuration.frameRate, 120)
         XCTAssertEqual(configuration.pixelFormat, kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
-        XCTAssertEqual(configuration.backend, .cgDisplayStream)
+        XCTAssertEqual(configuration.backend, .avFoundation)
         XCTAssertEqual(configuration.dynamicRangeMode, .hdrCanonical)
     }
 
@@ -80,15 +80,15 @@ final class MacDisplayKitTests: XCTestCase {
 
         XCTAssertEqual(plan.intent, .validateDefaultBackend)
         XCTAssertTrue(plan.screenCaptureAccessAuthorized)
-        XCTAssertEqual(plan.candidates.map(\.backend), [.cgDisplayStream, .avFoundation])
-        XCTAssertEqual(plan.preferredCandidate?.backend, .cgDisplayStream)
+        XCTAssertEqual(plan.candidates.map(\.backend), [.avFoundation, .cgDisplayStream])
+        XCTAssertEqual(plan.preferredCandidate?.backend, .avFoundation)
         XCTAssertEqual(
             plan.candidates.first?.reason,
-            "CGDisplayStream capture is available and should be benchmarked first as the primary native capture backend."
+            "AVFoundation capture is available and should be benchmarked first as the default native capture backend."
         )
         XCTAssertEqual(
             plan.candidates.last?.reason,
-            "Legacy AVFoundation capture is available and remains the lowest-risk native fallback."
+            "CGDisplayStream capture is available and should be benchmarked as an alternate native capture backend."
         )
     }
 }
