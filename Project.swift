@@ -189,5 +189,18 @@ let project = Project(
                 .target(name: "MacDisplayKit")
             ]
         )
+    ],
+    schemes: [
+        .scheme(
+            name: "MacDisplayKitTests",
+            shared: true,
+            buildAction: .buildAction(targets: [
+                "MacDisplayKit",
+                "MacDisplayKitTests"
+            ]),
+            testAction: .targets([
+                .testableTarget(target: "MacDisplayKitTests")
+            ])
+        )
     ]
 )

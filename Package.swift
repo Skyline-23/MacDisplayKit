@@ -93,5 +93,6 @@ let package = Package(
             dependencies: ["MacDisplayKit"],
             path: "Tests/MacDisplayKitTests"
         )
-    ]
+    ],
+    cxxLanguageStandard: .gnucxx2b
 )

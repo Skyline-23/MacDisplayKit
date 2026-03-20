@@ -1,3 +1,3 @@
 #import <Foundation/Foundation.h>
 
-#import <MacDisplayKitObjCShim/MDKObjCShim.h>
+#import "MDKObjCShim.h"
