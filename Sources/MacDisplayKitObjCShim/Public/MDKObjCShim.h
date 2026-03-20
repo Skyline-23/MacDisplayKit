@@ -65,6 +65,9 @@ FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoTraceScre
     NSTimeInterval timeout,
     NSError * _Nullable * _Nullable error
 );
+FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoInspectScreenCaptureKitRuntime(
+    NSError * _Nullable * _Nullable error
+);
 FOUNDATION_EXPORT NSArray<NSString *> *MDKShimMicrophoneNames(void);
 FOUNDATION_EXPORT NSString * _Nullable MDKShimCreateVirtualDisplay(
     NSString *clientIdentifier,

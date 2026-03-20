@@ -393,6 +393,68 @@ Interpretation:
 - the next useful split is no longer “can we keep public samples alive,” but “which earlier queue/setup transition best predicts the first healthy sample”
 - in the current trace, the first public sample lands about `16.9 ms` after the last video-path event, with audio and microphone remote-queue startup noise interleaved in between
 
+### Runtime inventory after forcing ScreenCaptureKit into the global runtime
+
+The host now exposes a runtime inventory command:
+
+- command:
+  - `MacDisplayKitHost --experimental-screencapturekit-runtime-inventory --json`
+
+Recent sample after forcing `ScreenCaptureKit.framework` into the global runtime with `RTLD_GLOBAL`:
+
+- loaded classes:
+  - `SCStream`
+  - `SCStreamManager`
+  - `SCRemoteQueueXPCObject`
+  - `RPDaemonProxy`
+  - `BWRemoteQueueSinkNode`
+  - `FigCaptureRemoteQueueSinkPipeline`
+- present private C symbols:
+  - `SCRemoteQueue_CreateReceiverQueue`
+  - `SCRemoteQueue_UpdateReceiverQueue`
+  - `SCRemoteQueue_Destroy`
+- absent guessed queue-consumption helpers:
+  - `SCRemoteQueue_Dequeue`
+  - `SCRemoteQueue_Drain`
+  - `SCRemoteQueue_Resume`
+  - `SCRemoteQueue_Start`
+  - `SCRemoteQueue_StartReceiving`
+- present CMCapture helpers:
+  - `FigRemoteQueueReceiverCreateFromXPCObject`
+  - `FigRemoteQueueReceiverDequeue`
+  - `FigRemoteQueueReceiverSetHandler`
+  - `FigRemoteQueueReceiverUnsetHandler`
+
+Interpretation:
+
+- the runtime inventory is now trustworthy enough to drive selector choice for new swizzles
+- the obvious missing piece is still the actual on-path queue-consumption handoff
+- there is no exposed private C “resume/start/drain” helper to call directly
+
+### Lower-path reality check on the healthy public sample path
+
+Recent passive-handshake sample on display `2`:
+
+- `sampleBufferEventCount=53`
+- `rpIOSurfaceEventCount=0`
+- `captureHandlerSampleEventCount=0`
+- `contentStreamEventCount=0`
+- `surfaceTransportEventCount=0`
+- `frameReceiverEventCount=0`
+- `remoteQueueSinkEventCount=0`
+- `remoteQueueObjectEventCount=3`
+- `BWRemoteQueueSinkNode` and `FigCaptureRemoteQueueSinkPipeline` were both present in the runtime, but neither emitted events on this healthy path
+
+Interpretation:
+
+- the currently healthy public `SCStream` path is not going through the lower candidates we first expected
+- `BWRemoteQueueSinkNode`, `RPIOSurface`, `CAContentStream`, `IOSurfaceRemoteRemoteClient`, and `CMCaptureFrameReceiver` are currently dead ends for this trace
+- the best remaining on-path lower-level target is the private `videoReceiveQueueWrapper` callback block discovered inside `SCStream` state
+- current wrapper signature in the video queue snapshot:
+  - `v28@?0i8^{FigRemoteQueueMessage=^v^{__IOSurface}i}12^v20`
+- next step:
+  - instrument the `videoReceiveQueueWrapper` callback without consuming the queue so cadence can be compared directly against the public sample callback
+
 ## External clues worth keeping in mind
 
 - Apple Developer Forums:

@@ -127,6 +127,10 @@ static void *MDKLookupCaptureSymbolInImage(const char *imagePath, const char *sy
     return dlsym(handle, symbolName);
 }
 
+static void MDKEnsureCaptureImageLoaded(const char *imagePath) {
+    dlopen(imagePath, RTLD_NOW | RTLD_GLOBAL);
+}
+
 static void *MDKLookupCaptureSymbol(const char *symbolName) {
     return MDKLookupCaptureSymbolInImage(
         "/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight",
@@ -146,6 +150,77 @@ static void *MDKLookupCMCaptureSymbol(const char *symbolName) {
         "/System/Library/PrivateFrameworks/CMCapture.framework/CMCapture",
         symbolName
     );
+}
+
+static void MDKAppendFilteredMethodNamesForClassToSet(Class cls, NSMutableSet<NSString *> *names) {
+    if (cls == Nil) {
+        return;
+    }
+
+    static NSArray<NSString *> *keywords;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        keywords = @[
+            @"queue",
+            @"remote",
+            @"sample",
+            @"surface",
+            @"capture",
+            @"stream",
+            @"frame",
+            @"receive",
+            @"video",
+            @"audio",
+        ];
+    });
+
+    unsigned int methodCount = 0;
+    Method *methods = class_copyMethodList(cls, &methodCount);
+    for (unsigned int index = 0; index < methodCount; index += 1) {
+        SEL selector = method_getName(methods[index]);
+        if (selector == nullptr) {
+            continue;
+        }
+
+        NSString *selectorName = [NSString stringWithUTF8String:sel_getName(selector)];
+        NSString *lowercaseSelectorName = selectorName.lowercaseString;
+        for (NSString *keyword in keywords) {
+            if ([lowercaseSelectorName containsString:keyword]) {
+                [names addObject:selectorName];
+                break;
+            }
+        }
+    }
+    free(methods);
+}
+
+static NSArray<NSString *> *MDKFilteredMethodNamesForRuntimeClass(NSString *className) {
+    if (className.length == 0) {
+        return @[];
+    }
+
+    NSMutableSet<NSString *> *methodNames = [NSMutableSet set];
+    Class cls = NSClassFromString(className);
+    MDKAppendFilteredMethodNamesForClassToSet(cls, methodNames);
+    if (cls != Nil) {
+        MDKAppendFilteredMethodNamesForClassToSet(object_getClass(cls), methodNames);
+    }
+
+    return [methodNames.allObjects sortedArrayUsingSelector:@selector(compare:)];
+}
+
+static NSDictionary<NSString *, NSNumber *> *MDKRuntimeSymbolAvailabilityForNames(
+    NSArray<NSString *> *symbolNames,
+    BOOL useCMCapture
+) {
+    NSMutableDictionary<NSString *, NSNumber *> *availability = [NSMutableDictionary dictionaryWithCapacity:symbolNames.count];
+    for (NSString *symbolName in symbolNames) {
+        const char *cSymbolName = symbolName.UTF8String;
+        void *symbol = useCMCapture ? MDKLookupCMCaptureSymbol(cSymbolName) : MDKLookupScreenCaptureKitSymbol(cSymbolName);
+        availability[symbolName] = @(symbol != nullptr);
+    }
+
+    return availability;
 }
 
 static std::uint32_t MDKMainConnectionID(void) {
@@ -288,6 +363,9 @@ static NSDictionary<NSString *, id> *MDKCopySCKRemoteQueueEntrySummaryForType(un
 static NSDictionary<NSString *, id> *MDKCopySCKRemoteQueueEntryForType(unsigned char queueType);
 static void MDKUpdateSCKSampleBufferDiagnostics(CMSampleBufferRef sampleBuffer);
 static BOOL MDKPrimeSCRemoteQueueWrapperIfPossible(id remoteQueue);
+static NSString *MDKBucketMilliseconds(double milliseconds);
+static void MDKIncrementMutableHistogram(NSMutableDictionary<NSString *, NSNumber *> *histogram, NSString *bucket);
+static NSString *MDKClassifyCadenceHistogram(NSDictionary<NSString *, NSNumber *> *histogram, NSUInteger deltaCount);
 
 @implementation MDKShimStreamOutputCollector
 
@@ -1065,6 +1143,8 @@ static BOOL MDKPrimeSCRemoteQueueWrapperIfPossible(id remoteQueue) {
     state[@"createSymbolPresent"] = @(createSymbol != nullptr);
     state[@"createStatus"] = @NO;
     state[@"callbackCount"] = @0;
+    state[@"callbackDeltaCount"] = @0;
+    state[@"callbackDeltaHistogram"] = [NSMutableDictionary dictionary];
     state[@"wrapperCreated"] = @NO;
 
     if (createSymbol == nullptr || remoteQueue == nil) {
@@ -1100,7 +1180,20 @@ static BOOL MDKPrimeSCRemoteQueueWrapperIfPossible(id remoteQueue) {
                     callbackCount += 1;
                     MDKActiveSCRemoteQueueWrapperState[@"callbackCount"] = @(callbackCount);
                     MDKActiveSCRemoteQueueWrapperState[@"callbackStatus"] = @(status);
-                    MDKActiveSCRemoteQueueWrapperState[@"callbackTimestampNanos"] = @(MDKCurrentTraceTimestampNanos());
+                    const uint64_t callbackTimestampNanos = MDKCurrentTraceTimestampNanos();
+                    NSNumber *lastCallbackTimestampNanos = MDKActiveSCRemoteQueueWrapperState[@"lastCallbackTimestampNanos"];
+                    if (lastCallbackTimestampNanos != nil) {
+                        const double callbackDeltaMilliseconds =
+                            static_cast<double>(callbackTimestampNanos - lastCallbackTimestampNanos.unsignedLongLongValue) / 1000000.0;
+                        MDKIncrementMutableHistogram(
+                            MDKActiveSCRemoteQueueWrapperState[@"callbackDeltaHistogram"],
+                            MDKBucketMilliseconds(callbackDeltaMilliseconds)
+                        );
+                        MDKActiveSCRemoteQueueWrapperState[@"callbackDeltaCount"] =
+                            @([MDKActiveSCRemoteQueueWrapperState[@"callbackDeltaCount"] unsignedIntegerValue] + 1);
+                    }
+                    MDKActiveSCRemoteQueueWrapperState[@"callbackTimestampNanos"] = @(callbackTimestampNanos);
+                    MDKActiveSCRemoteQueueWrapperState[@"lastCallbackTimestampNanos"] = @(callbackTimestampNanos);
                     MDKActiveSCRemoteQueueWrapperState[@"callbackContext"] = MDKSummarizePointerValue(context);
                     if (item != nullptr) {
                         MDKActiveSCRemoteQueueWrapperState[@"callbackMessageType"] = @(item->messageType);
@@ -1163,6 +1256,8 @@ static void MDKPrimeFigRemoteQueueReceiverIfPossible(id remoteQueue) {
     state[@"createStatus"] = @(createStatus);
     state[@"receiverCreated"] = @(receiver != nullptr);
     state[@"callbackCount"] = @0;
+    state[@"callbackDeltaCount"] = @0;
+    state[@"callbackDeltaHistogram"] = [NSMutableDictionary dictionary];
 
     if (createStatus == 0 && receiver != nullptr) {
         dispatch_queue_t queue = dispatch_queue_create(
@@ -1177,7 +1272,20 @@ static void MDKPrimeFigRemoteQueueReceiverIfPossible(id remoteQueue) {
                     callbackCount += 1;
                     MDKActiveFigRemoteQueueReceiverState[@"callbackCount"] = @(callbackCount);
                     MDKActiveFigRemoteQueueReceiverState[@"callbackStatus"] = @(status);
-                    MDKActiveFigRemoteQueueReceiverState[@"callbackTimestampNanos"] = @(MDKCurrentTraceTimestampNanos());
+                    const uint64_t callbackTimestampNanos = MDKCurrentTraceTimestampNanos();
+                    NSNumber *lastCallbackTimestampNanos = MDKActiveFigRemoteQueueReceiverState[@"lastCallbackTimestampNanos"];
+                    if (lastCallbackTimestampNanos != nil) {
+                        const double callbackDeltaMilliseconds =
+                            static_cast<double>(callbackTimestampNanos - lastCallbackTimestampNanos.unsignedLongLongValue) / 1000000.0;
+                        MDKIncrementMutableHistogram(
+                            MDKActiveFigRemoteQueueReceiverState[@"callbackDeltaHistogram"],
+                            MDKBucketMilliseconds(callbackDeltaMilliseconds)
+                        );
+                        MDKActiveFigRemoteQueueReceiverState[@"callbackDeltaCount"] =
+                            @([MDKActiveFigRemoteQueueReceiverState[@"callbackDeltaCount"] unsignedIntegerValue] + 1);
+                    }
+                    MDKActiveFigRemoteQueueReceiverState[@"callbackTimestampNanos"] = @(callbackTimestampNanos);
+                    MDKActiveFigRemoteQueueReceiverState[@"lastCallbackTimestampNanos"] = @(callbackTimestampNanos);
                     MDKActiveFigRemoteQueueReceiverState[@"callbackContext"] = MDKSummarizePointerValue(context);
                     if (item != nullptr) {
                         MDKActiveFigRemoteQueueReceiverState[@"callbackMessageType"] = @(item->messageType);
@@ -1299,6 +1407,58 @@ static void MDKIncrementMutableHistogram(NSMutableDictionary<NSString *, NSNumbe
     }
 
     histogram[bucket] = @([histogram[bucket] unsignedIntegerValue] + 1);
+}
+
+static NSDictionary<NSString *, id> *MDKCopyTraceEventCadenceSummary(
+    NSArray<NSDictionary<NSString *, id> *> *events,
+    NSSet<NSString *> *eventKinds
+) {
+    NSMutableDictionary<NSString *, NSNumber *> *histogram = [NSMutableDictionary dictionary];
+    NSUInteger eventCount = 0;
+    NSUInteger deltaCount = 0;
+    uint64_t lastTimestampNanos = 0;
+    BOOL hasLastTimestamp = NO;
+    NSNumber *minDeltaMilliseconds = nil;
+    NSNumber *maxDeltaMilliseconds = nil;
+
+    for (NSDictionary<NSString *, id> *event in events) {
+        NSString *kind = [event[@"kind"] isKindOfClass:[NSString class]] ? event[@"kind"] : nil;
+        NSNumber *timestampNanos = [event[@"timestampNanos"] isKindOfClass:[NSNumber class]] ? event[@"timestampNanos"] : nil;
+        if (kind == nil || timestampNanos == nil || ![eventKinds containsObject:kind]) {
+            continue;
+        }
+
+        eventCount += 1;
+        if (hasLastTimestamp) {
+            const double deltaMilliseconds =
+                static_cast<double>(timestampNanos.unsignedLongLongValue - lastTimestampNanos) / 1000000.0;
+            MDKIncrementMutableHistogram(histogram, MDKBucketMilliseconds(deltaMilliseconds));
+            deltaCount += 1;
+            if (minDeltaMilliseconds == nil || deltaMilliseconds < minDeltaMilliseconds.doubleValue) {
+                minDeltaMilliseconds = @(deltaMilliseconds);
+            }
+            if (maxDeltaMilliseconds == nil || deltaMilliseconds > maxDeltaMilliseconds.doubleValue) {
+                maxDeltaMilliseconds = @(deltaMilliseconds);
+            }
+        }
+
+        lastTimestampNanos = timestampNanos.unsignedLongLongValue;
+        hasLastTimestamp = YES;
+    }
+
+    NSDictionary<NSString *, NSNumber *> *immutableHistogram = [histogram copy];
+    return @{
+        @"eventCount": @(eventCount),
+        @"deltaCount": @(deltaCount),
+        @"deltaHistogram": immutableHistogram,
+        @"deltaMinMilliseconds": minDeltaMilliseconds ?: [NSNull null],
+        @"deltaMaxMilliseconds": maxDeltaMilliseconds ?: [NSNull null],
+        @"delta120HzEquivalentCount": @(MDKHistogramCountInRange(immutableHistogram, 0.0, 10.0)),
+        @"deltaFastCount": @(MDKHistogramCountInRange(immutableHistogram, 0.0, 12.5)),
+        @"deltaSixtyLikeCount": @(MDKHistogramCountInRange(immutableHistogram, 12.5, 20.0)),
+        @"deltaLongGapCount": @(MDKHistogramCountInRange(immutableHistogram, 20.0, DBL_MAX)),
+        @"cadenceClassification": MDKClassifyCadenceHistogram(immutableHistogram, deltaCount),
+    };
 }
 
 static void MDKUpdateSCKSampleBufferDiagnostics(CMSampleBufferRef sampleBuffer) {
@@ -1706,7 +1866,7 @@ static void MDKRecordRPIOSurfaceEvent(NSString *kind, IOSurfaceRef surface) {
         if (MDKActiveSCKTraceState != nil) {
             NSUInteger eventCount = [MDKActiveSCKTraceState[@"rpIOSurfaceEventCount"] unsignedIntegerValue] + 1;
             MDKActiveSCKTraceState[@"rpIOSurfaceEventCount"] = @(eventCount);
-            shouldRecord = eventCount <= 6;
+            shouldRecord = eventCount <= 512;
         }
     }
     if (!shouldRecord) {
@@ -1727,7 +1887,7 @@ static void MDKRecordCaptureHandlerSampleEvent(NSString *kind, id sample, id tim
         if (MDKActiveSCKTraceState != nil) {
             NSUInteger eventCount = [MDKActiveSCKTraceState[@"captureHandlerSampleEventCount"] unsignedIntegerValue] + 1;
             MDKActiveSCKTraceState[@"captureHandlerSampleEventCount"] = @(eventCount);
-            shouldRecord = eventCount <= 6;
+            shouldRecord = eventCount <= 512;
         }
     }
     if (!shouldRecord) {
@@ -1749,7 +1909,7 @@ static void MDKRecordCAContentStreamEvent(NSString *kind, NSDictionary<NSString 
         if (MDKActiveSCKTraceState != nil) {
             NSUInteger eventCount = [MDKActiveSCKTraceState[@"contentStreamEventCount"] unsignedIntegerValue] + 1;
             MDKActiveSCKTraceState[@"contentStreamEventCount"] = @(eventCount);
-            shouldRecord = eventCount <= 6;
+            shouldRecord = eventCount <= 512;
         }
     }
     if (!shouldRecord) {
@@ -1797,7 +1957,7 @@ static void MDKRecordRemoteQueueSinkEvent(NSString *kind, NSDictionary<NSString 
         if (MDKActiveSCKTraceState != nil) {
             NSUInteger eventCount = [MDKActiveSCKTraceState[@"remoteQueueSinkEventCount"] unsignedIntegerValue] + 1;
             MDKActiveSCKTraceState[@"remoteQueueSinkEventCount"] = @(eventCount);
-            shouldRecord = eventCount <= 8;
+            shouldRecord = eventCount <= 512;
         }
     }
     if (!shouldRecord) {
@@ -2075,9 +2235,6 @@ static void MDKSwizzledStartRemoteVideoReceiveQueue(id self, SEL _cmd, id queue)
         }
         if (!wrapped) {
             wrapped = MDKPrimeSCRemoteQueueWrapperIfPossible(queue);
-        }
-        if (!wrapped) {
-            MDKPrimeFigRemoteQueueReceiverIfPossible(remoteQueueCandidate ?: queue);
         }
     }
 
@@ -2630,10 +2787,13 @@ static void MDKAttemptFigRemoteQueueReceiverProbeForCapturedVideoQueue(NSTimeInt
     int dequeueStatus = -1;
     NSDictionary<NSString *, id> *dequeuedSampleSummary = nil;
     if (createStatus == 0 && handlerStatus == 0 && receiver != nullptr && callbackSemaphore != nil) {
-        if ([probeState[@"callbackCount"] unsignedIntegerValue] == 0) {
+        const uint64_t deadlineNanos = MDKCurrentTraceTimestampNanos() + static_cast<uint64_t>(timeout * NSEC_PER_SEC);
+        while (MDKCurrentTraceTimestampNanos() < deadlineNanos) {
+            const uint64_t remainingNanos = deadlineNanos - MDKCurrentTraceTimestampNanos();
+            const int64_t sliceNanos = static_cast<int64_t>(std::min<uint64_t>(remainingNanos, 50 * NSEC_PER_MSEC));
             waitResult = dispatch_semaphore_wait(
                 callbackSemaphore,
-                dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(timeout * NSEC_PER_SEC))
+                dispatch_time(DISPATCH_TIME_NOW, sliceNanos)
             );
         }
 
@@ -2649,7 +2809,19 @@ static void MDKAttemptFigRemoteQueueReceiverProbeForCapturedVideoQueue(NSTimeInt
         if (unsetHandlerSymbol != nullptr) {
             unsetHandlerSymbol(receiver);
         }
+
+        @synchronized(MDKActiveSCKTraceLock) {
+            if (MDKActiveFigRemoteQueueReceiverState != nil) {
+                probeState = [MDKActiveFigRemoteQueueReceiverState mutableCopy];
+            }
+        }
     }
+
+    NSDictionary<NSString *, NSNumber *> *callbackDeltaHistogram =
+        [probeState[@"callbackDeltaHistogram"] isKindOfClass:[NSDictionary class]] ? probeState[@"callbackDeltaHistogram"] : nil;
+    const NSUInteger callbackDeltaCount = [probeState[@"callbackDeltaCount"] unsignedIntegerValue];
+    NSNumber *callback120HzEquivalentCount = @(MDKHistogramCountInRange(callbackDeltaHistogram, 0.0, 10.0));
+    NSString *callbackCadenceClassification = MDKClassifyCadenceHistogram(callbackDeltaHistogram, callbackDeltaCount);
 
     MDKRecordSCKTraceEvent(
         @"fig-remote-queue-receiver-probe",
@@ -2660,6 +2832,10 @@ static void MDKAttemptFigRemoteQueueReceiverProbeForCapturedVideoQueue(NSTimeInt
             @"callbackCount": probeState[@"callbackCount"] ?: @0,
             @"callbackObserved": @([probeState[@"callbackCount"] unsignedIntegerValue] > 0),
             @"callbackTimestampNanos": probeState[@"callbackTimestampNanos"] ?: [NSNull null],
+            @"callbackDeltaCount": @(callbackDeltaCount),
+            @"callbackDeltaHistogram": callbackDeltaHistogram ?: @{},
+            @"callback120HzEquivalentCount": callback120HzEquivalentCount,
+            @"callbackCadenceClassification": callbackCadenceClassification ?: [NSNull null],
             @"receiverCreated": @(receiver != nullptr),
             @"waitTimedOut": @(waitResult != 0),
             @"dequeueStatus": @(dequeueStatus),
@@ -2716,13 +2892,28 @@ static void MDKAttemptSCRemoteQueueWrapperProbeForCapturedVideoQueue(NSTimeInter
         updateStatus = updateSymbol(receiverQueue, wrapperQueue);
     }
 
-    if (createStatus && receiverQueue != nullptr && callbackSemaphore != nil &&
-        [probeState[@"callbackCount"] unsignedIntegerValue] == 0) {
-        waitResult = dispatch_semaphore_wait(
-            callbackSemaphore,
-            dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(timeout * NSEC_PER_SEC))
-        );
+    if (createStatus && receiverQueue != nullptr && callbackSemaphore != nil) {
+        const uint64_t deadlineNanos = MDKCurrentTraceTimestampNanos() + static_cast<uint64_t>(timeout * NSEC_PER_SEC);
+        while (MDKCurrentTraceTimestampNanos() < deadlineNanos) {
+            const uint64_t remainingNanos = deadlineNanos - MDKCurrentTraceTimestampNanos();
+            const int64_t sliceNanos = static_cast<int64_t>(std::min<uint64_t>(remainingNanos, 50 * NSEC_PER_MSEC));
+            waitResult = dispatch_semaphore_wait(
+                callbackSemaphore,
+                dispatch_time(DISPATCH_TIME_NOW, sliceNanos)
+            );
+        }
+
+        @synchronized(MDKActiveSCKTraceLock) {
+            if (MDKActiveSCRemoteQueueWrapperState != nil) {
+                probeState = [MDKActiveSCRemoteQueueWrapperState mutableCopy];
+            }
+        }
     }
+    NSDictionary<NSString *, NSNumber *> *callbackDeltaHistogram =
+        [probeState[@"callbackDeltaHistogram"] isKindOfClass:[NSDictionary class]] ? probeState[@"callbackDeltaHistogram"] : nil;
+    const NSUInteger callbackDeltaCount = [probeState[@"callbackDeltaCount"] unsignedIntegerValue];
+    NSNumber *callback120HzEquivalentCount = @(MDKHistogramCountInRange(callbackDeltaHistogram, 0.0, 10.0));
+    NSString *callbackCadenceClassification = MDKClassifyCadenceHistogram(callbackDeltaHistogram, callbackDeltaCount);
 
     MDKRecordSCKTraceEvent(
         @"sc-remote-queue-wrapper-probe",
@@ -2734,6 +2925,10 @@ static void MDKAttemptSCRemoteQueueWrapperProbeForCapturedVideoQueue(NSTimeInter
             @"callbackObserved": @([probeState[@"callbackCount"] unsignedIntegerValue] > 0),
             @"callbackStatus": probeState[@"callbackStatus"] ?: [NSNull null],
             @"callbackTimestampNanos": probeState[@"callbackTimestampNanos"] ?: [NSNull null],
+            @"callbackDeltaCount": @(callbackDeltaCount),
+            @"callbackDeltaHistogram": callbackDeltaHistogram ?: @{},
+            @"callback120HzEquivalentCount": callback120HzEquivalentCount,
+            @"callbackCadenceClassification": callbackCadenceClassification ?: [NSNull null],
             @"callbackMessageType": probeState[@"callbackMessageType"] ?: [NSNull null],
             @"callbackSurface": probeState[@"callbackSurface"] ?: [NSNull null],
             @"waitTimedOut": @(waitResult != 0),
@@ -3044,11 +3239,11 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     );
     if (includePrivateQueueProbes) {
         usleep(250 * 1000);
-    }
-    MDKRunCurrentRunLoopForDuration(timeout);
-    if (includePrivateQueueProbes) {
+        MDKRunCurrentRunLoopForDuration(std::min(timeout, 0.5));
         MDKAttemptSCRemoteQueueWrapperProbeForCapturedVideoQueue(timeout);
         MDKAttemptFigRemoteQueueReceiverProbeForCapturedVideoQueue(timeout);
+    } else {
+        MDKRunCurrentRunLoopForDuration(timeout);
     }
 
     MDKRecordSCKTraceEvent(
@@ -3697,6 +3892,10 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
                 [NSString stringWithFormat:@"callbackStatus=%@", MDKDescribeTraceValue(event[@"callbackStatus"])],
                 [NSString stringWithFormat:@"callbackMessageType=%@", MDKDescribeTraceValue(event[@"callbackMessageType"])],
                 [NSString stringWithFormat:@"callbackSurface=%@", MDKDescribeTraceValue(event[@"callbackSurface"])],
+                [NSString stringWithFormat:@"callbackDeltaCount=%@", MDKDescribeTraceValue(event[@"callbackDeltaCount"])],
+                [NSString stringWithFormat:@"callbackDeltaHistogram=%@", MDKDescribeTraceValue(event[@"callbackDeltaHistogram"])],
+                [NSString stringWithFormat:@"callback120HzEquivalentCount=%@", MDKDescribeTraceValue(event[@"callback120HzEquivalentCount"])],
+                [NSString stringWithFormat:@"callbackCadenceClassification=%@", MDKDescribeTraceValue(event[@"callbackCadenceClassification"])],
                 [NSString stringWithFormat:@"waitTimedOut=%@", MDKDescribeTraceValue(event[@"waitTimedOut"])],
                 [NSString stringWithFormat:@"dequeueStatus=%@", MDKDescribeTraceValue(event[@"dequeueStatus"])],
                 [NSString stringWithFormat:@"dequeuedSample=%@", MDKDescribeTraceValue(event[@"dequeuedSample"])],
@@ -3727,6 +3926,10 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
                 [NSString stringWithFormat:@"callbackTimestampNanos=%@", MDKDescribeTraceValue(event[@"callbackTimestampNanos"])],
                 [NSString stringWithFormat:@"callbackMessageType=%@", MDKDescribeTraceValue(event[@"callbackMessageType"])],
                 [NSString stringWithFormat:@"callbackSurface=%@", MDKDescribeTraceValue(event[@"callbackSurface"])],
+                [NSString stringWithFormat:@"callbackDeltaCount=%@", MDKDescribeTraceValue(event[@"callbackDeltaCount"])],
+                [NSString stringWithFormat:@"callbackDeltaHistogram=%@", MDKDescribeTraceValue(event[@"callbackDeltaHistogram"])],
+                [NSString stringWithFormat:@"callback120HzEquivalentCount=%@", MDKDescribeTraceValue(event[@"callback120HzEquivalentCount"])],
+                [NSString stringWithFormat:@"callbackCadenceClassification=%@", MDKDescribeTraceValue(event[@"callbackCadenceClassification"])],
                 [NSString stringWithFormat:@"waitTimedOut=%@", MDKDescribeTraceValue(event[@"waitTimedOut"])],
                 [NSString stringWithFormat:@"updateSymbolPresent=%@", MDKDescribeTraceValue(event[@"updateSymbolPresent"])],
                 [NSString stringWithFormat:@"updateStatus=%@", MDKDescribeTraceValue(event[@"updateStatus"])],
@@ -3986,6 +4189,16 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     const BOOL postStartVideoIOSurfaceReceiverConsumed =
         postStartVideoIOSurfaceReceiverDescription != nil &&
         [postStartVideoIOSurfaceReceiverDescription containsString:@"(consumed)"];
+    NSDictionary<NSString *, id> *wrapperProbeEvent = nil;
+    NSDictionary<NSString *, id> *figProbeEvent = nil;
+    for (NSDictionary<NSString *, id> *event in traceEvents) {
+        NSString *kind = [event[@"kind"] isKindOfClass:[NSString class]] ? event[@"kind"] : nil;
+        if (wrapperProbeEvent == nil && [kind isEqualToString:@"sc-remote-queue-wrapper-probe"]) {
+            wrapperProbeEvent = event;
+        } else if (figProbeEvent == nil && [kind isEqualToString:@"fig-remote-queue-receiver-probe"]) {
+            figProbeEvent = event;
+        }
+    }
 
     NSString *streamID = MDKPerformObjectGetter(stream, sel_registerName("streamID")) ?: @"";
     NSDictionary *serializedStreamProperties = MDKSummarizeObject(
@@ -4043,6 +4256,14 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"firstPrivateQueueTimestampNanos=%@", MDKDescribeTraceValue(firstPrivateQueueTimestampNanos)]];
     [notes addObject:[NSString stringWithFormat:@"firstPrivateQueueSource=%@", MDKDescribeTraceValue(firstPrivateQueueSource)]];
     [notes addObject:[NSString stringWithFormat:@"privateQueueLeadMilliseconds=%@", MDKDescribeTraceValue(privateQueueLeadMilliseconds)]];
+    [notes addObject:[NSString stringWithFormat:@"wrapperProbeCallbackCount=%@", MDKDescribeTraceValue(wrapperProbeEvent[@"callbackCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"wrapperProbeCallbackDeltaCount=%@", MDKDescribeTraceValue(wrapperProbeEvent[@"callbackDeltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"wrapperProbeCallback120HzEquivalentCount=%@", MDKDescribeTraceValue(wrapperProbeEvent[@"callback120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"wrapperProbeCallbackCadenceClassification=%@", MDKDescribeTraceValue(wrapperProbeEvent[@"callbackCadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"figProbeCallbackCount=%@", MDKDescribeTraceValue(figProbeEvent[@"callbackCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figProbeCallbackDeltaCount=%@", MDKDescribeTraceValue(figProbeEvent[@"callbackDeltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figProbeCallback120HzEquivalentCount=%@", MDKDescribeTraceValue(figProbeEvent[@"callback120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"figProbeCallbackCadenceClassification=%@", MDKDescribeTraceValue(figProbeEvent[@"callbackCadenceClassification"])]];
     [notes addObject:[NSString stringWithFormat:@"publicSampleSurfacePointer=%@", MDKDescribeTraceValue(firstPublicSampleSurfacePointer)]];
     [notes addObject:[NSString stringWithFormat:@"privateQueueSurfacePointer=%@", MDKDescribeTraceValue(firstPrivateQueueSurfacePointer)]];
     if (firstPublicSampleSurfacePointer != nil && firstPrivateQueueSurfacePointer != nil) {
@@ -4485,10 +4706,32 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKPublicTimingTrace(
     NSDictionary *serializedFilter = MDKSummarizeObject(
         MDKPerformObjectGetter(filter, sel_registerName("serialize"))
     );
+    NSArray<NSDictionary<NSString *, id> *> *traceEvents =
+        [snapshot[@"events"] isKindOfClass:[NSArray class]] ? snapshot[@"events"] : @[];
     NSDictionary<NSString *, NSNumber *> *sampleBufferArrivalDeltaHistogram =
         [snapshot[@"sampleBufferArrivalDeltaHistogram"] isKindOfClass:[NSDictionary class]] ? snapshot[@"sampleBufferArrivalDeltaHistogram"] : nil;
     NSDictionary<NSString *, NSNumber *> *sampleBufferPresentationDeltaHistogram =
         [snapshot[@"sampleBufferPresentationDeltaHistogram"] isKindOfClass:[NSDictionary class]] ? snapshot[@"sampleBufferPresentationDeltaHistogram"] : nil;
+    NSDictionary<NSString *, id> *captureHandlerCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"daemon-capture-handler-sample",
+            @"screen-recorder-capture-handler-sample",
+        ]]
+    );
+    NSDictionary<NSString *, id> *contentStreamCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"ca-content-stream-produce-surface",
+        ]]
+    );
+    NSDictionary<NSString *, id> *remoteQueueSinkCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"bw-remote-queue-render",
+            @"bw-remote-queue-drop",
+        ]]
+    );
     const NSUInteger sampleBufferArrivalDeltaCount = [snapshot[@"sampleBufferArrivalDeltaCount"] unsignedIntegerValue];
     const NSUInteger sampleBufferPresentationDeltaCount = [snapshot[@"sampleBufferPresentationDeltaCount"] unsignedIntegerValue];
     NSUInteger sampleBufferArrival120HzEquivalentCount = MDKHistogramCountInRange(sampleBufferArrivalDeltaHistogram, 0.0, 10.0);
@@ -4524,6 +4767,21 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKPublicTimingTrace(
     [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationSixtyLikeCount=%lu", (unsigned long) sampleBufferPresentationSixtyLikeCount]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationLongGapCount=%lu", (unsigned long) sampleBufferPresentationLongGapCount]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferPresentationCadenceClassification=%@", MDKDescribeTraceValue(sampleBufferPresentationCadenceClassification)]];
+    [notes addObject:[NSString stringWithFormat:@"captureHandlerEventCount=%@", MDKDescribeTraceValue(captureHandlerCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"captureHandlerDeltaCount=%@", MDKDescribeTraceValue(captureHandlerCadenceSummary[@"deltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"captureHandlerDeltaHistogram=%@", MDKDescribeTraceValue(captureHandlerCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"captureHandlerDelta120HzEquivalentCount=%@", MDKDescribeTraceValue(captureHandlerCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"captureHandlerCadenceClassification=%@", MDKDescribeTraceValue(captureHandlerCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"contentStreamEventCount=%@", MDKDescribeTraceValue(contentStreamCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"contentStreamDeltaCount=%@", MDKDescribeTraceValue(contentStreamCadenceSummary[@"deltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"contentStreamDeltaHistogram=%@", MDKDescribeTraceValue(contentStreamCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"contentStreamDelta120HzEquivalentCount=%@", MDKDescribeTraceValue(contentStreamCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"contentStreamCadenceClassification=%@", MDKDescribeTraceValue(contentStreamCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkEventCount=%@", MDKDescribeTraceValue(remoteQueueSinkCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkDeltaCount=%@", MDKDescribeTraceValue(remoteQueueSinkCadenceSummary[@"deltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkDeltaHistogram=%@", MDKDescribeTraceValue(remoteQueueSinkCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkDelta120HzEquivalentCount=%@", MDKDescribeTraceValue(remoteQueueSinkCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkCadenceClassification=%@", MDKDescribeTraceValue(remoteQueueSinkCadenceSummary[@"cadenceClassification"])]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferUniqueSurfaceCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferUniqueSurfaceCount"])]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferConsecutiveSurfaceReuseCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferConsecutiveSurfaceReuseCount"])]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferSurfaceUseCountMax=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferSurfaceUseCountMax"])]];
@@ -5055,6 +5313,85 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoTraceScreenCaptureKitTiming
     NSError * _Nullable * _Nullable error
 ) {
     return MDKCreateSCKPublicTimingTrace(displayID, timeout, error);
+}
+
+NSDictionary<NSString *, id> * _Nullable MDKShimVideoInspectScreenCaptureKitRuntime(
+    NSError * _Nullable * _Nullable error
+) {
+    MDKEnsureCaptureImageLoaded("/System/Library/Frameworks/ScreenCaptureKit.framework/ScreenCaptureKit");
+    MDKEnsureCaptureImageLoaded("/System/Library/PrivateFrameworks/CMCapture.framework/CMCapture");
+
+    NSArray<NSString *> *classNames = @[
+        @"SCStream",
+        @"SCStreamManager",
+        @"SCRemoteQueueXPCObject",
+        @"RPDaemonProxy",
+        @"BWRemoteQueueSinkNode",
+        @"FigCaptureRemoteQueueSinkPipeline",
+    ];
+    NSArray<NSString *> *screenCaptureKitSymbolNames = @[
+        @"SCRemoteQueue_CreateReceiverQueue",
+        @"SCRemoteQueue_UpdateReceiverQueue",
+        @"SCRemoteQueue_Destroy",
+        @"SCRemoteQueue_Dequeue",
+        @"SCRemoteQueue_CopyLatestItem",
+        @"SCRemoteQueue_CopyCurrentItem",
+        @"SCRemoteQueue_ProcessPendingItems",
+        @"SCRemoteQueue_Drain",
+        @"SCRemoteQueue_Resume",
+        @"SCRemoteQueue_Start",
+        @"SCRemoteQueue_StartReceiving",
+    ];
+    NSArray<NSString *> *cmCaptureSymbolNames = @[
+        @"FigRemoteQueueReceiverCreateFromXPCObject",
+        @"FigRemoteQueueReceiverSetHandler",
+        @"FigRemoteQueueReceiverUnsetHandler",
+        @"FigRemoteQueueReceiverDequeue",
+        @"FigRemoteQueueReceiverDrain",
+        @"FigRemoteQueueReceiverResume",
+        @"FigRemoteQueueReceiverStart",
+        @"FigRemoteQueueReceiverCopyCurrentItem",
+        @"FigRemoteQueueReceiverCopyLatestItem",
+    ];
+
+    NSMutableArray<NSDictionary<NSString *, id> *> *classes = [NSMutableArray arrayWithCapacity:classNames.count];
+    for (NSString *className in classNames) {
+        NSArray<NSString *> *methods = MDKFilteredMethodNamesForRuntimeClass(className);
+        [classes addObject:@{
+            @"className": className,
+            @"loaded": @(NSClassFromString(className) != Nil),
+            @"filteredMethods": methods,
+            @"filteredMethodCount": @(methods.count),
+        }];
+    }
+
+    NSDictionary<NSString *, NSNumber *> *screenCaptureKitSymbols =
+        MDKRuntimeSymbolAvailabilityForNames(screenCaptureKitSymbolNames, NO);
+    NSDictionary<NSString *, NSNumber *> *cmCaptureSymbols =
+        MDKRuntimeSymbolAvailabilityForNames(cmCaptureSymbolNames, YES);
+
+    NSDictionary<NSString *, id> *payload = @{
+        @"classes": classes,
+        @"screenCaptureKitSymbols": screenCaptureKitSymbols,
+        @"cmCaptureSymbols": cmCaptureSymbols,
+        @"notes": @[
+            @"Lists keyword-filtered Objective-C methods for the loaded ScreenCaptureKit runtime classes.",
+            @"Lists the presence of guessed private queue symbols so host-only experiments can pick likely next entry points."
+        ],
+    };
+
+    if (classes.count == 0 && screenCaptureKitSymbols.count == 0 && cmCaptureSymbols.count == 0) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:16
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Unable to inspect the ScreenCaptureKit runtime."
+                                     }];
+        }
+        return nil;
+    }
+
+    return payload;
 }
 
 NSArray<NSString *> *MDKShimMicrophoneNames(void) {

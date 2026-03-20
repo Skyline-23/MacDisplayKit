@@ -427,6 +427,69 @@ final class MacDisplayKitTests: XCTestCase {
         )
     }
 
+    func testScreenCaptureKitRuntimeInventoryRoundTripsThroughJSON() throws {
+        let inventory = MDKScreenCaptureKitRuntimeInventory(
+            classes: [
+                MDKScreenCaptureKitRuntimeClassInventory(
+                    className: "SCStream",
+                    loaded: true,
+                    filteredMethods: ["startCaptureWithCompletionHandler:", "startRemoteVideoReceiveQueue:"],
+                    filteredMethodCount: 2
+                )
+            ],
+            screenCaptureKitSymbols: [
+                "SCRemoteQueue_CreateReceiverQueue": true,
+                "SCRemoteQueue_UpdateReceiverQueue": true,
+            ],
+            cmCaptureSymbols: [
+                "FigRemoteQueueReceiverCreateFromXPCObject": true,
+                "FigRemoteQueueReceiverDrain": false,
+            ],
+            notes: ["runtime inventory parsed"]
+        )
+
+        let data = try JSONEncoder().encode(inventory)
+        let decoded = try JSONDecoder().decode(MDKScreenCaptureKitRuntimeInventory.self, from: data)
+        XCTAssertEqual(decoded, inventory)
+    }
+
+    func testScreenCaptureKitRuntimeInventoryParsesShimDictionary() throws {
+        let payload: NSDictionary = [
+            "classes": [
+                [
+                    "className": "SCStreamManager",
+                    "loaded": NSNumber(value: true),
+                    "filteredMethods": [
+                        "startRemoteQueue:streamID:",
+                        "stopRemoteQueue:streamID:"
+                    ],
+                    "filteredMethodCount": NSNumber(value: 2)
+                ]
+            ],
+            "screenCaptureKitSymbols": [
+                "SCRemoteQueue_CreateReceiverQueue": NSNumber(value: true),
+                "SCRemoteQueue_Drain": NSNumber(value: false)
+            ],
+            "cmCaptureSymbols": [
+                "FigRemoteQueueReceiverCreateFromXPCObject": NSNumber(value: true),
+                "FigRemoteQueueReceiverDrain": NSNumber(value: false)
+            ],
+            "notes": [
+                "inventory payload parsed"
+            ]
+        ]
+
+        let inventory = try MDKScreenCaptureKitRuntimeInventory(shimDictionary: payload)
+        XCTAssertEqual(inventory.classes.count, 1)
+        XCTAssertEqual(inventory.classes.first?.className, "SCStreamManager")
+        XCTAssertEqual(inventory.classes.first?.filteredMethodCount, 2)
+        XCTAssertEqual(inventory.screenCaptureKitSymbols["SCRemoteQueue_CreateReceiverQueue"], true)
+        XCTAssertEqual(inventory.screenCaptureKitSymbols["SCRemoteQueue_Drain"], false)
+        XCTAssertEqual(inventory.cmCaptureSymbols["FigRemoteQueueReceiverCreateFromXPCObject"], true)
+        XCTAssertEqual(inventory.cmCaptureSymbols["FigRemoteQueueReceiverDrain"], false)
+        XCTAssertEqual(inventory.notes, ["inventory payload parsed"])
+    }
+
     func testPrivateCapturePrototypePlannerPrefersProxyingPathWhenAvailable() {
         let plan = MDKPrivateCapturePrototypePlanner.plan(
             for: MDKPrivateCaptureCapabilities(

@@ -1,5 +1,6 @@
 import Foundation
 import MacDisplayKit
+import MacDisplayCaptureKit
 
 final class MDKHostBenchmarkController {
     static let benchmarkWarmupDuration: TimeInterval = 1.0
@@ -156,5 +157,9 @@ final class MDKHostBenchmarkController {
             displayID: displayID,
             sampleDuration: sampleDuration
         )
+    }
+
+    func inspectScreenCaptureKitRuntime() throws -> MDKScreenCaptureKitRuntimeInventory {
+        try MDKScreenCaptureKitRuntimeInspector.inspect()
     }
 }

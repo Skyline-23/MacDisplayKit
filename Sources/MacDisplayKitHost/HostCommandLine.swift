@@ -1,10 +1,12 @@
 import Foundation
 import MacDisplayKit
+import MacDisplayCaptureKit
 import AppKit
 
 private enum MDKHostCLICommand {
     case listDisplays
     case listTargets
+    case screenCaptureKitRuntimeInventory(json: Bool)
     case screenCaptureKitProxyHandshakeTrace(displayID: UInt32, sampleDuration: TimeInterval, json: Bool)
     case screenCaptureKitPassiveHandshakeTrace(displayID: UInt32, sampleDuration: TimeInterval, json: Bool)
     case screenCaptureKitTimingTrace(displayID: UInt32, sampleDuration: TimeInterval, json: Bool, useMetalStimulus: Bool)
@@ -47,6 +49,24 @@ enum MDKHostCommandLine {
                 print("\(target.identifier)\t\(target.name)")
             }
             return 0
+        case .screenCaptureKitRuntimeInventory(let json):
+            do {
+                let inventory = try controller.inspectScreenCaptureKitRuntime()
+                if json {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    let data = try encoder.encode(inventory)
+                    if let text = String(data: data, encoding: .utf8) {
+                        print(text)
+                    }
+                } else {
+                    print(formatScreenCaptureKitRuntimeInventory(inventory))
+                }
+                return 0
+            } catch {
+                fputs("Failed to inspect ScreenCaptureKit runtime: \(error)\n", stderr)
+                return 1
+            }
         case .screenCaptureKitProxyHandshakeTrace(let displayID, let sampleDuration, let json):
             do {
                 let trace = try controller.traceScreenCaptureKitProxyHandshake(
@@ -331,6 +351,10 @@ enum MDKHostCommandLine {
             return .listTargets
         }
 
+        if tokens.contains("--experimental-screencapturekit-runtime-inventory") {
+            return .screenCaptureKitRuntimeInventory(json: tokens.contains("--json"))
+        }
+
         if let traceDisplayIndex = tokens.firstIndex(of: "--experimental-screencapturekit-proxy-handshake-display"),
            tokens.indices.contains(traceDisplayIndex + 1),
            let displayID = UInt32(tokens[traceDisplayIndex + 1]) {
@@ -482,5 +506,30 @@ enum MDKHostCommandLine {
         }
 
         return duration
+    }
+
+    private static func formatScreenCaptureKitRuntimeInventory(
+        _ inventory: MDKScreenCaptureKitRuntimeInventory
+    ) -> String {
+        var lines = inventory.notes
+
+        lines.append("screenCaptureKitSymbols:")
+        for name in inventory.screenCaptureKitSymbols.keys.sorted() {
+            lines.append("  \(name)=\(inventory.screenCaptureKitSymbols[name] == true ? "true" : "false")")
+        }
+
+        lines.append("cmCaptureSymbols:")
+        for name in inventory.cmCaptureSymbols.keys.sorted() {
+            lines.append("  \(name)=\(inventory.cmCaptureSymbols[name] == true ? "true" : "false")")
+        }
+
+        for classInventory in inventory.classes {
+            lines.append("class \(classInventory.className) loaded=\(classInventory.loaded ? "true" : "false") methods=\(classInventory.filteredMethodCount)")
+            for method in classInventory.filteredMethods {
+                lines.append("  \(method)")
+            }
+        }
+
+        return lines.joined(separator: "\n")
     }
 }
