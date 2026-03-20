@@ -497,6 +497,40 @@ Interpretation:
 - the lower observable state is either too far upstream / too passive, or the real per-frame handoff lives in the consumer callback path rather than these read-only queue artifacts
 - the next meaningful lower target is therefore the actual queue-drain / consumer callback path, not more passive polling of `SharedRegion` or `RecvFd`
 
+## Recent passive consumer sweep
+
+Recent passive traces on the current main display (`AW2725Q`, display `3`, `UI Looks like 2560 x 1440 @ 240Hz`) now support auto-selecting the default display from the host CLI. The latest traces still show public delivery clustering around `16.7ms` / `20.8ms`, for example:
+
+- `sampleBufferEventCount=111` over `2s`
+- `sampleBufferPresentationDeltaHistogram={"8.3ms":1,"12.5ms":2,"16.7ms":83,"20.8ms":22,"25.0ms":2,"66.7ms":1}`
+
+Additional passive hooks that were tested and found inactive on this path:
+
+- `_videoReceiveQueue` wrapper callback
+  - `videoQueueWrapperInstalledCount=1`
+  - `videoQueueWrapperCallbackEventCount=0`
+- `IOSurfaceRemoteRemoteClient`
+  - `surfaceTransportHandleMessageEventCount=0`
+- `CMCaptureFrameReceiver`
+  - `frameReceiverEventCount=0`
+  - `frameReceiverKindHistogram={}`
+- `BWRemoteQueueSinkNode`
+  - `remoteQueueSinkKindHistogram={}`
+- `BWImageQueueSinkNode`
+  - `remoteQueueSinkKindHistogram={}`
+- `BWNodeConnection consumeMessage:fromOutput:`
+  - `remoteQueueSinkKindHistogram={}`
+- `BWNode _handleMessage:fromInput:`
+  - `remoteQueueSinkKindHistogram={}`
+
+Interpretation:
+
+- the wrapper installed on `_videoReceiveQueue` but never observed a callback, which strongly suggests that the currently visible wrapper slot is not the active hot consumer for public display capture
+- the generic `BW*` graph hooks that looked promising from runtime class discovery are also not part of the active consumer path in this specific `SCStream` display-capture flow
+- the remaining live path is therefore likely either:
+  - still inside `RPDaemonProxy` / an unhooked `SCStream` consumer transition, or
+  - in additional dynamically loaded classes that were not part of the earlier fixed runtime inventory set
+
 ## External clues worth keeping in mind
 
 - Apple Developer Forums:

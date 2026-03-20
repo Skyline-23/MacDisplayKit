@@ -1,6 +1,7 @@
 import Foundation
 import MacDisplayKit
 import MacDisplayCaptureKit
+import CoreGraphics
 
 final class MDKHostBenchmarkController {
     static let benchmarkWarmupDuration: TimeInterval = 1.0
@@ -16,6 +17,16 @@ final class MDKHostBenchmarkController {
 
     func display(id: UInt32) -> MDKDisplayDescriptor? {
         availableDisplays().first { $0.id == id }
+    }
+
+    func defaultDisplay() -> MDKDisplayDescriptor? {
+        let displays = availableDisplays()
+        let mainDisplayID = UInt32(CGMainDisplayID())
+        if let mainDisplay = displays.first(where: { $0.id == mainDisplayID }) {
+            return mainDisplay
+        }
+
+        return displays.first
     }
 
     func target(identifier: String) -> MDKCaptureOptimizationTarget? {

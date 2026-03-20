@@ -173,6 +173,17 @@ static void MDKAppendFilteredMethodNamesForClassToSet(Class cls, NSMutableSet<NS
             @"receive",
             @"video",
             @"audio",
+            @"drain",
+            @"dequeue",
+            @"handler",
+            @"process",
+            @"item",
+            @"message",
+            @"sink",
+            @"render",
+            @"receiver",
+            @"pipeline",
+            @"source",
         ];
     });
 
@@ -432,9 +443,16 @@ using MDKCAContentStreamReleaseSurfaceWithIDFn = BOOL (*)(id, SEL, unsigned int,
 using MDKIOSurfaceRemoteAddSurfaceFn = void (*)(id, SEL, void *, void *, std::uint64_t, id);
 using MDKIOSurfaceRemoteSetSurfaceStatesFn = void (*)(id, SEL, id);
 using MDKIOSurfaceRemoteRemoveSurfaceFn = BOOL (*)(id, SEL, unsigned int);
+using MDKIOSurfaceRemoteHandleMessageFn = void (*)(id, SEL, id);
 using MDKFrameReceiverInitFn = id (*)(id, SEL, id, id);
+using MDKBWRemoteQueueSinkInitFn = id (*)(id, SEL, id, id, id, id);
 using MDKBWRenderSampleBufferFn = void (*)(id, SEL, CMSampleBufferRef, id);
 using MDKBWHandleDroppedSampleFn = void (*)(id, SEL, id, id);
+using MDKBWRegisterSurfacesFromSourcePoolFn = void (*)(id, SEL, id);
+using MDKBWSetBoolFn = void (*)(id, SEL, BOOL);
+using MDKBWSetIntegerFn = void (*)(id, SEL, NSInteger);
+using MDKBWNodeConnectionConsumeMessageFn = void (*)(id, SEL, id, id);
+using MDKBWNodeHandleMessageFn = void (*)(id, SEL, id, id);
 using MDKFigSetSinkNodeFn = void (*)(id, SEL, id);
 using MDKSCRemoteQueueSetRemoteQueueFn = void (*)(id, SEL, id);
 using MDKSCRemoteQueueSetQueueTypeFn = void (*)(id, SEL, unsigned char);
@@ -468,9 +486,20 @@ static MDKCAContentStreamReleaseSurfaceWithIDFn MDKOriginalCAContentStreamReleas
 static MDKIOSurfaceRemoteAddSurfaceFn MDKOriginalIOSurfaceRemoteAddSurface = nullptr;
 static MDKIOSurfaceRemoteSetSurfaceStatesFn MDKOriginalIOSurfaceRemoteSetSurfaceStates = nullptr;
 static MDKIOSurfaceRemoteRemoveSurfaceFn MDKOriginalIOSurfaceRemoteRemoveSurface = nullptr;
+static MDKIOSurfaceRemoteHandleMessageFn MDKOriginalIOSurfaceRemoteHandleMessage = nullptr;
 static MDKFrameReceiverInitFn MDKOriginalFrameReceiverInit = nullptr;
+static MDKBWRemoteQueueSinkInitFn MDKOriginalBWRemoteQueueSinkInit = nullptr;
 static MDKBWRenderSampleBufferFn MDKOriginalBWRenderSampleBuffer = nullptr;
 static MDKBWHandleDroppedSampleFn MDKOriginalBWHandleDroppedSample = nullptr;
+static MDKBWRegisterSurfacesFromSourcePoolFn MDKOriginalBWRegisterSurfacesFromSourcePool = nullptr;
+static MDKBWSetBoolFn MDKOriginalBWSetDiscardsLateSampleBuffers = nullptr;
+static MDKBWSetBoolFn MDKOriginalBWSetFrameSenderSupportEnabled = nullptr;
+static MDKBWSetBoolFn MDKOriginalBWSetVideoHDRImageStatisticsEnabled = nullptr;
+static MDKBWSetIntegerFn MDKOriginalBWSetClientVideoRetainedBufferCount = nullptr;
+static MDKBWRenderSampleBufferFn MDKOriginalBWImageQueueSinkRenderSampleBuffer = nullptr;
+static MDKBWRegisterSurfacesFromSourcePoolFn MDKOriginalBWImageQueueSinkRegisterSurfacesFromSourcePool = nullptr;
+static MDKBWNodeConnectionConsumeMessageFn MDKOriginalBWNodeConnectionConsumeMessage = nullptr;
+static MDKBWNodeHandleMessageFn MDKOriginalBWNodeHandleMessage = nullptr;
 static MDKFigSetSinkNodeFn MDKOriginalFigSetSinkNode = nullptr;
 static MDKSCRemoteQueueSetRemoteQueueFn MDKOriginalSCRemoteQueueSetRemoteQueue = nullptr;
 static MDKSCRemoteQueueSetQueueTypeFn MDKOriginalSCRemoteQueueSetQueueType = nullptr;
@@ -1753,6 +1782,21 @@ static NSDictionary<NSString *, id> *MDKCopyTraceEventCadenceSummary(
     };
 }
 
+static NSDictionary<NSString *, NSNumber *> *MDKCopyTraceEventKindHistogram(
+    NSArray<NSDictionary<NSString *, id> *> *events,
+    NSSet<NSString *> *eventKinds
+) {
+    NSMutableDictionary<NSString *, NSNumber *> *histogram = [NSMutableDictionary dictionary];
+    for (NSDictionary<NSString *, id> *event in events) {
+        NSString *kind = [event[@"kind"] isKindOfClass:[NSString class]] ? event[@"kind"] : nil;
+        if (kind == nil || ![eventKinds containsObject:kind]) {
+            continue;
+        }
+        histogram[kind] = @([histogram[kind] unsignedIntegerValue] + 1);
+    }
+    return [histogram copy];
+}
+
 static void MDKUpdateSCKSampleBufferDiagnostics(CMSampleBufferRef sampleBuffer) {
     if (sampleBuffer == nullptr) {
         return;
@@ -2473,6 +2517,17 @@ static BOOL MDKSwizzledIOSurfaceRemoteRemoveSurface(id self, SEL _cmd, unsigned 
     return removed;
 }
 
+static void MDKSwizzledIOSurfaceRemoteHandleMessage(id self, SEL _cmd, id message) {
+    MDKRecordSurfaceTransportEvent(
+        @"iosurface-remote-handle-message",
+        @{
+            @"message": MDKSummarizeObject(message),
+            @"client": MDKSummarizeObject(self),
+        }
+    );
+    MDKOriginalIOSurfaceRemoteHandleMessage(self, _cmd, message);
+}
+
 static id MDKSwizzledFrameReceiverInit(id self, SEL _cmd, id endpoint, id handler) {
     MDKRecordFrameReceiverEvent(
         @"frame-receiver-init",
@@ -2484,6 +2539,20 @@ static id MDKSwizzledFrameReceiverInit(id self, SEL _cmd, id endpoint, id handle
     );
 
     return MDKOriginalFrameReceiverInit(self, _cmd, endpoint, handler);
+}
+
+static id MDKSwizzledBWRemoteQueueSinkInit(id self, SEL _cmd, id mediaType, id auditToken, id sinkID, id cameraInfoByPortType) {
+    MDKRecordRemoteQueueSinkEvent(
+        @"bw-remote-queue-init",
+        @{
+            @"mediaType": MDKSummarizeObject(mediaType),
+            @"auditToken": MDKSummarizeObject(auditToken),
+            @"sinkID": MDKSummarizeObject(sinkID),
+            @"cameraInfoByPortType": MDKSummarizeObject(cameraInfoByPortType),
+        }
+    );
+
+    return MDKOriginalBWRemoteQueueSinkInit(self, _cmd, mediaType, auditToken, sinkID, cameraInfoByPortType);
 }
 
 static void MDKSwizzledBWRenderSampleBuffer(id self, SEL _cmd, CMSampleBufferRef sampleBuffer, id input) {
@@ -2510,6 +2579,117 @@ static void MDKSwizzledBWHandleDroppedSample(id self, SEL _cmd, id sample, id in
     );
 
     MDKOriginalBWHandleDroppedSample(self, _cmd, sample, input);
+}
+
+static void MDKSwizzledBWRegisterSurfacesFromSourcePool(id self, SEL _cmd, id sourcePool) {
+    MDKRecordRemoteQueueSinkEvent(
+        @"bw-remote-queue-register-surfaces",
+        @{
+            @"sourcePool": MDKSummarizeObject(sourcePool),
+            @"sinkNode": MDKSummarizeObject(self),
+        }
+    );
+
+    MDKOriginalBWRegisterSurfacesFromSourcePool(self, _cmd, sourcePool);
+}
+
+static void MDKSwizzledBWSetDiscardsLateSampleBuffers(id self, SEL _cmd, BOOL value) {
+    MDKRecordRemoteQueueSinkEvent(
+        @"bw-remote-queue-set-discards-late-sample-buffers",
+        @{
+            @"value": @(value),
+            @"sinkNode": MDKSummarizeObject(self),
+        }
+    );
+
+    MDKOriginalBWSetDiscardsLateSampleBuffers(self, _cmd, value);
+}
+
+static void MDKSwizzledBWSetFrameSenderSupportEnabled(id self, SEL _cmd, BOOL value) {
+    MDKRecordRemoteQueueSinkEvent(
+        @"bw-remote-queue-set-frame-sender-support-enabled",
+        @{
+            @"value": @(value),
+            @"sinkNode": MDKSummarizeObject(self),
+        }
+    );
+
+    MDKOriginalBWSetFrameSenderSupportEnabled(self, _cmd, value);
+}
+
+static void MDKSwizzledBWSetVideoHDRImageStatisticsEnabled(id self, SEL _cmd, BOOL value) {
+    MDKRecordRemoteQueueSinkEvent(
+        @"bw-remote-queue-set-video-hdr-image-statistics-enabled",
+        @{
+            @"value": @(value),
+            @"sinkNode": MDKSummarizeObject(self),
+        }
+    );
+
+    MDKOriginalBWSetVideoHDRImageStatisticsEnabled(self, _cmd, value);
+}
+
+static void MDKSwizzledBWSetClientVideoRetainedBufferCount(id self, SEL _cmd, NSInteger count) {
+    MDKRecordRemoteQueueSinkEvent(
+        @"bw-remote-queue-set-client-video-retained-buffer-count",
+        @{
+            @"count": @(count),
+            @"sinkNode": MDKSummarizeObject(self),
+        }
+    );
+
+    MDKOriginalBWSetClientVideoRetainedBufferCount(self, _cmd, count);
+}
+
+static void MDKSwizzledBWImageQueueSinkRenderSampleBuffer(id self, SEL _cmd, CMSampleBufferRef sampleBuffer, id input) {
+    MDKRecordRemoteQueueSinkEvent(
+        @"bw-image-queue-sink-render",
+        @{
+            @"sampleBuffer": MDKSummarizeSampleBuffer(sampleBuffer),
+            @"input": MDKSummarizeObject(input),
+            @"sinkNode": MDKSummarizeObject(self),
+        }
+    );
+
+    MDKOriginalBWImageQueueSinkRenderSampleBuffer(self, _cmd, sampleBuffer, input);
+}
+
+static void MDKSwizzledBWImageQueueSinkRegisterSurfacesFromSourcePool(id self, SEL _cmd, id sourcePool) {
+    MDKRecordRemoteQueueSinkEvent(
+        @"bw-image-queue-sink-register-surfaces",
+        @{
+            @"sourcePool": MDKSummarizeObject(sourcePool),
+            @"sinkNode": MDKSummarizeObject(self),
+        }
+    );
+
+    MDKOriginalBWImageQueueSinkRegisterSurfacesFromSourcePool(self, _cmd, sourcePool);
+}
+
+static void MDKSwizzledBWNodeConnectionConsumeMessage(id self, SEL _cmd, id message, id output) {
+    MDKRecordRemoteQueueSinkEvent(
+        @"bw-node-connection-consume-message",
+        @{
+            @"message": MDKSummarizeObject(message),
+            @"output": MDKSummarizeObject(output),
+            @"connection": MDKSummarizeObject(self),
+        }
+    );
+
+    MDKOriginalBWNodeConnectionConsumeMessage(self, _cmd, message, output);
+}
+
+static void MDKSwizzledBWNodeHandleMessage(id self, SEL _cmd, id message, id input) {
+    MDKRecordRemoteQueueSinkEvent(
+        @"bw-node-handle-message",
+        @{
+            @"message": MDKSummarizeObject(message),
+            @"input": MDKSummarizeObject(input),
+            @"node": MDKSummarizeObject(self),
+        }
+    );
+
+    MDKOriginalBWNodeHandleMessage(self, _cmd, message, input);
 }
 
 static void MDKSwizzledFigSetSinkNode(id self, SEL _cmd, id sinkNode) {
@@ -3057,6 +3237,19 @@ static void MDKInstallSCKProxyTraceHooks(void) {
                     reinterpret_cast<IMP>(MDKSwizzledIOSurfaceRemoteRemoveSurface)
                 );
             }
+
+            Method handleMessageMethod = class_getInstanceMethod(
+                ioSurfaceRemoteClientClass,
+                sel_registerName("_handleMessage:")
+            );
+            if (handleMessageMethod != nullptr) {
+                MDKOriginalIOSurfaceRemoteHandleMessage =
+                    reinterpret_cast<MDKIOSurfaceRemoteHandleMessageFn>(method_getImplementation(handleMessageMethod));
+                method_setImplementation(
+                    handleMessageMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledIOSurfaceRemoteHandleMessage)
+                );
+            }
         }
 
         Class frameReceiverClass = NSClassFromString(@"CMCaptureFrameReceiver");
@@ -3077,6 +3270,19 @@ static void MDKInstallSCKProxyTraceHooks(void) {
 
         Class bwRemoteQueueSinkNodeClass = NSClassFromString(@"BWRemoteQueueSinkNode");
         if (bwRemoteQueueSinkNodeClass != Nil) {
+            Method initMethod = class_getInstanceMethod(
+                bwRemoteQueueSinkNodeClass,
+                sel_registerName("initWithMediaType:clientAuditToken:sinkID:cameraInfoByPortType:")
+            );
+            if (initMethod != nullptr) {
+                MDKOriginalBWRemoteQueueSinkInit =
+                    reinterpret_cast<MDKBWRemoteQueueSinkInitFn>(method_getImplementation(initMethod));
+                method_setImplementation(
+                    initMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledBWRemoteQueueSinkInit)
+                );
+            }
+
             Method renderSampleBufferMethod = class_getInstanceMethod(
                 bwRemoteQueueSinkNodeClass,
                 sel_registerName("renderSampleBuffer:forInput:")
@@ -3102,6 +3308,71 @@ static void MDKInstallSCKProxyTraceHooks(void) {
                     reinterpret_cast<IMP>(MDKSwizzledBWHandleDroppedSample)
                 );
             }
+
+            Method registerSurfacesMethod = class_getInstanceMethod(
+                bwRemoteQueueSinkNodeClass,
+                sel_registerName("registerSurfacesFromSourcePool:")
+            );
+            if (registerSurfacesMethod != nullptr) {
+                MDKOriginalBWRegisterSurfacesFromSourcePool =
+                    reinterpret_cast<MDKBWRegisterSurfacesFromSourcePoolFn>(method_getImplementation(registerSurfacesMethod));
+                method_setImplementation(
+                    registerSurfacesMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledBWRegisterSurfacesFromSourcePool)
+                );
+            }
+
+            Method setDiscardsLateSampleBuffersMethod = class_getInstanceMethod(
+                bwRemoteQueueSinkNodeClass,
+                sel_registerName("setDiscardsLateSampleBuffers:")
+            );
+            if (setDiscardsLateSampleBuffersMethod != nullptr) {
+                MDKOriginalBWSetDiscardsLateSampleBuffers =
+                    reinterpret_cast<MDKBWSetBoolFn>(method_getImplementation(setDiscardsLateSampleBuffersMethod));
+                method_setImplementation(
+                    setDiscardsLateSampleBuffersMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledBWSetDiscardsLateSampleBuffers)
+                );
+            }
+
+            Method setFrameSenderSupportEnabledMethod = class_getInstanceMethod(
+                bwRemoteQueueSinkNodeClass,
+                sel_registerName("setFrameSenderSupportEnabled:")
+            );
+            if (setFrameSenderSupportEnabledMethod != nullptr) {
+                MDKOriginalBWSetFrameSenderSupportEnabled =
+                    reinterpret_cast<MDKBWSetBoolFn>(method_getImplementation(setFrameSenderSupportEnabledMethod));
+                method_setImplementation(
+                    setFrameSenderSupportEnabledMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledBWSetFrameSenderSupportEnabled)
+                );
+            }
+
+            Method setVideoHDRImageStatisticsEnabledMethod = class_getInstanceMethod(
+                bwRemoteQueueSinkNodeClass,
+                sel_registerName("setVideoHDRImageStatisticsEnabled:")
+            );
+            if (setVideoHDRImageStatisticsEnabledMethod != nullptr) {
+                MDKOriginalBWSetVideoHDRImageStatisticsEnabled =
+                    reinterpret_cast<MDKBWSetBoolFn>(method_getImplementation(setVideoHDRImageStatisticsEnabledMethod));
+                method_setImplementation(
+                    setVideoHDRImageStatisticsEnabledMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledBWSetVideoHDRImageStatisticsEnabled)
+                );
+            }
+
+            Method setClientVideoRetainedBufferCountMethod = class_getInstanceMethod(
+                bwRemoteQueueSinkNodeClass,
+                sel_registerName("setClientVideoRetainedBufferCount:")
+            );
+            if (setClientVideoRetainedBufferCountMethod != nullptr) {
+                MDKOriginalBWSetClientVideoRetainedBufferCount =
+                    reinterpret_cast<MDKBWSetIntegerFn>(method_getImplementation(setClientVideoRetainedBufferCountMethod));
+                method_setImplementation(
+                    setClientVideoRetainedBufferCountMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledBWSetClientVideoRetainedBufferCount)
+                );
+            }
         }
 
         Class figCaptureRemoteQueueSinkPipelineClass = NSClassFromString(@"FigCaptureRemoteQueueSinkPipeline");
@@ -3116,6 +3387,67 @@ static void MDKInstallSCKProxyTraceHooks(void) {
                 method_setImplementation(
                     setSinkNodeMethod,
                     reinterpret_cast<IMP>(MDKSwizzledFigSetSinkNode)
+                );
+            }
+        }
+
+        Class bwImageQueueSinkNodeClass = NSClassFromString(@"BWImageQueueSinkNode");
+        if (bwImageQueueSinkNodeClass != Nil) {
+            Method renderSampleBufferMethod = class_getInstanceMethod(
+                bwImageQueueSinkNodeClass,
+                sel_registerName("renderSampleBuffer:forInput:")
+            );
+            if (renderSampleBufferMethod != nullptr) {
+                MDKOriginalBWImageQueueSinkRenderSampleBuffer =
+                    reinterpret_cast<MDKBWRenderSampleBufferFn>(method_getImplementation(renderSampleBufferMethod));
+                method_setImplementation(
+                    renderSampleBufferMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledBWImageQueueSinkRenderSampleBuffer)
+                );
+            }
+
+            Method registerSurfacesMethod = class_getInstanceMethod(
+                bwImageQueueSinkNodeClass,
+                sel_registerName("registerSurfacesFromSourcePool:")
+            );
+            if (registerSurfacesMethod != nullptr) {
+                MDKOriginalBWImageQueueSinkRegisterSurfacesFromSourcePool =
+                    reinterpret_cast<MDKBWRegisterSurfacesFromSourcePoolFn>(method_getImplementation(registerSurfacesMethod));
+                method_setImplementation(
+                    registerSurfacesMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledBWImageQueueSinkRegisterSurfacesFromSourcePool)
+                );
+            }
+        }
+
+        Class bwNodeConnectionClass = NSClassFromString(@"BWNodeConnection");
+        if (bwNodeConnectionClass != Nil) {
+            Method consumeMessageMethod = class_getInstanceMethod(
+                bwNodeConnectionClass,
+                sel_registerName("consumeMessage:fromOutput:")
+            );
+            if (consumeMessageMethod != nullptr) {
+                MDKOriginalBWNodeConnectionConsumeMessage =
+                    reinterpret_cast<MDKBWNodeConnectionConsumeMessageFn>(method_getImplementation(consumeMessageMethod));
+                method_setImplementation(
+                    consumeMessageMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledBWNodeConnectionConsumeMessage)
+                );
+            }
+        }
+
+        Class bwNodeClass = NSClassFromString(@"BWNode");
+        if (bwNodeClass != Nil) {
+            Method handleMessageMethod = class_getInstanceMethod(
+                bwNodeClass,
+                sel_registerName("_handleMessage:fromInput:")
+            );
+            if (handleMessageMethod != nullptr) {
+                MDKOriginalBWNodeHandleMessage =
+                    reinterpret_cast<MDKBWNodeHandleMessageFn>(method_getImplementation(handleMessageMethod));
+                method_setImplementation(
+                    handleMessageMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledBWNodeHandleMessage)
                 );
             }
         }
@@ -3443,7 +3775,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     MDKResetSCKTraceState(displayID, timeout);
     @synchronized(MDKActiveSCKTraceLock) {
         MDKActiveSCKAllowPrivateQueueProbes = includePrivateQueueProbes;
-        MDKActiveSCKAllowVideoQueueWrapperProbe = NO;
+        MDKActiveSCKAllowVideoQueueWrapperProbe = YES;
     }
     MDKAppendSCKTraceNote([NSString stringWithFormat:@"class.BWRemoteQueueSinkNode.present=%@", NSClassFromString(@"BWRemoteQueueSinkNode") != Nil ? @"true" : @"false"]);
     MDKAppendSCKTraceNote([NSString stringWithFormat:@"class.BWRemoteQueueSinkNode.renderSampleBuffer:forInput:=%@", class_getInstanceMethod(NSClassFromString(@"BWRemoteQueueSinkNode"), sel_registerName("renderSampleBuffer:forInput:")) != nullptr ? @"true" : @"false"]);
@@ -4224,24 +4556,94 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             continue;
         }
 
-        if ([kind isEqualToString:@"bw-remote-queue-render"] || [kind isEqualToString:@"bw-remote-queue-drop"]) {
-            NSString *selector = [kind isEqualToString:@"bw-remote-queue-render"] ? @"renderSampleBuffer:forInput:" : @"handleDroppedSample:forInput:";
+        if ([kind isEqualToString:@"bw-remote-queue-init"] ||
+            [kind isEqualToString:@"bw-remote-queue-render"] ||
+            [kind isEqualToString:@"bw-remote-queue-drop"] ||
+            [kind isEqualToString:@"bw-remote-queue-register-surfaces"] ||
+            [kind isEqualToString:@"bw-remote-queue-set-discards-late-sample-buffers"] ||
+            [kind isEqualToString:@"bw-remote-queue-set-frame-sender-support-enabled"] ||
+            [kind isEqualToString:@"bw-remote-queue-set-video-hdr-image-statistics-enabled"] ||
+            [kind isEqualToString:@"bw-remote-queue-set-client-video-retained-buffer-count"] ||
+            [kind isEqualToString:@"bw-image-queue-sink-render"] ||
+            [kind isEqualToString:@"bw-image-queue-sink-register-surfaces"] ||
+            [kind isEqualToString:@"bw-node-connection-consume-message"] ||
+            [kind isEqualToString:@"bw-node-handle-message"]) {
+            NSString *selector = nil;
+            if ([kind isEqualToString:@"bw-remote-queue-init"]) {
+                selector = @"initWithMediaType:clientAuditToken:sinkID:cameraInfoByPortType:";
+            } else if ([kind isEqualToString:@"bw-remote-queue-render"]) {
+                selector = @"renderSampleBuffer:forInput:";
+            } else if ([kind isEqualToString:@"bw-remote-queue-drop"]) {
+                selector = @"handleDroppedSample:forInput:";
+            } else if ([kind isEqualToString:@"bw-remote-queue-register-surfaces"]) {
+                selector = @"registerSurfacesFromSourcePool:";
+            } else if ([kind isEqualToString:@"bw-remote-queue-set-discards-late-sample-buffers"]) {
+                selector = @"setDiscardsLateSampleBuffers:";
+            } else if ([kind isEqualToString:@"bw-remote-queue-set-frame-sender-support-enabled"]) {
+                selector = @"setFrameSenderSupportEnabled:";
+            } else if ([kind isEqualToString:@"bw-remote-queue-set-video-hdr-image-statistics-enabled"]) {
+                selector = @"setVideoHDRImageStatisticsEnabled:";
+            } else if ([kind isEqualToString:@"bw-remote-queue-set-client-video-retained-buffer-count"]) {
+                selector = @"setClientVideoRetainedBufferCount:";
+            } else if ([kind isEqualToString:@"bw-image-queue-sink-render"]) {
+                selector = @"renderSampleBuffer:forInput:";
+            } else if ([kind isEqualToString:@"bw-image-queue-sink-register-surfaces"]) {
+                selector = @"registerSurfacesFromSourcePool:";
+            } else if ([kind isEqualToString:@"bw-node-connection-consume-message"]) {
+                selector = @"consumeMessage:fromOutput:";
+            } else if ([kind isEqualToString:@"bw-node-handle-message"]) {
+                selector = @"_handleMessage:fromInput:";
+            }
             [selectors addObject:selector];
-            [symbols addObject:@"BWRemoteQueueSinkNode"];
-            NSMutableArray<NSString *> *notes = [@[
-                [NSString stringWithFormat:@"sinkNode=%@", MDKDescribeTraceValue(event[@"sinkNode"])],
-                [NSString stringWithFormat:@"input=%@", MDKDescribeTraceValue(event[@"input"])],
-            ] mutableCopy];
-            if ([kind isEqualToString:@"bw-remote-queue-render"]) {
+            NSString *symbol = @"BWRemoteQueueSinkNode";
+            if ([kind isEqualToString:@"bw-image-queue-sink-render"] || [kind isEqualToString:@"bw-image-queue-sink-register-surfaces"]) {
+                symbol = @"BWImageQueueSinkNode";
+            } else if ([kind isEqualToString:@"bw-node-connection-consume-message"]) {
+                symbol = @"BWNodeConnection";
+            } else if ([kind isEqualToString:@"bw-node-handle-message"]) {
+                symbol = @"BWNode";
+            }
+            [symbols addObject:symbol];
+            NSMutableArray<NSString *> *notes = [NSMutableArray array];
+            if (event[@"sinkNode"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"sinkNode=%@", MDKDescribeTraceValue(event[@"sinkNode"])]];
+            }
+            if (event[@"input"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"input=%@", MDKDescribeTraceValue(event[@"input"])]];
+            }
+            if (event[@"connection"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"connection=%@", MDKDescribeTraceValue(event[@"connection"])]];
+            }
+            if (event[@"node"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"node=%@", MDKDescribeTraceValue(event[@"node"])]];
+            }
+            if (event[@"output"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"output=%@", MDKDescribeTraceValue(event[@"output"])]];
+            }
+            if (event[@"message"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"message=%@", MDKDescribeTraceValue(event[@"message"])]];
+            }
+            if ([kind isEqualToString:@"bw-remote-queue-init"]) {
+                [notes addObject:[NSString stringWithFormat:@"mediaType=%@", MDKDescribeTraceValue(event[@"mediaType"])]];
+                [notes addObject:[NSString stringWithFormat:@"auditToken=%@", MDKDescribeTraceValue(event[@"auditToken"])]];
+                [notes addObject:[NSString stringWithFormat:@"sinkID=%@", MDKDescribeTraceValue(event[@"sinkID"])]];
+                [notes addObject:[NSString stringWithFormat:@"cameraInfoByPortType=%@", MDKDescribeTraceValue(event[@"cameraInfoByPortType"])]];
+            } else if ([kind isEqualToString:@"bw-remote-queue-render"]) {
                 [notes addObject:[NSString stringWithFormat:@"sampleBuffer=%@", MDKDescribeTraceValue(event[@"sampleBuffer"])]];
-            } else {
+            } else if ([kind isEqualToString:@"bw-remote-queue-drop"]) {
                 [notes addObject:[NSString stringWithFormat:@"sample=%@", MDKDescribeTraceValue(event[@"sample"])]];
+            } else if ([kind isEqualToString:@"bw-remote-queue-register-surfaces"]) {
+                [notes addObject:[NSString stringWithFormat:@"sourcePool=%@", MDKDescribeTraceValue(event[@"sourcePool"])]];
+            } else if (event[@"value"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"value=%@", MDKDescribeTraceValue(event[@"value"])]];
+            } else if (event[@"count"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"count=%@", MDKDescribeTraceValue(event[@"count"])]];
             }
             [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
             [steps addObject:MDKMakeTraceStep(
                 kind,
                 selector,
-                @"BWRemoteQueueSinkNode",
+                symbol,
                 nil,
                 @YES,
                 notes
@@ -4646,6 +5048,36 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             @"video-recv-fd-signal",
         ]]
     );
+    NSDictionary<NSString *, id> *surfaceTransportHandleMessageCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"iosurface-remote-handle-message",
+        ]]
+    );
+    NSDictionary<NSString *, NSNumber *> *frameReceiverKindHistogram = MDKCopyTraceEventKindHistogram(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"frame-receiver-init",
+        ]]
+    );
+    NSDictionary<NSString *, NSNumber *> *remoteQueueSinkKindHistogram = MDKCopyTraceEventKindHistogram(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"bw-remote-queue-init",
+            @"bw-remote-queue-render",
+            @"bw-remote-queue-drop",
+            @"bw-remote-queue-register-surfaces",
+            @"bw-remote-queue-set-discards-late-sample-buffers",
+            @"bw-remote-queue-set-frame-sender-support-enabled",
+            @"bw-remote-queue-set-video-hdr-image-statistics-enabled",
+            @"bw-remote-queue-set-client-video-retained-buffer-count",
+            @"bw-image-queue-sink-render",
+            @"bw-image-queue-sink-register-surfaces",
+            @"bw-node-connection-consume-message",
+            @"bw-node-handle-message",
+            @"fig-remote-queue-set-sink",
+        ]]
+    );
 
     NSMutableArray<NSString *> *notes = [snapshot[@"notes"] mutableCopy] ?: [NSMutableArray array];
     [notes addObject:[NSString stringWithFormat:@"serializedStreamProperties=%@", MDKDescribeTraceValue(serializedStreamProperties)]];
@@ -4668,8 +5100,15 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"captureHandlerSampleEventCount=%@", MDKDescribeTraceValue(snapshot[@"captureHandlerSampleEventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"contentStreamEventCount=%@", MDKDescribeTraceValue(snapshot[@"contentStreamEventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"surfaceTransportEventCount=%@", MDKDescribeTraceValue(snapshot[@"surfaceTransportEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"surfaceTransportHandleMessageEventCount=%@", MDKDescribeTraceValue(surfaceTransportHandleMessageCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"surfaceTransportHandleMessageDeltaCount=%@", MDKDescribeTraceValue(surfaceTransportHandleMessageCadenceSummary[@"deltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"surfaceTransportHandleMessageDeltaHistogram=%@", MDKDescribeTraceValue(surfaceTransportHandleMessageCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"surfaceTransportHandleMessage120HzEquivalentCount=%@", MDKDescribeTraceValue(surfaceTransportHandleMessageCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"surfaceTransportHandleMessageCadenceClassification=%@", MDKDescribeTraceValue(surfaceTransportHandleMessageCadenceSummary[@"cadenceClassification"])]];
     [notes addObject:[NSString stringWithFormat:@"frameReceiverEventCount=%@", MDKDescribeTraceValue(snapshot[@"frameReceiverEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"frameReceiverKindHistogram=%@", MDKDescribeTraceValue(frameReceiverKindHistogram)]];
     [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkEventCount=%@", MDKDescribeTraceValue(snapshot[@"remoteQueueSinkEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkKindHistogram=%@", MDKDescribeTraceValue(remoteQueueSinkKindHistogram)]];
     [notes addObject:[NSString stringWithFormat:@"remoteQueueObjectEventCount=%@", MDKDescribeTraceValue(snapshot[@"remoteQueueObjectEventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperCallbackEventCount=%@", MDKDescribeTraceValue(videoQueueWrapperCadenceSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperCallbackDeltaCount=%@", MDKDescribeTraceValue(videoQueueWrapperCadenceSummary[@"deltaCount"])]];
@@ -4877,6 +5316,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKPublicTimingTrace(
     MDKResetSCKTraceState(displayID, timeout);
     @synchronized(MDKActiveSCKTraceLock) {
         MDKActiveSCKAllowPrivateQueueProbes = NO;
+        MDKActiveSCKAllowVideoQueueWrapperProbe = YES;
     }
 
     __block id display = nil;
@@ -5191,8 +5631,43 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKPublicTimingTrace(
     NSDictionary<NSString *, id> *remoteQueueSinkCadenceSummary = MDKCopyTraceEventCadenceSummary(
         traceEvents,
         [NSSet setWithArray:@[
+            @"bw-remote-queue-init",
             @"bw-remote-queue-render",
             @"bw-remote-queue-drop",
+            @"bw-remote-queue-register-surfaces",
+            @"bw-remote-queue-set-discards-late-sample-buffers",
+            @"bw-remote-queue-set-frame-sender-support-enabled",
+            @"bw-remote-queue-set-video-hdr-image-statistics-enabled",
+            @"bw-remote-queue-set-client-video-retained-buffer-count",
+            @"bw-image-queue-sink-render",
+            @"bw-image-queue-sink-register-surfaces",
+            @"bw-node-connection-consume-message",
+            @"bw-node-handle-message",
+            @"fig-remote-queue-set-sink",
+        ]]
+    );
+    NSDictionary<NSString *, NSNumber *> *remoteQueueSinkKindHistogram = MDKCopyTraceEventKindHistogram(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"bw-remote-queue-init",
+            @"bw-remote-queue-render",
+            @"bw-remote-queue-drop",
+            @"bw-remote-queue-register-surfaces",
+            @"bw-remote-queue-set-discards-late-sample-buffers",
+            @"bw-remote-queue-set-frame-sender-support-enabled",
+            @"bw-remote-queue-set-video-hdr-image-statistics-enabled",
+            @"bw-remote-queue-set-client-video-retained-buffer-count",
+            @"bw-image-queue-sink-render",
+            @"bw-image-queue-sink-register-surfaces",
+            @"bw-node-connection-consume-message",
+            @"bw-node-handle-message",
+            @"fig-remote-queue-set-sink",
+        ]]
+    );
+    NSDictionary<NSString *, id> *surfaceTransportHandleMessageCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"iosurface-remote-handle-message",
         ]]
     );
     const NSUInteger sampleBufferArrivalDeltaCount = [snapshot[@"sampleBufferArrivalDeltaCount"] unsignedIntegerValue];
@@ -5240,11 +5715,17 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKPublicTimingTrace(
     [notes addObject:[NSString stringWithFormat:@"contentStreamDeltaHistogram=%@", MDKDescribeTraceValue(contentStreamCadenceSummary[@"deltaHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"contentStreamDelta120HzEquivalentCount=%@", MDKDescribeTraceValue(contentStreamCadenceSummary[@"delta120HzEquivalentCount"])]];
     [notes addObject:[NSString stringWithFormat:@"contentStreamCadenceClassification=%@", MDKDescribeTraceValue(contentStreamCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"surfaceTransportHandleMessageEventCount=%@", MDKDescribeTraceValue(surfaceTransportHandleMessageCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"surfaceTransportHandleMessageDeltaCount=%@", MDKDescribeTraceValue(surfaceTransportHandleMessageCadenceSummary[@"deltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"surfaceTransportHandleMessageDeltaHistogram=%@", MDKDescribeTraceValue(surfaceTransportHandleMessageCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"surfaceTransportHandleMessageDelta120HzEquivalentCount=%@", MDKDescribeTraceValue(surfaceTransportHandleMessageCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"surfaceTransportHandleMessageCadenceClassification=%@", MDKDescribeTraceValue(surfaceTransportHandleMessageCadenceSummary[@"cadenceClassification"])]];
     [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkEventCount=%@", MDKDescribeTraceValue(remoteQueueSinkCadenceSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkDeltaCount=%@", MDKDescribeTraceValue(remoteQueueSinkCadenceSummary[@"deltaCount"])]];
     [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkDeltaHistogram=%@", MDKDescribeTraceValue(remoteQueueSinkCadenceSummary[@"deltaHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkDelta120HzEquivalentCount=%@", MDKDescribeTraceValue(remoteQueueSinkCadenceSummary[@"delta120HzEquivalentCount"])]];
     [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkCadenceClassification=%@", MDKDescribeTraceValue(remoteQueueSinkCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"remoteQueueSinkKindHistogram=%@", MDKDescribeTraceValue(remoteQueueSinkKindHistogram)]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferUniqueSurfaceCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferUniqueSurfaceCount"])]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferConsecutiveSurfaceReuseCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferConsecutiveSurfaceReuseCount"])]];
     [notes addObject:[NSString stringWithFormat:@"sampleBufferSurfaceUseCountMax=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferSurfaceUseCountMax"])]];
@@ -5790,7 +6271,14 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoInspectScreenCaptureKitRunt
         @"SCRemoteQueueXPCObject",
         @"RPDaemonProxy",
         @"BWRemoteQueueSinkNode",
+        @"BWImageQueueSinkNode",
+        @"BWNode",
+        @"BWNodeConnection",
         @"FigCaptureRemoteQueueSinkPipeline",
+        @"FigRemoteQueueReceiver",
+        @"RPIOSurfaceObject",
+        @"IOSurfaceRemoteRemoteClient",
+        @"CMCaptureFrameReceiver",
     ];
     NSArray<NSString *> *screenCaptureKitSymbolNames = @[
         @"SCRemoteQueue_CreateReceiverQueue",

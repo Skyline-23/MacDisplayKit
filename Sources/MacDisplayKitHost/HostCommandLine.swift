@@ -7,25 +7,25 @@ private enum MDKHostCLICommand {
     case listDisplays
     case listTargets
     case screenCaptureKitRuntimeInventory(json: Bool)
-    case screenCaptureKitProxyHandshakeTrace(displayID: UInt32, sampleDuration: TimeInterval, json: Bool)
-    case screenCaptureKitPassiveHandshakeTrace(displayID: UInt32, sampleDuration: TimeInterval, json: Bool, useMetalStimulus: Bool)
-    case screenCaptureKitTimingTrace(displayID: UInt32, sampleDuration: TimeInterval, json: Bool, useMetalStimulus: Bool)
+    case screenCaptureKitProxyHandshakeTrace(displayID: UInt32?, sampleDuration: TimeInterval, json: Bool)
+    case screenCaptureKitPassiveHandshakeTrace(displayID: UInt32?, sampleDuration: TimeInterval, json: Bool, useMetalStimulus: Bool)
+    case screenCaptureKitTimingTrace(displayID: UInt32?, sampleDuration: TimeInterval, json: Bool, useMetalStimulus: Bool)
     case privateCapturePlan(json: Bool)
-    case privateCaptureProbe(displayID: UInt32, requestExtendedRange: Bool, json: Bool)
-    case privateProxyCaptureProbe(displayID: UInt32, requestExtendedRange: Bool, json: Bool)
-    case privateDisplayStreamProbe(displayID: UInt32, json: Bool)
-    case privateDisplayStreamProbeMatrix(displayID: UInt32, json: Bool)
-    case privateCaptureBenchmark(displayID: UInt32, requestExtendedRange: Bool, sampleDuration: TimeInterval, json: Bool)
-    case privateProxyCaptureBenchmark(displayID: UInt32, requestExtendedRange: Bool, sampleDuration: TimeInterval, json: Bool)
+    case privateCaptureProbe(displayID: UInt32?, requestExtendedRange: Bool, json: Bool)
+    case privateProxyCaptureProbe(displayID: UInt32?, requestExtendedRange: Bool, json: Bool)
+    case privateDisplayStreamProbe(displayID: UInt32?, json: Bool)
+    case privateDisplayStreamProbeMatrix(displayID: UInt32?, json: Bool)
+    case privateCaptureBenchmark(displayID: UInt32?, requestExtendedRange: Bool, sampleDuration: TimeInterval, json: Bool)
+    case privateProxyCaptureBenchmark(displayID: UInt32?, requestExtendedRange: Bool, sampleDuration: TimeInterval, json: Bool)
     case benchmark(
-        displayID: UInt32,
+        displayID: UInt32?,
         targetIdentifier: String,
         intent: MDKCapturePlanIntent,
         processingMode: MDKCaptureBenchmarkProcessingMode,
         json: Bool
     )
     case benchmarkMatrix(
-        displayID: UInt32,
+        displayID: UInt32?,
         intent: MDKCapturePlanIntent,
         processingMode: MDKCaptureBenchmarkProcessingMode,
         json: Bool
@@ -40,8 +40,10 @@ enum MDKHostCommandLine {
 
         switch command {
         case .listDisplays:
+            let defaultDisplayID = controller.defaultDisplay()?.id
             for display in controller.availableDisplays() {
-                print("\(display.id)\t\(display.localizedName)")
+                let marker = display.id == defaultDisplayID ? "*" : " "
+                print("\(marker)\t\(display.id)\t\(display.localizedName)")
             }
             return 0
         case .listTargets:
@@ -69,8 +71,9 @@ enum MDKHostCommandLine {
             }
         case .screenCaptureKitProxyHandshakeTrace(let displayID, let sampleDuration, let json):
             do {
+                let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
                 let trace = try controller.traceScreenCaptureKitProxyHandshake(
-                    displayID: displayID,
+                    displayID: resolvedDisplayID,
                     sampleDuration: sampleDuration
                 )
                 if json {
@@ -90,12 +93,13 @@ enum MDKHostCommandLine {
             }
         case .screenCaptureKitPassiveHandshakeTrace(let displayID, let sampleDuration, let json, let useMetalStimulus):
             do {
-                let stimulus = useMetalStimulus ? MDKHostMetalStimulus(displayID: displayID) : nil
+                let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
+                let stimulus = useMetalStimulus ? MDKHostMetalStimulus(displayID: resolvedDisplayID) : nil
                 stimulus?.start()
                 defer { stimulus?.stop() }
 
                 let trace = try controller.traceScreenCaptureKitPassiveHandshake(
-                    displayID: displayID,
+                    displayID: resolvedDisplayID,
                     sampleDuration: sampleDuration
                 )
                 if json {
@@ -115,12 +119,13 @@ enum MDKHostCommandLine {
             }
         case .screenCaptureKitTimingTrace(let displayID, let sampleDuration, let json, let useMetalStimulus):
             do {
-                let stimulus = useMetalStimulus ? MDKHostMetalStimulus(displayID: displayID) : nil
+                let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
+                let stimulus = useMetalStimulus ? MDKHostMetalStimulus(displayID: resolvedDisplayID) : nil
                 stimulus?.start()
                 defer { stimulus?.stop() }
 
                 let trace = try controller.traceScreenCaptureKitTiming(
-                    displayID: displayID,
+                    displayID: resolvedDisplayID,
                     sampleDuration: sampleDuration
                 )
                 if json {
@@ -158,8 +163,9 @@ enum MDKHostCommandLine {
             return 0
         case .privateCaptureProbe(let displayID, let requestExtendedRange, let json):
             do {
+                let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
                 let result = try controller.probePrivateCaptureSingleFrame(
-                    displayID: displayID,
+                    displayID: resolvedDisplayID,
                     requestExtendedRange: requestExtendedRange
                 )
                 if json {
@@ -179,8 +185,9 @@ enum MDKHostCommandLine {
             }
         case .privateProxyCaptureProbe(let displayID, let requestExtendedRange, let json):
             do {
+                let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
                 let result = try controller.probePrivateProxyCaptureSingleFrame(
-                    displayID: displayID,
+                    displayID: resolvedDisplayID,
                     requestExtendedRange: requestExtendedRange
                 )
                 if json {
@@ -200,7 +207,8 @@ enum MDKHostCommandLine {
             }
         case .privateDisplayStreamProbe(let displayID, let json):
             do {
-                let result = try controller.probePrivateDisplayStream(displayID: displayID)
+                let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
+                let result = try controller.probePrivateDisplayStream(displayID: resolvedDisplayID)
                 if json {
                     let encoder = JSONEncoder()
                     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -218,7 +226,8 @@ enum MDKHostCommandLine {
             }
         case .privateDisplayStreamProbeMatrix(let displayID, let json):
             do {
-                let results = try controller.probePrivateDisplayStreamMatrix(displayID: displayID)
+                let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
+                let results = try controller.probePrivateDisplayStreamMatrix(displayID: resolvedDisplayID)
                 if json {
                     let encoder = JSONEncoder()
                     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -236,8 +245,9 @@ enum MDKHostCommandLine {
             }
         case .privateCaptureBenchmark(let displayID, let requestExtendedRange, let sampleDuration, let json):
             do {
+                let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
                 let result = try controller.benchmarkPrivateCapture(
-                    displayID: displayID,
+                    displayID: resolvedDisplayID,
                     requestExtendedRange: requestExtendedRange,
                     sampleDuration: sampleDuration
                 )
@@ -258,8 +268,9 @@ enum MDKHostCommandLine {
             }
         case .privateProxyCaptureBenchmark(let displayID, let requestExtendedRange, let sampleDuration, let json):
             do {
+                let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
                 let result = try controller.benchmarkPrivateProxyCapture(
-                    displayID: displayID,
+                    displayID: resolvedDisplayID,
                     requestExtendedRange: requestExtendedRange,
                     sampleDuration: sampleDuration
                 )
@@ -279,8 +290,8 @@ enum MDKHostCommandLine {
                 return 1
             }
         case .benchmark(let displayID, let targetIdentifier, let intent, let processingMode, let json):
-            guard let display = controller.display(id: displayID) else {
-                fputs("Unknown display id: \(displayID)\n", stderr)
+            guard let display = resolveDisplay(displayID, controller: controller) else {
+                fputs("Unable to resolve a display for the benchmark.\n", stderr)
                 return 64
             }
             guard let target = controller.target(identifier: targetIdentifier) else {
@@ -310,8 +321,8 @@ enum MDKHostCommandLine {
 
             return suite.assessment.passed ? 0 : 2
         case .benchmarkMatrix(let displayID, let intent, let processingMode, let json):
-            guard let display = controller.display(id: displayID) else {
-                fputs("Unknown display id: \(displayID)\n", stderr)
+            guard let display = resolveDisplay(displayID, controller: controller) else {
+                fputs("Unable to resolve a display for the benchmark matrix.\n", stderr)
                 return 64
             }
 
@@ -359,9 +370,10 @@ enum MDKHostCommandLine {
             return .screenCaptureKitRuntimeInventory(json: tokens.contains("--json"))
         }
 
-        if let traceDisplayIndex = tokens.firstIndex(of: "--experimental-screencapturekit-proxy-handshake-display"),
-           tokens.indices.contains(traceDisplayIndex + 1),
-           let displayID = UInt32(tokens[traceDisplayIndex + 1]) {
+        if let displayID = parseOptionalDisplayID(
+            flag: "--experimental-screencapturekit-proxy-handshake-display",
+            tokens: tokens
+        ) {
             return .screenCaptureKitProxyHandshakeTrace(
                 displayID: displayID,
                 sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
@@ -369,9 +381,10 @@ enum MDKHostCommandLine {
             )
         }
 
-        if let traceDisplayIndex = tokens.firstIndex(of: "--experimental-screencapturekit-passive-handshake-display"),
-           tokens.indices.contains(traceDisplayIndex + 1),
-           let displayID = UInt32(tokens[traceDisplayIndex + 1]) {
+        if let displayID = parseOptionalDisplayID(
+            flag: "--experimental-screencapturekit-passive-handshake-display",
+            tokens: tokens
+        ) {
             return .screenCaptureKitPassiveHandshakeTrace(
                 displayID: displayID,
                 sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
@@ -380,9 +393,10 @@ enum MDKHostCommandLine {
             )
         }
 
-        if let traceDisplayIndex = tokens.firstIndex(of: "--experimental-screencapturekit-timing-display"),
-           tokens.indices.contains(traceDisplayIndex + 1),
-           let displayID = UInt32(tokens[traceDisplayIndex + 1]) {
+        if let displayID = parseOptionalDisplayID(
+            flag: "--experimental-screencapturekit-timing-display",
+            tokens: tokens
+        ) {
             return .screenCaptureKitTimingTrace(
                 displayID: displayID,
                 sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
@@ -395,9 +409,10 @@ enum MDKHostCommandLine {
             return .privateCapturePlan(json: tokens.contains("--json"))
         }
 
-        if let probeDisplayIndex = tokens.firstIndex(of: "--experimental-private-hw-capture-probe-display"),
-           tokens.indices.contains(probeDisplayIndex + 1),
-           let displayID = UInt32(tokens[probeDisplayIndex + 1]) {
+        if let displayID = parseOptionalDisplayID(
+            flag: "--experimental-private-hw-capture-probe-display",
+            tokens: tokens
+        ) {
             return .privateCaptureProbe(
                 displayID: displayID,
                 requestExtendedRange: tokens.contains("--experimental-private-hw-capture-probe-hdr"),
@@ -405,9 +420,10 @@ enum MDKHostCommandLine {
             )
         }
 
-        if let probeDisplayIndex = tokens.firstIndex(of: "--experimental-private-hw-capture-proxy-probe-display"),
-           tokens.indices.contains(probeDisplayIndex + 1),
-           let displayID = UInt32(tokens[probeDisplayIndex + 1]) {
+        if let displayID = parseOptionalDisplayID(
+            flag: "--experimental-private-hw-capture-proxy-probe-display",
+            tokens: tokens
+        ) {
             return .privateProxyCaptureProbe(
                 displayID: displayID,
                 requestExtendedRange: tokens.contains("--experimental-private-hw-capture-proxy-probe-hdr"),
@@ -415,27 +431,30 @@ enum MDKHostCommandLine {
             )
         }
 
-        if let probeDisplayIndex = tokens.firstIndex(of: "--experimental-private-hw-capture-stream-probe-display"),
-           tokens.indices.contains(probeDisplayIndex + 1),
-           let displayID = UInt32(tokens[probeDisplayIndex + 1]) {
+        if let displayID = parseOptionalDisplayID(
+            flag: "--experimental-private-hw-capture-stream-probe-display",
+            tokens: tokens
+        ) {
             return .privateDisplayStreamProbe(
                 displayID: displayID,
                 json: tokens.contains("--json")
             )
         }
 
-        if let probeDisplayIndex = tokens.firstIndex(of: "--experimental-private-hw-capture-stream-probe-matrix-display"),
-           tokens.indices.contains(probeDisplayIndex + 1),
-           let displayID = UInt32(tokens[probeDisplayIndex + 1]) {
+        if let displayID = parseOptionalDisplayID(
+            flag: "--experimental-private-hw-capture-stream-probe-matrix-display",
+            tokens: tokens
+        ) {
             return .privateDisplayStreamProbeMatrix(
                 displayID: displayID,
                 json: tokens.contains("--json")
             )
         }
 
-        if let benchmarkDisplayIndex = tokens.firstIndex(of: "--experimental-private-hw-capture-benchmark-display"),
-           tokens.indices.contains(benchmarkDisplayIndex + 1),
-           let displayID = UInt32(tokens[benchmarkDisplayIndex + 1]) {
+        if let displayID = parseOptionalDisplayID(
+            flag: "--experimental-private-hw-capture-benchmark-display",
+            tokens: tokens
+        ) {
             return .privateCaptureBenchmark(
                 displayID: displayID,
                 requestExtendedRange: tokens.contains("--experimental-private-hw-capture-benchmark-hdr"),
@@ -444,9 +463,10 @@ enum MDKHostCommandLine {
             )
         }
 
-        if let benchmarkDisplayIndex = tokens.firstIndex(of: "--experimental-private-hw-capture-proxy-benchmark-display"),
-           tokens.indices.contains(benchmarkDisplayIndex + 1),
-           let displayID = UInt32(tokens[benchmarkDisplayIndex + 1]) {
+        if let displayID = parseOptionalDisplayID(
+            flag: "--experimental-private-hw-capture-proxy-benchmark-display",
+            tokens: tokens
+        ) {
             return .privateProxyCaptureBenchmark(
                 displayID: displayID,
                 requestExtendedRange: tokens.contains("--experimental-private-hw-capture-proxy-benchmark-hdr"),
@@ -455,9 +475,10 @@ enum MDKHostCommandLine {
             )
         }
 
-        if let matrixDisplayIndex = tokens.firstIndex(of: "--benchmark-matrix-display"),
-           tokens.indices.contains(matrixDisplayIndex + 1),
-           let displayID = UInt32(tokens[matrixDisplayIndex + 1]) {
+        if let displayID = parseOptionalDisplayID(
+            flag: "--benchmark-matrix-display",
+            tokens: tokens
+        ) {
             let intent: MDKCapturePlanIntent = tokens.contains("--compare-backends")
                 ? .compareBackends
                 : .validateDefaultBackend
@@ -471,11 +492,12 @@ enum MDKHostCommandLine {
             )
         }
 
-        guard let displayIndex = tokens.firstIndex(of: "--benchmark-display"),
-              let targetIndex = tokens.firstIndex(of: "--benchmark-target"),
-              tokens.indices.contains(displayIndex + 1),
-              tokens.indices.contains(targetIndex + 1),
-              let displayID = UInt32(tokens[displayIndex + 1]) else {
+        guard let targetIndex = tokens.firstIndex(of: "--benchmark-target"),
+              tokens.indices.contains(targetIndex + 1) else {
+            return nil
+        }
+
+        guard let displayID = parseOptionalDisplayID(flag: "--benchmark-display", tokens: tokens) else {
             return nil
         }
 
@@ -511,6 +533,59 @@ enum MDKHostCommandLine {
         }
 
         return duration
+    }
+
+    private static func parseOptionalDisplayID(flag: String, tokens: [String]) -> UInt32?? {
+        guard let index = tokens.firstIndex(of: flag) else {
+            return nil
+        }
+
+        let nextIndex = index + 1
+        guard tokens.indices.contains(nextIndex) else {
+            return .some(nil)
+        }
+
+        let nextToken = tokens[nextIndex]
+        if nextToken.hasPrefix("--") {
+            return .some(nil)
+        }
+
+        let lowered = nextToken.lowercased()
+        if lowered == "auto" || lowered == "main" || lowered == "default" {
+            return .some(nil)
+        }
+
+        guard let displayID = UInt32(nextToken) else {
+            return nil
+        }
+
+        return .some(displayID)
+    }
+
+    private static func resolveDisplay(
+        _ displayID: UInt32?,
+        controller: MDKHostBenchmarkController
+    ) -> MDKDisplayDescriptor? {
+        if let displayID {
+            return controller.display(id: displayID)
+        }
+
+        return controller.defaultDisplay()
+    }
+
+    private static func resolveDisplayID(
+        _ displayID: UInt32?,
+        controller: MDKHostBenchmarkController
+    ) throws -> UInt32 {
+        guard let resolvedDisplay = resolveDisplay(displayID, controller: controller) else {
+            throw NSError(
+                domain: "MacDisplayKit.HostCLI",
+                code: 64,
+                userInfo: [NSLocalizedDescriptionKey: "Unable to resolve a display for the requested command."]
+            )
+        }
+
+        return resolvedDisplay.id
     }
 
     private static func formatScreenCaptureKitRuntimeInventory(
