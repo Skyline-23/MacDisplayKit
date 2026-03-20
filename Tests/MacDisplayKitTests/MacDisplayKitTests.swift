@@ -275,6 +275,119 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(result.probe.portMessageCount, 2)
     }
 
+    func testScreenCaptureKitProxyHandshakeTraceRoundTripsThroughJSON() throws {
+        let trace = MDKScreenCaptureKitProxyHandshakeTrace(
+            displayID: 42,
+            sampleDuration: 1.5,
+            status: 0,
+            succeeded: true,
+            streamID: "stream-123",
+            filterID: "filter-456",
+            selectors: [
+                "fetchDisplay:withCompletionHandler:",
+                "proxyCoreGraphicsWithMethodType:config:machPort:completionHandler:"
+            ],
+            symbols: [
+                "SLSDisplayStreamCreateProxying"
+            ],
+            steps: [
+                MDKScreenCaptureKitProxyHandshakeStep(
+                    name: "fetch-display",
+                    selector: "fetchDisplay:withCompletionHandler:",
+                    symbol: nil,
+                    status: 0,
+                    succeeded: true,
+                    notes: ["Resolved target display."]
+                ),
+                MDKScreenCaptureKitProxyHandshakeStep(
+                    name: "proxy-core-graphics",
+                    selector: "proxyCoreGraphicsWithMethodType:config:machPort:completionHandler:",
+                    symbol: "SLSDisplayStreamCreateProxying",
+                    status: 0,
+                    succeeded: true,
+                    notes: ["Forwarded proxy request to the daemon."]
+                )
+            ],
+            notes: [
+                "Trace completed successfully."
+            ]
+        )
+
+        let data = try JSONEncoder().encode(trace)
+        let decoded = try JSONDecoder().decode(MDKScreenCaptureKitProxyHandshakeTrace.self, from: data)
+        XCTAssertEqual(decoded, trace)
+    }
+
+    func testScreenCaptureKitProxyHandshakeTraceParsesShimDictionary() throws {
+        let payload: NSDictionary = [
+            "displayID": NSNumber(value: 77),
+            "sampleDuration": NSNumber(value: 2.0),
+            "status": NSNumber(value: 0),
+            "succeeded": NSNumber(value: true),
+            "streamID": "stream-77",
+            "filterID": "filter-77",
+            "selectors": [
+                "fetchDisplay:withCompletionHandler:",
+                "startCapture:withContentFilter:preservedFilter:transactionID:properties:extensionToken:completionHandler:",
+                "proxyCoreGraphicsWithMethodType:config:machPort:completionHandler:"
+            ],
+            "symbols": [
+                "SLSDisplayStreamCreateProxying",
+                "SLSHWCaptureStreamCreateProxying"
+            ],
+            "steps": [
+                [
+                    "name": "fetch-display",
+                    "selector": "fetchDisplay:withCompletionHandler:",
+                    "status": NSNumber(value: 0),
+                    "succeeded": NSNumber(value: true),
+                    "notes": ["Display lookup completed."]
+                ],
+                [
+                    "name": "proxy-core-graphics",
+                    "selector": "proxyCoreGraphicsWithMethodType:config:machPort:completionHandler:",
+                    "symbol": "SLSDisplayStreamCreateProxying",
+                    "status": NSNumber(value: 0),
+                    "succeeded": NSNumber(value: true),
+                    "notes": ["Proxy stream creation returned success."]
+                ]
+            ],
+            "notes": [
+                "Handshake trace payload parsed."
+            ]
+        ]
+
+        let trace = try MDKScreenCaptureKitProxyHandshakeTrace(shimDictionary: payload)
+        XCTAssertEqual(trace.displayID, 77)
+        XCTAssertEqual(trace.sampleDuration, 2.0, accuracy: 0.0001)
+        XCTAssertEqual(trace.status, 0)
+        XCTAssertTrue(trace.succeeded)
+        XCTAssertEqual(trace.streamID, "stream-77")
+        XCTAssertEqual(trace.filterID, "filter-77")
+        XCTAssertEqual(
+            trace.selectors,
+            [
+                "fetchDisplay:withCompletionHandler:",
+                "startCapture:withContentFilter:preservedFilter:transactionID:properties:extensionToken:completionHandler:",
+                "proxyCoreGraphicsWithMethodType:config:machPort:completionHandler:"
+            ]
+        )
+        XCTAssertEqual(
+            trace.symbols,
+            [
+                "SLSDisplayStreamCreateProxying",
+                "SLSHWCaptureStreamCreateProxying"
+            ]
+        )
+        XCTAssertEqual(trace.steps.count, 2)
+        XCTAssertEqual(trace.steps[0].name, "fetch-display")
+        XCTAssertEqual(trace.steps[0].selector, "fetchDisplay:withCompletionHandler:")
+        XCTAssertEqual(trace.steps[0].status, 0)
+        XCTAssertEqual(trace.steps[0].succeeded, true)
+        XCTAssertEqual(trace.steps[1].symbol, "SLSDisplayStreamCreateProxying")
+        XCTAssertEqual(trace.notes, ["Handshake trace payload parsed."])
+    }
+
     func testPrivateCapturePrototypePlannerPrefersProxyingPathWhenAvailable() {
         let plan = MDKPrivateCapturePrototypePlanner.plan(
             for: MDKPrivateCaptureCapabilities(

@@ -4,6 +4,7 @@ import MacDisplayKit
 private enum MDKHostCLICommand {
     case listDisplays
     case listTargets
+    case screenCaptureKitProxyHandshakeTrace(displayID: UInt32, sampleDuration: TimeInterval, json: Bool)
     case privateCapturePlan(json: Bool)
     case privateCaptureProbe(displayID: UInt32, requestExtendedRange: Bool, json: Bool)
     case privateProxyCaptureProbe(displayID: UInt32, requestExtendedRange: Bool, json: Bool)
@@ -43,6 +44,27 @@ enum MDKHostCommandLine {
                 print("\(target.identifier)\t\(target.name)")
             }
             return 0
+        case .screenCaptureKitProxyHandshakeTrace(let displayID, let sampleDuration, let json):
+            do {
+                let trace = try controller.traceScreenCaptureKitProxyHandshake(
+                    displayID: displayID,
+                    sampleDuration: sampleDuration
+                )
+                if json {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    let data = try encoder.encode(trace)
+                    if let text = String(data: data, encoding: .utf8) {
+                        print(text)
+                    }
+                } else {
+                    print(MDKHostBenchmarkFormatter.formatScreenCaptureKitProxyHandshakeTrace(trace))
+                }
+                return trace.succeeded ? 0 : 2
+            } catch {
+                fputs("Failed to trace ScreenCaptureKit proxy handshake: \(error)\n", stderr)
+                return 1
+            }
         case .privateCapturePlan(let json):
             let plan = controller.privateCapturePrototypePlan()
             if json {
@@ -258,6 +280,16 @@ enum MDKHostCommandLine {
 
         if tokens.contains("--list-targets") {
             return .listTargets
+        }
+
+        if let traceDisplayIndex = tokens.firstIndex(of: "--experimental-screencapturekit-proxy-handshake-display"),
+           tokens.indices.contains(traceDisplayIndex + 1),
+           let displayID = UInt32(tokens[traceDisplayIndex + 1]) {
+            return .screenCaptureKitProxyHandshakeTrace(
+                displayID: displayID,
+                sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
+                json: tokens.contains("--json")
+            )
         }
 
         if tokens.contains("--experimental-private-hw-capture-plan") {

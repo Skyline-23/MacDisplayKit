@@ -2,6 +2,64 @@ import Foundation
 import MacDisplayKit
 
 enum MDKHostBenchmarkFormatter {
+    static func formatScreenCaptureKitProxyHandshakeTrace(
+        _ trace: MDKScreenCaptureKitProxyHandshakeTrace
+    ) -> String {
+        var lines: [String] = []
+        lines.append("ScreenCaptureKit proxy handshake trace")
+        lines.append("Display ID: \(trace.displayID)")
+        lines.append(String(format: "Sample duration: %.3fs", trace.sampleDuration))
+        lines.append("Status: \(trace.status)")
+        lines.append("Succeeded: \(trace.succeeded ? "yes" : "no")")
+        if let streamID = trace.streamID {
+            lines.append("Stream ID: \(streamID)")
+        }
+        if let filterID = trace.filterID {
+            lines.append("Filter ID: \(filterID)")
+        }
+        if !trace.selectors.isEmpty {
+            lines.append("Selectors:")
+            for selector in trace.selectors {
+                lines.append("  - \(selector)")
+            }
+        }
+        if !trace.symbols.isEmpty {
+            lines.append("Symbols:")
+            for symbol in trace.symbols {
+                lines.append("  - \(symbol)")
+            }
+        }
+        if !trace.steps.isEmpty {
+            lines.append("Steps:")
+            for step in trace.steps {
+                var parts = [step.name]
+                if let selector = step.selector {
+                    parts.append("selector=\(selector)")
+                }
+                if let symbol = step.symbol {
+                    parts.append("symbol=\(symbol)")
+                }
+                if let status = step.status {
+                    parts.append("status=\(status)")
+                }
+                if let succeeded = step.succeeded {
+                    parts.append("succeeded=\(succeeded ? "yes" : "no")")
+                }
+                lines.append("  - " + parts.joined(separator: " "))
+                for note in step.notes {
+                    lines.append("    note: \(note)")
+                }
+            }
+        }
+        if !trace.notes.isEmpty {
+            lines.append("Notes:")
+            for note in trace.notes {
+                lines.append("  - \(note)")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
     static func formatPrivateCaptureBenchmarkResult(
         _ result: MDKPrivateCaptureBenchmarkResult
     ) -> String {
