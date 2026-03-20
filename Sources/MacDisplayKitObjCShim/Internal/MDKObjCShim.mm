@@ -232,6 +232,7 @@ static NSDictionary<NSString *, id> *MDKSummarizeSampleBuffer(CMSampleBufferRef 
 static NSDictionary<NSString *, id> *MDKCopySCStreamInternalState(id stream);
 static NSDictionary<NSString *, id> *MDKSummarizeXPCObject(xpc_object_t object);
 static NSDictionary<NSString *, id> *MDKSummarizeSampleCarrier(id sample);
+static NSDictionary<NSString *, id> *MDKSummarizePointerValue(const void *pointer);
 
 @implementation MDKShimStreamOutputCollector
 
@@ -283,6 +284,12 @@ using MDKManagerStreamOutputEffectDidStartFn = void (*)(id, SEL, BOOL, id);
 using MDKRPIOSurfaceSetFn = void (*)(id, SEL, IOSurfaceRef);
 using MDKRPIOSurfaceGetFn = IOSurfaceRef (*)(id, SEL);
 using MDKCaptureHandlerWithSampleFn = void (*)(id, SEL, id, id);
+using MDKCAContentStreamProduceSurfaceFn = void (*)(id, SEL, unsigned int, const void *);
+using MDKCAContentStreamReleaseSurfaceFn = BOOL (*)(id, SEL, IOSurfaceRef, NSError **);
+using MDKCAContentStreamReleaseSurfaceWithIDFn = BOOL (*)(id, SEL, unsigned int, NSError **);
+using MDKIOSurfaceRemoteAddSurfaceFn = void (*)(id, SEL, void *, void *, std::uint64_t, id);
+using MDKIOSurfaceRemoteSetSurfaceStatesFn = void (*)(id, SEL, id);
+using MDKIOSurfaceRemoteRemoveSurfaceFn = BOOL (*)(id, SEL, unsigned int);
 
 static MDKProxyCoreGraphicsFn MDKOriginalProxyCoreGraphics = nullptr;
 static MDKStartRemoteQueueFn MDKOriginalStartRemoteQueue = nullptr;
@@ -306,6 +313,12 @@ static MDKRPIOSurfaceSetFn MDKOriginalRPIOSurfaceSet = nullptr;
 static MDKRPIOSurfaceGetFn MDKOriginalRPIOSurfaceGet = nullptr;
 static MDKCaptureHandlerWithSampleFn MDKOriginalDaemonCaptureHandlerWithSample = nullptr;
 static MDKCaptureHandlerWithSampleFn MDKOriginalScreenRecorderCaptureHandlerWithSample = nullptr;
+static MDKCAContentStreamProduceSurfaceFn MDKOriginalCAContentStreamProduceSurface = nullptr;
+static MDKCAContentStreamReleaseSurfaceFn MDKOriginalCAContentStreamReleaseSurface = nullptr;
+static MDKCAContentStreamReleaseSurfaceWithIDFn MDKOriginalCAContentStreamReleaseSurfaceWithID = nullptr;
+static MDKIOSurfaceRemoteAddSurfaceFn MDKOriginalIOSurfaceRemoteAddSurface = nullptr;
+static MDKIOSurfaceRemoteSetSurfaceStatesFn MDKOriginalIOSurfaceRemoteSetSurfaceStates = nullptr;
+static MDKIOSurfaceRemoteRemoveSurfaceFn MDKOriginalIOSurfaceRemoteRemoveSurface = nullptr;
 
 static uint64_t MDKCurrentTraceTimestampNanos(void) {
     return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
@@ -641,6 +654,19 @@ static NSDictionary<NSString *, id> *MDKSummarizeSampleCarrier(id sample) {
     return MDKSummarizeObject(sample);
 }
 
+static NSDictionary<NSString *, id> *MDKSummarizePointerValue(const void *pointer) {
+    if (pointer == nullptr) {
+        return @{
+            @"present": @NO
+        };
+    }
+
+    return @{
+        @"present": @YES,
+        @"pointer": [NSString stringWithFormat:@"%p", pointer],
+    };
+}
+
 static NSDictionary<NSString *, id> *MDKCopySCStreamInternalState(id stream) {
     if (stream == nil) {
         return @{
@@ -703,6 +729,8 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"sampleBufferEventCount": @0,
             @"rpIOSurfaceEventCount": @0,
             @"captureHandlerSampleEventCount": @0,
+            @"contentStreamEventCount": @0,
+            @"surfaceTransportEventCount": @0,
         } mutableCopy];
     }
 }
@@ -1111,6 +1139,38 @@ static void MDKRecordCaptureHandlerSampleEvent(NSString *kind, id sample, id tim
     );
 }
 
+static void MDKRecordCAContentStreamEvent(NSString *kind, NSDictionary<NSString *, id> *payload) {
+    BOOL shouldRecord = NO;
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            NSUInteger eventCount = [MDKActiveSCKTraceState[@"contentStreamEventCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"contentStreamEventCount"] = @(eventCount);
+            shouldRecord = eventCount <= 6;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    MDKRecordSCKTraceEvent(kind, payload);
+}
+
+static void MDKRecordSurfaceTransportEvent(NSString *kind, NSDictionary<NSString *, id> *payload) {
+    BOOL shouldRecord = NO;
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            NSUInteger eventCount = [MDKActiveSCKTraceState[@"surfaceTransportEventCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"surfaceTransportEventCount"] = @(eventCount);
+            shouldRecord = eventCount <= 6;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    MDKRecordSCKTraceEvent(kind, payload);
+}
+
 static void MDKSwizzledRPIOSurfaceSet(id self, SEL _cmd, IOSurfaceRef surface) {
     MDKRecordRPIOSurfaceEvent(@"rp-iosurface-set", surface);
     MDKOriginalRPIOSurfaceSet(self, _cmd, surface);
@@ -1130,6 +1190,80 @@ static void MDKSwizzledDaemonCaptureHandlerWithSample(id self, SEL _cmd, id samp
 static void MDKSwizzledScreenRecorderCaptureHandlerWithSample(id self, SEL _cmd, id sample, id timingData) {
     MDKRecordCaptureHandlerSampleEvent(@"screen-recorder-capture-handler-sample", sample, timingData);
     MDKOriginalScreenRecorderCaptureHandlerWithSample(self, _cmd, sample, timingData);
+}
+
+static void MDKSwizzledCAContentStreamProduceSurface(id self, SEL _cmd, unsigned int surfaceID, const void *frameInfo) {
+    MDKRecordCAContentStreamEvent(
+        @"ca-content-stream-produce-surface",
+        @{
+            @"surfaceID": @(surfaceID),
+            @"frameInfo": MDKSummarizePointerValue(frameInfo),
+        }
+    );
+    MDKOriginalCAContentStreamProduceSurface(self, _cmd, surfaceID, frameInfo);
+}
+
+static BOOL MDKSwizzledCAContentStreamReleaseSurface(id self, SEL _cmd, IOSurfaceRef surface, NSError **error) {
+    BOOL released = MDKOriginalCAContentStreamReleaseSurface(self, _cmd, surface, error);
+    MDKRecordCAContentStreamEvent(
+        @"ca-content-stream-release-surface",
+        @{
+            @"surface": MDKSummarizeIOSurface(surface),
+            @"released": @(released),
+            @"errorDomain": (error != nullptr && *error != nil) ? (*error).domain : [NSNull null],
+            @"errorCode": (error != nullptr && *error != nil) ? @((*error).code) : @0,
+        }
+    );
+    return released;
+}
+
+static BOOL MDKSwizzledCAContentStreamReleaseSurfaceWithID(id self, SEL _cmd, unsigned int surfaceID, NSError **error) {
+    BOOL released = MDKOriginalCAContentStreamReleaseSurfaceWithID(self, _cmd, surfaceID, error);
+    MDKRecordCAContentStreamEvent(
+        @"ca-content-stream-release-surface-id",
+        @{
+            @"surfaceID": @(surfaceID),
+            @"released": @(released),
+            @"errorDomain": (error != nullptr && *error != nil) ? (*error).domain : [NSNull null],
+            @"errorCode": (error != nullptr && *error != nil) ? @((*error).code) : @0,
+        }
+    );
+    return released;
+}
+
+static void MDKSwizzledIOSurfaceRemoteAddSurface(id self, SEL _cmd, void *surfaceClient, void *mappedAddress, std::uint64_t mappedSize, id extraData) {
+    MDKRecordSurfaceTransportEvent(
+        @"iosurface-remote-add-surface",
+        @{
+            @"surfaceClient": MDKSummarizePointerValue(surfaceClient),
+            @"mappedAddress": MDKSummarizePointerValue(mappedAddress),
+            @"mappedSize": @(mappedSize),
+            @"extraData": MDKSummarizeObject(extraData),
+        }
+    );
+    MDKOriginalIOSurfaceRemoteAddSurface(self, _cmd, surfaceClient, mappedAddress, mappedSize, extraData);
+}
+
+static void MDKSwizzledIOSurfaceRemoteSetSurfaceStates(id self, SEL _cmd, id surfaceStates) {
+    MDKRecordSurfaceTransportEvent(
+        @"iosurface-remote-set-surface-states",
+        @{
+            @"surfaceStates": MDKSummarizeObject(surfaceStates),
+        }
+    );
+    MDKOriginalIOSurfaceRemoteSetSurfaceStates(self, _cmd, surfaceStates);
+}
+
+static BOOL MDKSwizzledIOSurfaceRemoteRemoveSurface(id self, SEL _cmd, unsigned int surfaceID) {
+    BOOL removed = MDKOriginalIOSurfaceRemoteRemoveSurface(self, _cmd, surfaceID);
+    MDKRecordSurfaceTransportEvent(
+        @"iosurface-remote-remove-surface",
+        @{
+            @"surfaceID": @(surfaceID),
+            @"removed": @(removed),
+        }
+    );
+    return removed;
 }
 
 static void MDKRecordRemoteQueueConsumerEvent(NSString *kind, id queue) {
@@ -1185,6 +1319,8 @@ static void MDKInstallSCKProxyTraceHooks(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         dlopen("/System/Library/Frameworks/ScreenCaptureKit.framework/ScreenCaptureKit", RTLD_NOW | RTLD_GLOBAL);
+        dlopen("/System/Library/Frameworks/QuartzCore.framework/QuartzCore", RTLD_NOW | RTLD_GLOBAL);
+        dlopen("/System/Library/Frameworks/IOSurface.framework/IOSurface", RTLD_NOW | RTLD_GLOBAL);
         Class daemonProxyClass = NSClassFromString(@"RPDaemonProxy");
         if (daemonProxyClass == Nil) {
             return;
@@ -1470,6 +1606,90 @@ static void MDKInstallSCKProxyTraceHooks(void) {
                 method_setImplementation(
                     screenRecorderCaptureHandlerWithSampleMethod,
                     reinterpret_cast<IMP>(MDKSwizzledScreenRecorderCaptureHandlerWithSample)
+                );
+            }
+        }
+
+        Class caContentStreamClass = NSClassFromString(@"CAContentStream");
+        if (caContentStreamClass != Nil) {
+            Method produceSurfaceMethod = class_getInstanceMethod(
+                caContentStreamClass,
+                sel_registerName("produceSurface:withFrameInfo:")
+            );
+            if (produceSurfaceMethod != nullptr) {
+                MDKOriginalCAContentStreamProduceSurface =
+                    reinterpret_cast<MDKCAContentStreamProduceSurfaceFn>(method_getImplementation(produceSurfaceMethod));
+                method_setImplementation(
+                    produceSurfaceMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledCAContentStreamProduceSurface)
+                );
+            }
+
+            Method releaseSurfaceMethod = class_getInstanceMethod(
+                caContentStreamClass,
+                sel_registerName("releaseSurface:error:")
+            );
+            if (releaseSurfaceMethod != nullptr) {
+                MDKOriginalCAContentStreamReleaseSurface =
+                    reinterpret_cast<MDKCAContentStreamReleaseSurfaceFn>(method_getImplementation(releaseSurfaceMethod));
+                method_setImplementation(
+                    releaseSurfaceMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledCAContentStreamReleaseSurface)
+                );
+            }
+
+            Method releaseSurfaceWithIDMethod = class_getInstanceMethod(
+                caContentStreamClass,
+                sel_registerName("releaseSurfaceWithId:error:")
+            );
+            if (releaseSurfaceWithIDMethod != nullptr) {
+                MDKOriginalCAContentStreamReleaseSurfaceWithID =
+                    reinterpret_cast<MDKCAContentStreamReleaseSurfaceWithIDFn>(method_getImplementation(releaseSurfaceWithIDMethod));
+                method_setImplementation(
+                    releaseSurfaceWithIDMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledCAContentStreamReleaseSurfaceWithID)
+                );
+            }
+        }
+
+        Class ioSurfaceRemoteClientClass = NSClassFromString(@"IOSurfaceRemoteRemoteClient");
+        if (ioSurfaceRemoteClientClass != Nil) {
+            Method addSurfaceMethod = class_getInstanceMethod(
+                ioSurfaceRemoteClientClass,
+                sel_registerName("_addSurface:mappedAddress:mappedSize:extraData:")
+            );
+            if (addSurfaceMethod != nullptr) {
+                MDKOriginalIOSurfaceRemoteAddSurface =
+                    reinterpret_cast<MDKIOSurfaceRemoteAddSurfaceFn>(method_getImplementation(addSurfaceMethod));
+                method_setImplementation(
+                    addSurfaceMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledIOSurfaceRemoteAddSurface)
+                );
+            }
+
+            Method setSurfaceStatesMethod = class_getInstanceMethod(
+                ioSurfaceRemoteClientClass,
+                sel_registerName("setSurfaceStates:")
+            );
+            if (setSurfaceStatesMethod != nullptr) {
+                MDKOriginalIOSurfaceRemoteSetSurfaceStates =
+                    reinterpret_cast<MDKIOSurfaceRemoteSetSurfaceStatesFn>(method_getImplementation(setSurfaceStatesMethod));
+                method_setImplementation(
+                    setSurfaceStatesMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledIOSurfaceRemoteSetSurfaceStates)
+                );
+            }
+
+            Method removeSurfaceMethod = class_getInstanceMethod(
+                ioSurfaceRemoteClientClass,
+                sel_registerName("_removeSurface:")
+            );
+            if (removeSurfaceMethod != nullptr) {
+                MDKOriginalIOSurfaceRemoteRemoveSurface =
+                    reinterpret_cast<MDKIOSurfaceRemoteRemoveSurfaceFn>(method_getImplementation(removeSurfaceMethod));
+                method_setImplementation(
+                    removeSurfaceMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledIOSurfaceRemoteRemoveSurface)
                 );
             }
         }
@@ -2171,6 +2391,97 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             continue;
         }
 
+        if ([kind isEqualToString:@"ca-content-stream-produce-surface"] ||
+            [kind isEqualToString:@"ca-content-stream-release-surface"] ||
+            [kind isEqualToString:@"ca-content-stream-release-surface-id"]) {
+            NSString *selector = nil;
+            if ([kind isEqualToString:@"ca-content-stream-produce-surface"]) {
+                selector = @"produceSurface:withFrameInfo:";
+            } else if ([kind isEqualToString:@"ca-content-stream-release-surface"]) {
+                selector = @"releaseSurface:error:";
+            } else {
+                selector = @"releaseSurfaceWithId:error:";
+            }
+            [selectors addObject:selector];
+            [symbols addObject:@"CAContentStream"];
+            NSMutableArray<NSString *> *notes = [NSMutableArray array];
+            if (event[@"surfaceID"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"surfaceID=%@", MDKDescribeTraceValue(event[@"surfaceID"])]];
+            }
+            if (event[@"frameInfo"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"frameInfo=%@", MDKDescribeTraceValue(event[@"frameInfo"])]];
+            }
+            if (event[@"surface"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"surface=%@", MDKDescribeTraceValue(event[@"surface"])]];
+            }
+            if (event[@"released"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"released=%@", MDKDescribeTraceValue(event[@"released"])]];
+            }
+            if (event[@"errorDomain"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"errorDomain=%@", MDKDescribeTraceValue(event[@"errorDomain"])]];
+            }
+            if (event[@"errorCode"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"errorCode=%@", MDKDescribeTraceValue(event[@"errorCode"])]];
+            }
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(
+                kind,
+                selector,
+                @"CAContentStream",
+                nil,
+                @YES,
+                notes
+            )];
+            continue;
+        }
+
+        if ([kind isEqualToString:@"iosurface-remote-add-surface"] ||
+            [kind isEqualToString:@"iosurface-remote-set-surface-states"] ||
+            [kind isEqualToString:@"iosurface-remote-remove-surface"]) {
+            NSString *selector = nil;
+            if ([kind isEqualToString:@"iosurface-remote-add-surface"]) {
+                selector = @"_addSurface:mappedAddress:mappedSize:extraData:";
+            } else if ([kind isEqualToString:@"iosurface-remote-set-surface-states"]) {
+                selector = @"setSurfaceStates:";
+            } else {
+                selector = @"_removeSurface:";
+            }
+            [selectors addObject:selector];
+            [symbols addObject:@"IOSurfaceRemoteRemoteClient"];
+            NSMutableArray<NSString *> *notes = [NSMutableArray array];
+            if (event[@"surfaceClient"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"surfaceClient=%@", MDKDescribeTraceValue(event[@"surfaceClient"])]];
+            }
+            if (event[@"mappedAddress"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"mappedAddress=%@", MDKDescribeTraceValue(event[@"mappedAddress"])]];
+            }
+            if (event[@"mappedSize"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"mappedSize=%@", MDKDescribeTraceValue(event[@"mappedSize"])]];
+            }
+            if (event[@"extraData"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"extraData=%@", MDKDescribeTraceValue(event[@"extraData"])]];
+            }
+            if (event[@"surfaceStates"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"surfaceStates=%@", MDKDescribeTraceValue(event[@"surfaceStates"])]];
+            }
+            if (event[@"surfaceID"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"surfaceID=%@", MDKDescribeTraceValue(event[@"surfaceID"])]];
+            }
+            if (event[@"removed"] != nil) {
+                [notes addObject:[NSString stringWithFormat:@"removed=%@", MDKDescribeTraceValue(event[@"removed"])]];
+            }
+            [notes addObjectsFromArray:MDKTraceDiagnosticNotes(event)];
+            [steps addObject:MDKMakeTraceStep(
+                kind,
+                selector,
+                @"IOSurfaceRemoteRemoteClient",
+                nil,
+                @YES,
+                notes
+            )];
+            continue;
+        }
+
         if ([kind isEqualToString:@"rp-iosurface-set"] || [kind isEqualToString:@"rp-iosurface-get"]) {
             [selectors addObject:[kind isEqualToString:@"rp-iosurface-set"] ? @"setIOSurface:" : @"ioSurface"];
             [symbols addObject:@"RPIOSurfaceObject"];
@@ -2223,6 +2534,8 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"sampleBufferEventCount=%@", MDKDescribeTraceValue(snapshot[@"sampleBufferEventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"rpIOSurfaceEventCount=%@", MDKDescribeTraceValue(snapshot[@"rpIOSurfaceEventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"captureHandlerSampleEventCount=%@", MDKDescribeTraceValue(snapshot[@"captureHandlerSampleEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"contentStreamEventCount=%@", MDKDescribeTraceValue(snapshot[@"contentStreamEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"surfaceTransportEventCount=%@", MDKDescribeTraceValue(snapshot[@"surfaceTransportEventCount"])]];
     [notes addObject:@"stopCaptureWithCompletionHandler was intentionally skipped in the host-only trace to avoid an RPDaemonProxy stop-path NSXPCEncoder exception."];
     const BOOL succeeded = [snapshot[@"sawProxyCoreGraphics"] boolValue] && startError == nil;
     const std::int32_t status = startError != nil ? static_cast<std::int32_t>(startError.code) : (succeeded ? 0 : 1);
