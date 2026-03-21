@@ -79,6 +79,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
     public let containsRows: Bool
     public let hotSymbolHistogram: [String: Int]
     public let hotSymbolCadenceSummaries: [MDKReplaydXctraceHotSymbolCadenceSummary]
+    public let hotSymbolSyscallSummaries: [MDKReplaydXctraceHotSymbolSyscallSummary]
     public let excerpt: [String]
 
     public init(
@@ -89,6 +90,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
         containsRows: Bool,
         hotSymbolHistogram: [String: Int],
         hotSymbolCadenceSummaries: [MDKReplaydXctraceHotSymbolCadenceSummary],
+        hotSymbolSyscallSummaries: [MDKReplaydXctraceHotSymbolSyscallSummary],
         excerpt: [String]
     ) {
         self.schema = schema
@@ -98,6 +100,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
         self.containsRows = containsRows
         self.hotSymbolHistogram = hotSymbolHistogram
         self.hotSymbolCadenceSummaries = hotSymbolCadenceSummaries
+        self.hotSymbolSyscallSummaries = hotSymbolSyscallSummaries
         self.excerpt = excerpt
     }
 }
@@ -124,6 +127,22 @@ public struct MDKReplaydXctraceHotSymbolCadenceSummary: Codable, Equatable, Send
         self.maxIntervalMilliseconds = maxIntervalMilliseconds
         self.intervalHistogram = intervalHistogram
         self.cadenceClassification = cadenceClassification
+    }
+}
+
+public struct MDKReplaydXctraceHotSymbolSyscallSummary: Codable, Equatable, Sendable {
+    public let symbolName: String
+    public let syscallHistogram: [String: Int]
+    public let signatureExamples: [String]
+
+    public init(
+        symbolName: String,
+        syscallHistogram: [String: Int],
+        signatureExamples: [String]
+    ) {
+        self.symbolName = symbolName
+        self.syscallHistogram = syscallHistogram
+        self.signatureExamples = signatureExamples
     }
 }
 
@@ -202,6 +221,12 @@ public enum MDKReplaydXctraceArtifactParser {
     private static let rowStartTimeExpression = try? NSRegularExpression(
         pattern: #"<start-time[^>]*>(\d+)</start-time>|<sample-time[^>]*>(\d+)</sample-time>"#
     )
+    private static let rowSyscallExpression = try? NSRegularExpression(
+        pattern: #"<syscall[^>]* fmt=\"([^\"]+)\""#
+    )
+    private static let rowFormattedLabelExpression = try? NSRegularExpression(
+        pattern: #"<formatted-label[^>]* fmt=\"([^\"]+)\""#
+    )
 
     public static func summarizeTableArtifact(
         schema: String,
@@ -215,6 +240,7 @@ public enum MDKReplaydXctraceArtifactParser {
         let rowCount = exportText.components(separatedBy: "<row").count - 1
         let hotSymbolHistogram = summarizeHotSymbols(in: exportText)
         let hotSymbolCadenceSummaries = summarizeHotSymbolCadences(in: exportText)
+        let hotSymbolSyscallSummaries = summarizeHotSymbolSyscalls(in: exportText)
 
         return MDKReplaydXctraceTableArtifact(
             schema: schema,
@@ -224,6 +250,7 @@ public enum MDKReplaydXctraceArtifactParser {
             containsRows: rowCount > 0,
             hotSymbolHistogram: hotSymbolHistogram,
             hotSymbolCadenceSummaries: hotSymbolCadenceSummaries,
+            hotSymbolSyscallSummaries: hotSymbolSyscallSummaries,
             excerpt: excerpt
         )
     }
@@ -505,6 +532,60 @@ public enum MDKReplaydXctraceArtifactParser {
         }
     }
 
+    private static func summarizeHotSymbolSyscalls(
+        in exportText: String
+    ) -> [MDKReplaydXctraceHotSymbolSyscallSummary] {
+        guard let rowExpression else {
+            return []
+        }
+
+        let exportRange = NSRange(exportText.startIndex..<exportText.endIndex, in: exportText)
+        let rowMatches = rowExpression.matches(in: exportText, range: exportRange)
+        guard !rowMatches.isEmpty else {
+            return []
+        }
+
+        var perSymbolHistogram: [String: [String: Int]] = [:]
+        var perSymbolSignatures: [String: [String]] = [:]
+
+        for rowMatch in rowMatches {
+            guard let rowRange = Range(rowMatch.range(at: 1), in: exportText) else {
+                continue
+            }
+            let rowText = String(exportText[rowRange])
+            let syscallName = firstCapturedValue(using: rowSyscallExpression, in: rowText) ?? "<unknown>"
+            let signature = firstCapturedValue(using: rowFormattedLabelExpression, in: rowText)
+
+            for pattern in hotSymbolPatterns {
+                guard let expression = try? NSRegularExpression(pattern: pattern.expression) else {
+                    continue
+                }
+                let rowTextRange = NSRange(rowText.startIndex..<rowText.endIndex, in: rowText)
+                if expression.firstMatch(in: rowText, range: rowTextRange) != nil {
+                    perSymbolHistogram[pattern.name, default: [:]][syscallName, default: 0] += 1
+                    if let signature {
+                        var signatures = perSymbolSignatures[pattern.name, default: []]
+                        if !signatures.contains(signature), signatures.count < 4 {
+                            signatures.append(signature)
+                            perSymbolSignatures[pattern.name] = signatures
+                        }
+                    }
+                }
+            }
+        }
+
+        return hotSymbolPatterns.compactMap { pattern in
+            guard let syscallHistogram = perSymbolHistogram[pattern.name], !syscallHistogram.isEmpty else {
+                return nil
+            }
+            return MDKReplaydXctraceHotSymbolSyscallSummary(
+                symbolName: pattern.name,
+                syscallHistogram: syscallHistogram,
+                signatureExamples: perSymbolSignatures[pattern.name] ?? []
+            )
+        }
+    }
+
     private static func parseRowTimestamp(
         _ rowText: String,
         using expression: NSRegularExpression
@@ -525,5 +606,21 @@ public enum MDKReplaydXctraceArtifactParser {
             }
         }
         return nil
+    }
+
+    private static func firstCapturedValue(
+        using expression: NSRegularExpression?,
+        in source: String
+    ) -> String? {
+        guard
+            let expression,
+            let match = expression.firstMatch(
+                in: source,
+                range: NSRange(source.startIndex..<source.endIndex, in: source)
+            )
+        else {
+            return nil
+        }
+        return captureGroup(at: 1, from: match, in: source)
     }
 }

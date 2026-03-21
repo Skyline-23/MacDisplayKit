@@ -27,6 +27,13 @@ enum MDKHostBenchmarkFormatter {
                 )
             }
         }
+        if !report.systemCallTable.hotSymbolSyscallSummaries.isEmpty {
+            for summary in report.systemCallTable.hotSymbolSyscallSummaries {
+                lines.append(
+                    "    syscalls[\(summary.symbolName)]: histogram=\(summary.syscallHistogram) signatures=\(summary.signatureExamples)"
+                )
+            }
+        }
         lines.append(
             "  - \(report.timeSampleTable.schema): rows=\(report.timeSampleTable.rowCount) bytes=\(report.timeSampleTable.byteCount) path=\(report.timeSampleTable.outputPath)"
         )
@@ -37,6 +44,13 @@ enum MDKHostBenchmarkFormatter {
             for summary in report.timeSampleTable.hotSymbolCadenceSummaries {
                 lines.append(
                     "    cadence[\(summary.symbolName)]: count=\(summary.eventCount) class=\(summary.cadenceClassification) histogram=\(summary.intervalHistogram)"
+                )
+            }
+        }
+        if !report.timeSampleTable.hotSymbolSyscallSummaries.isEmpty {
+            for summary in report.timeSampleTable.hotSymbolSyscallSummaries {
+                lines.append(
+                    "    syscalls[\(summary.symbolName)]: histogram=\(summary.syscallHistogram) signatures=\(summary.signatureExamples)"
                 )
             }
         }

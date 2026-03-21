@@ -810,29 +810,37 @@ final class MacDisplayKitTests: XCTestCase {
             <schema name="syscall"/>
             <row>
               <sample-time id="1">1</sample-time>
+              <syscall fmt="write"/>
               <backtrace>
                 <frame name="FigRemoteQueueSenderResetIfFullAndEnqueueSequence"/>
                 <frame name="roEnqueueSampleBuffer"/>
               </backtrace>
+              <formatted-label fmt="write (fd: 15 , buf: 0x1 , len: 2 Bytes ) = 2 Bytes"/>
             </row>
             <row>
               <sample-time id="2">8333334</sample-time>
+              <syscall fmt="write"/>
               <backtrace>
                 <frame name="roEnqueueSampleBuffer"/>
               </backtrace>
+              <formatted-label fmt="write (fd: 15 , buf: 0x2 , len: 2 Bytes ) = 2 Bytes"/>
             </row>
             <row>
               <sample-time id="3">16666667</sample-time>
+              <syscall fmt="write"/>
               <backtrace>
                 <frame name="roEnqueueSampleBuffer"/>
               </backtrace>
+              <formatted-label fmt="write (fd: 15 , buf: 0x3 , len: 2 Bytes ) = 2 Bytes"/>
             </row>
             <row>
               <sample-time id="4">25000001</sample-time>
+              <syscall fmt="kevent_id"/>
               <backtrace>
                 <frame name="rqSenderHandleDequeue"/>
                 <frame name="SLContentStream"/>
               </backtrace>
+              <formatted-label fmt="kevent_id"/>
             </row>
           </node>
         </trace-query-result>
@@ -857,6 +865,11 @@ final class MacDisplayKitTests: XCTestCase {
         )
         XCTAssertEqual(sampleBufferCadence.eventCount, 3)
         XCTAssertEqual(sampleBufferCadence.cadenceClassification, "120hz-like")
+        let sampleBufferSyscalls = try XCTUnwrap(
+            summary.hotSymbolSyscallSummaries.first(where: { $0.symbolName == "roEnqueueSampleBuffer" })
+        )
+        XCTAssertEqual(sampleBufferSyscalls.syscallHistogram["write"], 3)
+        XCTAssertEqual(sampleBufferSyscalls.signatureExamples.count, 3)
         XCTAssertFalse(summary.excerpt.isEmpty)
     }
 
