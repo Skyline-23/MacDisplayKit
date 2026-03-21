@@ -2,6 +2,40 @@ import Foundation
 import MacDisplayKit
 
 enum MDKHostBenchmarkFormatter {
+    static func formatReplaydXctraceArtifactReport(
+        _ report: MDKReplaydXctraceArtifactReport
+    ) -> String {
+        var lines = formatScreenCaptureKitProxyHandshakeTrace(report.passiveTrace)
+            .components(separatedBy: "\n")
+        lines.append("")
+        lines.append("replayd xctrace artifacts")
+        lines.append("PID: \(report.replaydPID)")
+        lines.append("Trace directory: \(report.traceDirectoryPath)")
+        lines.append("Trace bundle: \(report.tracePath)")
+        lines.append("TOC: \(report.tocPath) bytes=\(report.tocByteCount)")
+        lines.append("Tables:")
+        lines.append(
+            "  - \(report.systemCallTable.schema): rows=\(report.systemCallTable.rowCount) bytes=\(report.systemCallTable.byteCount) path=\(report.systemCallTable.outputPath)"
+        )
+        lines.append(
+            "  - \(report.timeSampleTable.schema): rows=\(report.timeSampleTable.rowCount) bytes=\(report.timeSampleTable.byteCount) path=\(report.timeSampleTable.outputPath)"
+        )
+        lines.append("Unified log: lines=\(report.unifiedLog.lineCount) matched=\(report.unifiedLog.matchedLineCount) path=\(report.unifiedLog.outputPath)")
+        if !report.unifiedLog.matchedLines.isEmpty {
+            lines.append("Unified log matches:")
+            for line in report.unifiedLog.matchedLines {
+                lines.append("  - \(line)")
+            }
+        }
+        if !report.notes.isEmpty {
+            lines.append("Notes:")
+            for note in report.notes {
+                lines.append("  - \(note)")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
     static func formatReplaydProducerSeriesReport(
         _ report: MDKReplaydProducerTraceSeriesReport
     ) -> String {

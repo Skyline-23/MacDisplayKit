@@ -1222,6 +1222,45 @@ Interpretation:
   - this still does not prove `120-like` cadence
   - but it does show a repeatable increase in producer-side sample density under motion,
     especially on `producer-read-queue`
+- `xctrace` follow-up on this machine:
+  - short `Time Profiler` and `System Trace` recordings both succeed against `replayd` without extra privileges
+  - the most useful template so far is `System Trace`
+  - a verified minimal command sequence is:
+    - `MacDisplayKitHost --experimental-screencapturekit-replayd-xctrace-display auto --sample-duration 3 --with-metal-stimulus --json`
+  - the host command pairs:
+    - passive `SCStream` handshake trace
+    - `xctrace record --template 'System Trace' --attach replayd --time-limit <N>s`
+    - `xctrace export --toc`
+    - `xctrace export` of `syscall` and `time-sample` tables
+    - filtered `log show --style ndjson --process replayd`
+  - current limitation:
+    - on the latest verified run, both exported tables came back as schema-only XML
+      (`rowCount=0`) even though the `.trace` bundle recorded successfully
+    - this means the immediate next step is artifact-first, not table-row-first:
+      keep the `.trace` bundle, TOC, table exports, and replayd log together for later bundle-format parsing
+  - useful bundle paths inside a successful `System Trace` artifact include:
+    - `corespace/run1/core/table-manager`
+    - `corespace/run1/core/stores/indexed-store-*`
+    - `Trace1.run/RunIssues.storedata`
+  - latest verified paired run from the new host command showed:
+    - passive `SCStream` side still `60hz-like`
+      - `sampleBufferEventCount=163`
+      - `videoQueueWrapperCallbackCadenceClassification=60hz-like`
+    - `xctrace` row export succeeded on this run:
+      - `syscall rowCount=3664`
+      - `time-sample rowCount=66`
+    - replayd unified log emitted repeated producer-side enqueue failures:
+      - `_SCRemoteQueue_Enqueue:217 ... err=-19641 opType=3 Error occurred when enqueuing data`
+    - replayd health monitor also reported:
+      - `screenframeCount=0`
+  - interpretation of that paired run:
+    - this is the first artifact-backed signal that the brokered producer path is not merely slow;
+      it is hitting `_SCRemoteQueue_Enqueue` failures while the host-side passive trace remains `60hz-like`
+    - that makes the next reverse-engineering target sharper:
+      the producer-side queue policy / enqueue failure reason inside `replayd` and `CMCapture`,
+      especially around `_SCRemoteQueue_Enqueue` and `FigRemoteQueueSender`
+  - this does not yet give cadence, but it creates a repeatable artifact that can be inspected with Instruments
+    or mined by parsing the `.trace` bundle directly
 - taken together, the brokered producer side now points much more strongly at
   `CMCapture`'s `FigRemoteQueueSender` path than at an ordinary host-side `libdispatch`
   or `NSXPCConnection` helper

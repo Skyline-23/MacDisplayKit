@@ -794,4 +794,47 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(summary.indicatorSummaries[0].peakMatchCount, 2)
         XCTAssertEqual(summary.indicatorSummaries[0].nonzeroWindowCount, 1)
     }
+
+    func testReplaydXctraceArtifactParserCountsExportRows() {
+        let xml = """
+        <?xml version="1.0"?>
+        <trace-query-result>
+          <node xpath='//trace-toc[1]/run[1]/data[1]/table[2]'>
+            <schema name="syscall"/>
+            <row><sample-time id="1">1</sample-time></row>
+            <row><sample-time id="2">2</sample-time></row>
+          </node>
+        </trace-query-result>
+        """
+
+        let summary = MDKReplaydXctraceArtifactParser.summarizeTableArtifact(
+            schema: "syscall",
+            outputPath: "/tmp/syscall.xml",
+            exportText: xml
+        )
+
+        XCTAssertEqual(summary.schema, "syscall")
+        XCTAssertEqual(summary.outputPath, "/tmp/syscall.xml")
+        XCTAssertEqual(summary.rowCount, 2)
+        XCTAssertTrue(summary.containsRows)
+        XCTAssertFalse(summary.excerpt.isEmpty)
+    }
+
+    func testReplaydUnifiedLogArtifactParserFiltersInterestingLines() {
+        let logText = """
+        {"timestamp":"2026-03-21T16:27:18.000+09:00","eventMessage":"noise"}
+        {"timestamp":"2026-03-21T16:27:18.041+09:00","eventMessage":"-[SCCaptureSession setupHealthMonitor]_block_invoke:1174 Health: captureSession=0xa538b4000"}
+        {"timestamp":"2026-03-21T16:27:18.050+09:00","eventMessage":"-[RPClient hasScreenCaptureAccessWithAuditToken:fetchCurrentProcess:currentProcessShareableContentFilter:contentPickerFilter:error:]:2031 TCC Allow"}
+        """
+
+        let summary = MDKReplaydXctraceArtifactParser.summarizeUnifiedLogArtifact(
+            outputPath: "/tmp/replayd-log.ndjson",
+            logText: logText
+        )
+
+        XCTAssertEqual(summary.outputPath, "/tmp/replayd-log.ndjson")
+        XCTAssertEqual(summary.lineCount, 3)
+        XCTAssertEqual(summary.matchedLineCount, 2)
+        XCTAssertEqual(summary.matchedLines.count, 2)
+    }
 }

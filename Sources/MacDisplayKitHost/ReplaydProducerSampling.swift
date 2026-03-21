@@ -21,6 +21,19 @@ struct MDKReplaydProducerTraceSeriesReport: Codable, Equatable, Sendable {
     let summary: MDKReplaydProducerSampleSeriesSummary
 }
 
+struct MDKReplaydXctraceArtifactReport: Codable, Equatable, Sendable {
+    let passiveTrace: MDKScreenCaptureKitProxyHandshakeTrace
+    let replaydPID: Int32
+    let traceDirectoryPath: String
+    let tracePath: String
+    let tocPath: String
+    let tocByteCount: Int
+    let systemCallTable: MDKReplaydXctraceTableArtifact
+    let timeSampleTable: MDKReplaydXctraceTableArtifact
+    let unifiedLog: MDKReplaydUnifiedLogArtifact
+    let notes: [String]
+}
+
 enum MDKReplaydProducerSamplerError: Error {
     case replaydNotRunning
     case sampleFailed(status: Int32, output: String)
@@ -30,6 +43,10 @@ private struct MDKReplaydProducerSampleExecution: Sendable {
     let sampleReport: MDKReplaydProducerSampleReport
     let exitStatus: Int32
     let delay: TimeInterval
+}
+
+private struct MDKReplaydXctraceExecution: Sendable {
+    let report: MDKReplaydXctraceArtifactReport
 }
 
 private actor MDKReplaydProducerSampleCoordinator {
@@ -104,6 +121,193 @@ private actor MDKReplaydProducerSampleCoordinator {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("mdk-replayd-sample-\(UUID().uuidString)")
             .appendingPathExtension("txt")
+    }
+}
+
+private actor MDKReplaydXctraceCoordinator {
+    func capture(
+        replaydPID: Int32,
+        sampleDuration: TimeInterval,
+        passiveTrace: MDKScreenCaptureKitProxyHandshakeTrace
+    ) async throws -> MDKReplaydXctraceExecution {
+        let traceDirectoryURL = Self.temporaryTraceDirectoryURL()
+        try FileManager.default.createDirectory(
+            at: traceDirectoryURL,
+            withIntermediateDirectories: true
+        )
+
+        let traceURL = traceDirectoryURL.appendingPathComponent("replayd-system.trace")
+        let tocURL = traceDirectoryURL.appendingPathComponent("toc.xml")
+        let syscallURL = traceDirectoryURL.appendingPathComponent("syscall.xml")
+        let timeSampleURL = traceDirectoryURL.appendingPathComponent("time-sample.xml")
+        let logURL = traceDirectoryURL.appendingPathComponent("replayd-log.ndjson")
+
+        let captureDuration = max(2, Int(ceil(min(sampleDuration, 5))))
+
+        try Self.runProcess(
+            executablePath: "/usr/bin/xcrun",
+            arguments: [
+                "xctrace", "record",
+                "--template", "System Trace",
+                "--attach", String(replaydPID),
+                "--time-limit", "\(captureDuration)s",
+                "--output", traceURL.path,
+                "--no-prompt"
+            ]
+        )
+
+        try Self.runProcess(
+            executablePath: "/usr/bin/xcrun",
+            arguments: [
+                "xctrace", "export",
+                "--input", traceURL.path,
+                "--toc"
+            ],
+            outputURL: tocURL
+        )
+
+        try Self.runProcess(
+            executablePath: "/usr/bin/xcrun",
+            arguments: [
+                "xctrace", "export",
+                "--input", traceURL.path,
+                "--xpath", "/trace-toc/run[@number=\"1\"]/data/table[@schema=\"syscall\"]"
+            ],
+            outputURL: syscallURL
+        )
+
+        try Self.runProcess(
+            executablePath: "/usr/bin/xcrun",
+            arguments: [
+                "xctrace", "export",
+                "--input", traceURL.path,
+                "--xpath", "/trace-toc/run[@number=\"1\"]/data/table[@schema=\"time-sample\"]"
+            ],
+            outputURL: timeSampleURL
+        )
+
+        try Self.runProcess(
+            executablePath: "/usr/bin/log",
+            arguments: [
+                "show",
+                "--last", "\(captureDuration + 2)s",
+                "--style", "ndjson",
+                "--process", "replayd",
+                "--info",
+                "--debug",
+                "--signpost",
+                "--no-pager"
+            ],
+            outputURL: logURL
+        )
+
+        let tocText = try String(contentsOf: tocURL, encoding: .utf8)
+        let syscallText = try String(contentsOf: syscallURL, encoding: .utf8)
+        let timeSampleText = try String(contentsOf: timeSampleURL, encoding: .utf8)
+        let logText = try String(contentsOf: logURL, encoding: .utf8)
+
+        let systemCallTable = MDKReplaydXctraceArtifactParser.summarizeTableArtifact(
+            schema: "syscall",
+            outputPath: syscallURL.path,
+            exportText: syscallText
+        )
+        let timeSampleTable = MDKReplaydXctraceArtifactParser.summarizeTableArtifact(
+            schema: "time-sample",
+            outputPath: timeSampleURL.path,
+            exportText: timeSampleText
+        )
+        let unifiedLog = MDKReplaydXctraceArtifactParser.summarizeUnifiedLogArtifact(
+            outputPath: logURL.path,
+            logText: logText
+        )
+
+        var notes: [String] = []
+        if !systemCallTable.containsRows {
+            notes.append("xctrace syscall export returned schema-only XML on this run.")
+        }
+        if !timeSampleTable.containsRows {
+            notes.append("xctrace time-sample export returned schema-only XML on this run.")
+        }
+        if systemCallTable.containsRows || timeSampleTable.containsRows {
+            notes.append(
+                "xctrace exported replayd rows: syscall=\(systemCallTable.rowCount) time-sample=\(timeSampleTable.rowCount)."
+            )
+        }
+        if unifiedLog.matchedLineCount == 0 {
+            notes.append("replayd unified log did not emit matching capture markers in the requested window.")
+        }
+        if unifiedLog.matchedLines.contains(where: { $0.localizedCaseInsensitiveContains("_SCRemoteQueue_Enqueue") }) {
+            notes.append("replayd unified log captured _SCRemoteQueue_Enqueue failures during the paired trace.")
+        }
+        if unifiedLog.matchedLines.contains(where: { $0.localizedCaseInsensitiveContains("screenframeCount=0") }) {
+            notes.append("replayd health-monitor log reported screenframeCount=0 during the paired trace window.")
+        }
+        if !passiveTrace.succeeded {
+            notes.append("paired passive trace did not reach a succeeded state during xctrace capture.")
+        }
+
+        return MDKReplaydXctraceExecution(
+            report: MDKReplaydXctraceArtifactReport(
+                passiveTrace: passiveTrace,
+                replaydPID: replaydPID,
+                traceDirectoryPath: traceDirectoryURL.path,
+                tracePath: traceURL.path,
+                tocPath: tocURL.path,
+                tocByteCount: tocText.lengthOfBytes(using: .utf8),
+                systemCallTable: systemCallTable,
+                timeSampleTable: timeSampleTable,
+                unifiedLog: unifiedLog,
+                notes: notes
+            )
+        )
+    }
+
+    nonisolated private static func runProcess(
+        executablePath: String,
+        arguments: [String],
+        outputURL: URL? = nil
+    ) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+
+        if let outputURL {
+            FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: outputURL)
+            defer { try? handle.close() }
+            process.standardOutput = handle
+            process.standardError = handle
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                throw MDKReplaydProducerSamplerError.sampleFailed(
+                    status: process.terminationStatus,
+                    output: (try? String(contentsOf: outputURL, encoding: .utf8)) ?? ""
+                )
+            }
+            return
+        }
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+        let outputText = String(
+            decoding: pipe.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        guard process.terminationStatus == 0 else {
+            throw MDKReplaydProducerSamplerError.sampleFailed(
+                status: process.terminationStatus,
+                output: outputText
+            )
+        }
+    }
+
+    nonisolated private static func temporaryTraceDirectoryURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("mdk-replayd-xctrace-\(UUID().uuidString)", isDirectory: true)
     }
 }
 
@@ -186,6 +390,31 @@ enum MDKReplaydProducerSampler {
                 reports: traces.map(\.replaydSample)
             )
         )
+    }
+
+    @MainActor
+    static func capturePassiveTraceWithXctraceArtifacts(
+        controller: MDKHostBenchmarkController,
+        displayID: UInt32,
+        sampleDuration: TimeInterval,
+        useMetalStimulus: Bool
+    ) async throws -> MDKReplaydXctraceArtifactReport {
+        let replaydPID = try currentReplaydPID()
+        let xctraceCoordinator = MDKReplaydXctraceCoordinator()
+        let stimulus = useMetalStimulus ? MDKHostMetalStimulus(displayID: displayID) : nil
+        stimulus?.start()
+        defer { stimulus?.stop() }
+
+        let passiveTrace = try controller.traceScreenCaptureKitPassiveHandshake(
+            displayID: displayID,
+            sampleDuration: sampleDuration
+        )
+        let execution = try await xctraceCoordinator.capture(
+            replaydPID: replaydPID,
+            sampleDuration: sampleDuration,
+            passiveTrace: passiveTrace
+        )
+        return execution.report
     }
 
     @MainActor

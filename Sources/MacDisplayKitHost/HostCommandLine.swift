@@ -12,6 +12,7 @@ private enum MDKHostCLICommand {
     case screenCaptureKitReplaydProducerTrace(displayID: UInt32?, sampleDuration: TimeInterval, json: Bool, useMetalStimulus: Bool)
     case screenCaptureKitReplaydProducerCompare(displayID: UInt32?, sampleDuration: TimeInterval, json: Bool)
     case screenCaptureKitReplaydProducerSeries(displayID: UInt32?, sampleDuration: TimeInterval, windowCount: Int, json: Bool, useMetalStimulus: Bool)
+    case screenCaptureKitReplaydXctraceArtifacts(displayID: UInt32?, sampleDuration: TimeInterval, json: Bool, useMetalStimulus: Bool)
     case screenCaptureKitTimingTrace(displayID: UInt32?, sampleDuration: TimeInterval, json: Bool, useMetalStimulus: Bool)
     case privateCapturePlan(json: Bool)
     case privateCaptureProbe(displayID: UInt32?, requestExtendedRange: Bool, json: Bool)
@@ -191,6 +192,30 @@ enum MDKHostCommandLine {
                 return 0
             } catch {
                 fputs("Failed to capture replayd producer trace series: \(error)\n", stderr)
+                return 1
+            }
+        case .screenCaptureKitReplaydXctraceArtifacts(let displayID, let sampleDuration, let json, let useMetalStimulus):
+            do {
+                let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
+                let report = try await MDKReplaydProducerSampler.capturePassiveTraceWithXctraceArtifacts(
+                    controller: controller,
+                    displayID: resolvedDisplayID,
+                    sampleDuration: sampleDuration,
+                    useMetalStimulus: useMetalStimulus
+                )
+                if json {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    let data = try encoder.encode(report)
+                    if let text = String(data: data, encoding: .utf8) {
+                        print(text)
+                    }
+                } else {
+                    print(MDKHostBenchmarkFormatter.formatReplaydXctraceArtifactReport(report))
+                }
+                return 0
+            } catch {
+                fputs("Failed to capture replayd xctrace artifacts: \(error)\n", stderr)
                 return 1
             }
         case .screenCaptureKitTimingTrace(let displayID, let sampleDuration, let json, let useMetalStimulus):
@@ -500,6 +525,18 @@ enum MDKHostCommandLine {
                 displayID: displayID,
                 sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
                 windowCount: parseSeriesCount(tokens: tokens) ?? 3,
+                json: tokens.contains("--json"),
+                useMetalStimulus: tokens.contains("--with-metal-stimulus")
+            )
+        }
+
+        if let displayID = parseOptionalDisplayID(
+            flag: "--experimental-screencapturekit-replayd-xctrace-display",
+            tokens: tokens
+        ) {
+            return .screenCaptureKitReplaydXctraceArtifacts(
+                displayID: displayID,
+                sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
                 json: tokens.contains("--json"),
                 useMetalStimulus: tokens.contains("--with-metal-stimulus")
             )
