@@ -2219,6 +2219,7 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"rpDaemonProxyHandleInvocationEventCount": @0,
             @"rpDaemonProxyEventCount": @0,
             @"rpDaemonProxySelectorHistogram": [NSMutableDictionary dictionary],
+            @"rpDaemonProxyReplyHistogram": [NSMutableDictionary dictionary],
             @"xpcPipeCreateEventCount": @0,
             @"xpcPipeSimpleRoutineEventCount": @0,
             @"xpcPipeInterposeEventCount": @0,
@@ -3327,10 +3328,29 @@ static void MDKRecordIOSurfaceMachPortEvent(NSString *kind, mach_port_t port, IO
 
 static void MDKRecordRPDaemonProxyEvent(NSString *kind, id proxy, id connection, NSInvocation *invocation, BOOL isReply) {
     NSString *selectorName = nil;
+    NSDictionary<NSString *, id> *invocationSummary = nil;
     if (invocation != nil) {
         SEL selector = invocation.selector;
         if (selector != nullptr) {
             selectorName = NSStringFromSelector(selector);
+        }
+        NSMutableDictionary<NSString *, id> *summary = [NSMutableDictionary dictionary];
+        NSMethodSignature *signature = invocation.methodSignature;
+        if (signature != nil) {
+            summary[@"numberOfArguments"] = @(signature.numberOfArguments);
+        }
+        if ([selectorName isEqualToString:@"startRemoteQueue:streamID:"] &&
+            signature != nil &&
+            signature.numberOfArguments >= 4) {
+            __unsafe_unretained id queue = nil;
+            __unsafe_unretained id streamID = nil;
+            [invocation getArgument:&queue atIndex:2];
+            [invocation getArgument:&streamID atIndex:3];
+            summary[@"queue"] = queue != nil ? MDKSummarizeObject(queue) : @{};
+            summary[@"streamID"] = streamID != nil ? MDKSummarizeObject(streamID) : @{};
+        }
+        if (summary.count > 0) {
+            invocationSummary = summary;
         }
     }
 
@@ -3351,6 +3371,14 @@ static void MDKRecordRPDaemonProxyEvent(NSString *kind, id proxy, id connection,
                 NSMutableDictionary<NSString *, NSNumber *> *histogram = MDKActiveSCKTraceState[@"rpDaemonProxySelectorHistogram"];
                 histogram[selectorName] = @([histogram[selectorName] unsignedIntegerValue] + 1);
             }
+            NSMutableDictionary<NSString *, NSNumber *> *replyHistogram = MDKActiveSCKTraceState[@"rpDaemonProxyReplyHistogram"];
+            NSString *replyKey = isReply ? @"reply" : @"request";
+            replyHistogram[replyKey] = @([replyHistogram[replyKey] unsignedIntegerValue] + 1);
+            if ([selectorName isEqualToString:@"startRemoteQueue:streamID:"] &&
+                invocationSummary != nil &&
+                MDKActiveSCKTraceState[@"rpDaemonProxyFirstStartRemoteQueueInvocation"] == nil) {
+                MDKActiveSCKTraceState[@"rpDaemonProxyFirstStartRemoteQueueInvocation"] = invocationSummary;
+            }
             shouldRecord = overallEventCount <= 64;
         }
     }
@@ -3362,6 +3390,7 @@ static void MDKRecordRPDaemonProxyEvent(NSString *kind, id proxy, id connection,
         @"proxy": MDKSummarizeObject(proxy),
         @"connection": connection != nil ? MDKSummarizeObject(connection) : @{},
         @"selectorName": selectorName ?: [NSNull null],
+        @"invocation": invocationSummary ?: @{},
         @"isReply": @(isReply),
         @"interesting": @YES,
         @"wrapperSequenceID": MDKCurrentVideoQueueWrapperSequence() > 0 ? @(MDKCurrentVideoQueueWrapperSequence()) : [NSNull null],
@@ -11026,6 +11055,8 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"rpDaemonProxySetConnectionEventCount=%@", MDKDescribeTraceValue(snapshot[@"rpDaemonProxySetConnectionEventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"rpDaemonProxyHandleInvocationEventCount=%@", MDKDescribeTraceValue(snapshot[@"rpDaemonProxyHandleInvocationEventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"rpDaemonProxySelectorHistogram=%@", MDKDescribeTraceValue(snapshot[@"rpDaemonProxySelectorHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"rpDaemonProxyReplyHistogram=%@", MDKDescribeTraceValue(snapshot[@"rpDaemonProxyReplyHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"rpDaemonProxyFirstStartRemoteQueueInvocation=%@", MDKDescribeTraceValue(snapshot[@"rpDaemonProxyFirstStartRemoteQueueInvocation"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeAttempted"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalled"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalledImageCount=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalledImageCount"])]];

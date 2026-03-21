@@ -1105,6 +1105,8 @@ Follow-up passive trace after swizzling `NSXPCConnection` setup in the host proc
 - `rpDaemonProxySetConnectionEventCount=1`
 - `rpDaemonProxyHandleInvocationEventCount=5`
 - `rpDaemonProxySelectorHistogram={"startRemoteQueue:streamID:":3}`
+- `rpDaemonProxyReplyHistogram={"reply":2,"request":4}`
+- `rpDaemonProxyFirstStartRemoteQueueInvocation={"numberOfArguments":4,"queue":{"className":"SCRemoteQueueXPCObject","present":true,"queueType":1,...},"streamID":{"className":"__NSCFString","present":true,"value":"<stream-id>"}}`
 
 Interpretation:
 
@@ -1123,9 +1125,12 @@ Interpretation:
 - the host *does* bind one `RPDaemonProxy` connection and then funnels at least five
   `connection:handleInvocation:isReply:` calls through it during the same healthy passive trace
 - the first selector that clearly surfaces in that invocation histogram is `startRemoteQueue:streamID:`
+- the first `startRemoteQueue:streamID:` request carries an `SCRemoteQueueXPCObject` with `queueType=1`
+  and the same `streamID` value later seen on the `SCStream` side
+- the current request/reply split is `4` requests vs `2` replies in a healthy `1`-second passive trace
 - that is the first direct host-side confirmation that the passive `SCStream` capture path is brokered through
   `replayd`, even though the lower imported C shims stay dark
 - this shifts the next reverse-engineering target from generic host-side imported stubs to two sharper paths:
-  - the arguments and ordering of `startRemoteQueue:streamID:` inside `RPDaemonProxy`
+  - object continuity between `RPDaemonProxy startRemoteQueue:streamID:` and `SCStream startRemoteVideoReceiveQueue:`
   - the next selector below that start-queue dispatch boundary
   - `replayd` itself, especially `SCContentSharingSessionService` and the session creation / reply path
