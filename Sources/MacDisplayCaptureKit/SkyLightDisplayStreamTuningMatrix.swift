@@ -96,6 +96,12 @@ public enum MDKSkyLightDisplayStreamTuningMatrix {
             minimumFrameTime: 1.0 / 120.0,
             queueDepth: 8,
             showCursor: false
+        ),
+        MDKSkyLightDisplayStreamTuningCandidate(
+            identifier: "legacy-120hz-q3",
+            minimumFrameTime: 1.0 / 120.0,
+            queueDepth: 3,
+            showCursor: false
         )
     ]
 

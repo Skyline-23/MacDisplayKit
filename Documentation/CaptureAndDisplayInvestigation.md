@@ -1495,3 +1495,56 @@ Interpretation:
       the better `1/240 + queueDepth=8` combination
     - that shifts the next optimization target from `SCStream` tuning to raw `SkyLight` display-stream property tuning
       and lower-level `SLContentStream` / `CGYDisplayStreamFrameAvailable` exploration
+- 2026-03-21 raw `SkyLight` processing benchmarks now run directly from the repo on top of the bypass path
+  - commands:
+    - `MacDisplayKitHost --experimental-skylight-displaystream-benchmark-display auto --sample-duration 3 --request-120-like --processing-mode metal-bind --json`
+    - `MacDisplayKitHost --experimental-skylight-displaystream-benchmark-display auto --sample-duration 3 --request-120-like --processing-mode metal-copy --json`
+    - `MacDisplayKitHost --experimental-skylight-displaystream-benchmark-display auto --sample-duration 3 --request-120-like --processing-mode vt-encode --json`
+    - `MacDisplayKitHost --experimental-skylight-displaystream-processing-matrix-display auto --sample-duration 2 --json`
+  - the host now has a child-process isolated processing matrix for:
+    - `none`
+    - `metal-bind`
+    - `metal-copy`
+    - `vt-encode`
+  - current ranking order is:
+    - cadence classification
+    - processed-frame ratio
+    - processed-frame rate
+    - complete-frame count
+  - one invalid measurement pattern is now understood:
+    - running two raw `SLDisplayStream` benchmarks in parallel on the same display badly contaminates throughput
+    - comparisons must use either a single sequential command or the child-process matrix
+- 2026-03-21 the raw `vt-encode` path no longer fails with `VTCompressionSessionEncodeFrame ... -12902`
+  - the original failure was reproduced outside the repo with a tiny Swift script:
+    - `CVPixelBufferCreateWithIOSurface(...)` was **not** the root cause
+    - `VTCompressionSessionEncodeFrame(...)` returns `-12902` when the session is created with `outputCallback=nil`
+    - the same wrapped IOSurface succeeds immediately when the session uses a non-`nil` output callback
+  - this matches the SDK contract in `VTCompressionSession.h`:
+    - `outputCallback` may only be `NULL` when the caller uses `VTCompressionSessionEncodeFrameWithOutputHandler`
+    - it is not valid to pair `outputCallback=nil` with `VTCompressionSessionEncodeFrame`
+  - `MacDisplayKit` now uses a non-`nil` callback and Apollo-like session properties for the raw `vt-encode` benchmark
+  - latest raw `vt-encode` runs on the current machine show:
+    - `processingFailureCount=0`
+    - `processedFrameRatio=1`
+    - the raw `SLDisplayStream` surface reaches the encoder as standard `420v`
+  - current interpretation:
+    - the `vt-encode` blocker has moved from `session contract` to `throughput`
+    - zero-copy submit is viable now, but the next performance gain depends on keeping capture fast while submit/encode work runs off the raw callback path
+- 2026-03-21 raw processing selection is now split into:
+  - a `none` control that measures the raw ceiling but is not eligible as the default processed winner
+  - processed candidates ranked by:
+    - `meets120LikeTarget`
+    - cadence classification
+    - processed frame rate
+    - processed frame ratio
+    - complete-frame count
+  - the raw tuning matrix now also includes `1/120 + queueDepth=3` as a control so `1/120` can be judged independently of deep queueing
+- 2026-03-21 the `vt-encode` submit hot path was trimmed further
+  - per-frame summary bookkeeping no longer hops through an actor and blocks the serial encode queue
+  - the benchmark now keeps queue-confined `VT` counters and snapshots them during `finalize()`
+  - `CVPixelBufferCreateWithIOSurface(...)` wrappers are now cached per live `IOSurfaceID` inside the active session
+  - latest child-process processing matrix on the current machine selected:
+    - `vt-encode/min-frame-240hz-q8`
+    - `processedFrameRate≈139.37`
+    - `cadenceClassification=120hz-like`
+  - single ad-hoc raw runs outside the child-process matrix are still noisy after prior raw runs and should not be treated as authoritative without isolation

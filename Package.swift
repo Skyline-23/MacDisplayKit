@@ -67,7 +67,8 @@ let package = Package(
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("CoreVideo"),
                 .linkedFramework("IOSurface"),
-                .linkedFramework("Metal")
+                .linkedFramework("Metal"),
+                .linkedFramework("VideoToolbox")
             ]
         ),
         .target(

@@ -33,13 +33,31 @@ public final class MDKCaptureSurface: @unchecked Sendable, Equatable {
 
     private let ioSurface: IOSurfaceRef
 
-    public init(ioSurface: IOSurfaceRef) {
+    public convenience init(ioSurface: IOSurfaceRef) {
+        self.init(
+            ioSurface: ioSurface,
+            id: IOSurfaceGetID(ioSurface),
+            width: IOSurfaceGetWidth(ioSurface),
+            height: IOSurfaceGetHeight(ioSurface),
+            pixelFormat: IOSurfaceGetPixelFormat(ioSurface),
+            planeCount: max(Int(IOSurfaceGetPlaneCount(ioSurface)), 0)
+        )
+    }
+
+    init(
+        ioSurface: IOSurfaceRef,
+        id: UInt32,
+        width: Int,
+        height: Int,
+        pixelFormat: UInt32,
+        planeCount: Int
+    ) {
         self.ioSurface = ioSurface
-        self.id = IOSurfaceGetID(ioSurface)
-        self.width = IOSurfaceGetWidth(ioSurface)
-        self.height = IOSurfaceGetHeight(ioSurface)
-        self.pixelFormat = IOSurfaceGetPixelFormat(ioSurface)
-        self.planeCount = max(Int(IOSurfaceGetPlaneCount(ioSurface)), 0)
+        self.id = id
+        self.width = width
+        self.height = height
+        self.pixelFormat = pixelFormat
+        self.planeCount = planeCount
     }
 
     public static func == (lhs: MDKCaptureSurface, rhs: MDKCaptureSurface) -> Bool {
@@ -87,6 +105,10 @@ public final class MDKCaptureSurface: @unchecked Sendable, Equatable {
             iosurface: ioSurface,
             plane: descriptor.plane
         )
+    }
+
+    var rawIOSurface: IOSurfaceRef {
+        ioSurface
     }
 }
 

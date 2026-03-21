@@ -1,5 +1,6 @@
 import Foundation
 import MacDisplayKit
+import MacDisplayCaptureKit
 
 enum MDKHostBenchmarkFormatter {
     static func formatWindowServerXctraceArtifactReport(
@@ -389,6 +390,53 @@ enum MDKHostBenchmarkFormatter {
         return lines.joined(separator: "\n")
     }
 
+    static func formatSkyLightDisplayStreamProcessingBenchmarkResult(
+        _ result: MDKSkyLightDisplayStreamProcessingBenchmarkResult
+    ) -> String {
+        var lines: [String] = []
+        lines.append("Raw SkyLight display stream processing benchmark")
+        lines.append("Display ID: \(result.displayID)")
+        lines.append("Start status: \(result.status)")
+        lines.append("Stop status: \(result.stopStatus)")
+        lines.append("Processing mode: \(result.processingMode.rawValue)")
+        lines.append(String(format: "Sample duration: %.3fs", result.sampleDuration))
+        lines.append("Callback count: \(result.callbackCount)")
+        lines.append("Complete frames: \(result.completeFrameCount)")
+        lines.append(String(format: "Observed FPS: %.2f", result.observedFrameRate))
+        lines.append("Processed frames: \(result.processedFrameCount)")
+        lines.append("Processing failures: \(result.processingFailureCount)")
+        if !result.processingErrorHistogram.isEmpty {
+            lines.append("Processing errors: \(result.processingErrorHistogram)")
+        }
+        lines.append(String(format: "Processed FPS: %.2f", result.processedFrameRate))
+        lines.append(String(format: "Processed ratio: %.3f", result.processedFrameRatio))
+        lines.append("Cadence classification: \(result.cadenceClassification)")
+        lines.append("Interval count: \(result.intervalCount)")
+        if let minIntervalMilliseconds = result.minIntervalMilliseconds,
+           let maxIntervalMilliseconds = result.maxIntervalMilliseconds {
+            lines.append(
+                String(
+                    format: "Interval range: %.3fms..%.3fms",
+                    minIntervalMilliseconds,
+                    maxIntervalMilliseconds
+                )
+            )
+        }
+        lines.append("Interval histogram: \(result.intervalHistogram)")
+        lines.append("Frame status histogram: \(result.frameStatusHistogram)")
+        lines.append(String(format: "Requested minimum frame time: %.6fs", result.requestedMinimumFrameTime))
+        lines.append("Requested queue depth: \(result.requestedQueueDepth)")
+        lines.append("Requested show cursor: \(result.requestedShowCursor ? "yes" : "no")")
+        lines.append("Surface size: \(result.surfaceWidth)x\(result.surfaceHeight)")
+        lines.append(String(format: "Pixel format: 0x%08X", result.pixelFormat))
+        lines.append("")
+        lines.append("Notes:")
+        for note in result.notes {
+            lines.append("  - \(note)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     static func formatSkyLightDisplayStreamTuningMatrixReport(
         _ report: MDKSkyLightDisplayStreamTuningMatrixReport
     ) -> String {
@@ -410,6 +458,48 @@ enum MDKHostBenchmarkFormatter {
             lines.append(
                 "  - \(evaluation.candidate.identifier): minFrameTime=\(String(format: "%.6f", evaluation.candidate.minimumFrameTime)) queueDepth=\(evaluation.candidate.queueDepth) showCursor=\(evaluation.candidate.showCursor ? "yes" : "no") fps=\(String(format: "%.2f", evaluation.result.observedFrameRate)) cadence=\(evaluation.result.cadenceClassification)"
             )
+        }
+        if !report.notes.isEmpty {
+            lines.append("")
+            lines.append("Notes:")
+            for note in report.notes {
+                lines.append("  - \(note)")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    static func formatSkyLightDisplayStreamProcessingMatrixReport(
+        _ report: MDKSkyLightDisplayStreamProcessingMatrixReport
+    ) -> String {
+        var lines: [String] = []
+        lines.append("Raw SkyLight display stream processing matrix")
+        lines.append("Display ID: \(report.displayID)")
+        lines.append(String(format: "Sample duration: %.3fs", report.sampleDuration))
+        lines.append("Metal stimulus: \(report.useMetalStimulus ? "yes" : "no")")
+        if let bestEvaluation = report.bestEvaluation,
+           let bestResult = bestEvaluation.result {
+            lines.append(
+                "Best candidate: mode=\(bestEvaluation.candidate.processingMode.rawValue) candidate=\(bestEvaluation.candidate.tuningCandidate.identifier) fps=\(String(format: "%.2f", bestResult.observedFrameRate)) processed-fps=\(String(format: "%.2f", bestResult.processedFrameRate)) ratio=\(String(format: "%.3f", bestResult.processedFrameRatio)) cadence=\(bestResult.cadenceClassification) meets120LikeTarget=\(bestResult.meets120LikeTarget ? "yes" : "no")"
+            )
+        } else {
+            lines.append("Best candidate: none")
+        }
+        lines.append("")
+        lines.append("Evaluations:")
+        for evaluation in report.evaluations {
+            let candidate = evaluation.candidate
+            let tuning = candidate.tuningCandidate
+            var line = "  - mode=\(candidate.processingMode.rawValue) candidate=\(candidate.identifier) minFrameTime=\(String(format: "%.6f", tuning.minimumFrameTime)) queueDepth=\(tuning.queueDepth) showCursor=\(tuning.showCursor ? "yes" : "no")"
+            if let result = evaluation.result {
+                line += " fps=\(String(format: "%.2f", result.observedFrameRate)) processed-fps=\(String(format: "%.2f", result.processedFrameRate)) ratio=\(String(format: "%.3f", result.processedFrameRatio)) cadence=\(result.cadenceClassification) meets120LikeTarget=\(result.meets120LikeTarget ? "yes" : "no") failures=\(result.processingFailureCount)"
+                if !result.processingErrorHistogram.isEmpty {
+                    line += " errors=\(result.processingErrorHistogram)"
+                }
+            } else {
+                line += " error=\(evaluation.errorDescription ?? "unknown error")"
+            }
+            lines.append(line)
         }
         if !report.notes.isEmpty {
             lines.append("")

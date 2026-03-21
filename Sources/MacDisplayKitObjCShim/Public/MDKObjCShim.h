@@ -1,6 +1,38 @@
 #import <Foundation/Foundation.h>
+#import <CoreGraphics/CoreGraphics.h>
+#import <IOSurface/IOSurface.h>
 
 NS_ASSUME_NONNULL_BEGIN
+
+typedef void (^MDKShimSkyLightDisplayStreamFrameHandler)(
+    CGDisplayStreamFrameStatus status,
+    uint64_t displayTime,
+    IOSurfaceRef _Nullable frameSurface
+);
+
+@interface MDKShimSkyLightDisplayStreamSession : NSObject
+
+- (instancetype)init NS_UNAVAILABLE;
++ (instancetype)new NS_UNAVAILABLE;
+
+- (instancetype)initWithDisplayID:(NSUInteger)displayID
+                 minimumFrameTime:(double)minimumFrameTime
+                       queueDepth:(NSInteger)queueDepth
+                       showCursor:(BOOL)showCursor
+                      pixelFormat:(uint32_t)pixelFormat
+                     frameHandler:(MDKShimSkyLightDisplayStreamFrameHandler)frameHandler NS_DESIGNATED_INITIALIZER;
+
+@property (nonatomic, readonly) NSUInteger displayID;
+@property (nonatomic, readonly) double minimumFrameTime;
+@property (nonatomic, readonly) NSInteger queueDepth;
+@property (nonatomic, readonly) BOOL showCursor;
+@property (nonatomic, readonly) uint32_t pixelFormat;
+@property (nonatomic, readonly, getter=isRunning) BOOL running;
+
+- (BOOL)start:(NSError * _Nullable * _Nullable)error;
+- (int32_t)stop;
+
+@end
 
 FOUNDATION_EXPORT NSString *MDKShimVersionString(void);
 FOUNDATION_EXPORT NSURL *MDKShimRepositoryRootURL(void);

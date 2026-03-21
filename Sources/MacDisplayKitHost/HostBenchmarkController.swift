@@ -168,6 +168,24 @@ final class MDKHostBenchmarkController {
         )
     }
 
+    func benchmarkSkyLightDisplayStreamProcessing(
+        displayID: UInt32,
+        sampleDuration: TimeInterval,
+        minimumFrameTime: Double,
+        queueDepth: Int,
+        showCursor: Bool,
+        processingMode: MDKCaptureBenchmarkProcessingMode
+    ) throws -> MDKSkyLightDisplayStreamProcessingBenchmarkResult {
+        try MDKSkyLightDisplayStreamProcessingBenchmark.run(
+            displayID: displayID,
+            sampleDuration: sampleDuration,
+            minimumFrameTime: minimumFrameTime,
+            queueDepth: queueDepth,
+            showCursor: showCursor,
+            processingMode: processingMode
+        )
+    }
+
     func benchmarkSkyLightDisplayStreamTuningMatrix(
         displayID: UInt32,
         sampleDuration: TimeInterval,
@@ -207,6 +225,28 @@ final class MDKHostBenchmarkController {
             evaluations: evaluations,
             bestEvaluationIndex: bestIndex,
             notes: notes
+        )
+    }
+
+    func benchmarkSkyLightDisplayStreamProcessingMatrix(
+        displayID: UInt32,
+        sampleDuration: TimeInterval,
+        useMetalStimulus: Bool,
+        candidates: [MDKSkyLightDisplayStreamProcessingMatrixCandidate] = MDKSkyLightDisplayStreamProcessingMatrix.defaultCandidates
+    ) -> MDKSkyLightDisplayStreamProcessingMatrixReport {
+        MDKSkyLightDisplayStreamProcessingMatrix.run(
+            displayID: displayID,
+            sampleDuration: sampleDuration,
+            useMetalStimulus: useMetalStimulus,
+            candidates: candidates,
+            runBenchmark: { displayID, sampleDuration, useMetalStimulus, candidate in
+                try runSkyLightDisplayStreamProcessingBenchmarkInSubprocess(
+                    displayID: displayID,
+                    sampleDuration: sampleDuration,
+                    useMetalStimulus: useMetalStimulus,
+                    candidate: candidate
+                )
+            }
         )
     }
 
@@ -268,6 +308,73 @@ final class MDKHostBenchmarkController {
                 code: Int(process.terminationStatus),
                 userInfo: [
                     NSLocalizedDescriptionKey: "Failed to decode raw SkyLight benchmark output",
+                    "stdout": rawOutput,
+                    "stderr": stderrText
+                ]
+            )
+        }
+    }
+
+    private func runSkyLightDisplayStreamProcessingBenchmarkInSubprocess(
+        displayID: UInt32,
+        sampleDuration: TimeInterval,
+        useMetalStimulus: Bool,
+        candidate: MDKSkyLightDisplayStreamProcessingMatrixCandidate
+    ) throws -> MDKSkyLightDisplayStreamProcessingBenchmarkResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+
+        var arguments = [
+            "--experimental-skylight-displaystream-benchmark-display",
+            String(displayID),
+            "--sample-duration",
+            String(sampleDuration),
+            "--minimum-frame-time",
+            String(candidate.tuningCandidate.minimumFrameTime),
+            "--queue-depth",
+            String(candidate.tuningCandidate.queueDepth),
+            "--processing-mode",
+            candidate.processingMode.rawValue,
+            "--json"
+        ]
+        if candidate.tuningCandidate.showCursor {
+            arguments.append("--show-cursor")
+        }
+        if useMetalStimulus {
+            arguments.append("--with-metal-stimulus")
+        }
+        process.arguments = arguments
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+
+        guard !outputData.isEmpty else {
+            let stderrText = String(data: errorData, encoding: .utf8) ?? "No stderr"
+            throw NSError(
+                domain: "MacDisplayKitHost",
+                code: Int(process.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "Empty raw SkyLight processing benchmark output: \(stderrText)"]
+            )
+        }
+
+        do {
+            return try JSONDecoder().decode(MDKSkyLightDisplayStreamProcessingBenchmarkResult.self, from: outputData)
+        } catch {
+            let rawOutput = String(data: outputData, encoding: .utf8) ?? "<non-utf8>"
+            let stderrText = String(data: errorData, encoding: .utf8) ?? ""
+            throw NSError(
+                domain: "MacDisplayKitHost",
+                code: Int(process.terminationStatus),
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Failed to decode raw SkyLight processing benchmark output",
                     "stdout": rawOutput,
                     "stderr": stderrText
                 ]

@@ -31,7 +31,8 @@ let project = Project(
                 .sdk(name: "CoreGraphics", type: .framework),
                 .sdk(name: "CoreVideo", type: .framework),
                 .sdk(name: "IOSurface", type: .framework),
-                .sdk(name: "Metal", type: .framework)
+                .sdk(name: "Metal", type: .framework),
+                .sdk(name: "VideoToolbox", type: .framework)
             ],
             settings: .settings(
                 base: [

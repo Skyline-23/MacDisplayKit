@@ -28,11 +28,18 @@ private enum MDKHostCLICommand {
         request120LikeProperties: Bool,
         minimumFrameTimeOverride: Double?,
         queueDepthOverride: Int?,
+        processingMode: MDKCaptureBenchmarkProcessingMode?,
         showCursor: Bool,
         json: Bool,
         useMetalStimulus: Bool
     )
     case skyLightDisplayStreamTuningMatrix(
+        displayID: UInt32?,
+        sampleDuration: TimeInterval,
+        json: Bool,
+        useMetalStimulus: Bool
+    )
+    case skyLightDisplayStreamProcessingMatrix(
         displayID: UInt32?,
         sampleDuration: TimeInterval,
         json: Bool,
@@ -437,6 +444,7 @@ enum MDKHostCommandLine {
             let request120LikeProperties,
             let minimumFrameTimeOverride,
             let queueDepthOverride,
+            let processingMode,
             let showCursor,
             let json,
             let useMetalStimulus
@@ -448,10 +456,31 @@ enum MDKHostCommandLine {
                 defer { stimulus?.stop() }
                 let result: MDKSkyLightDisplayStreamBenchmarkResult
                 if minimumFrameTimeOverride != nil || queueDepthOverride != nil || showCursor {
-                    let resolvedMinimumFrameTime = minimumFrameTimeOverride
+                let resolvedMinimumFrameTime = minimumFrameTimeOverride
                         ?? (request120LikeProperties ? (1.0 / 240.0) : 0.0)
                     let resolvedQueueDepth = queueDepthOverride
                         ?? (request120LikeProperties ? 8 : 3)
+                    if let processingMode {
+                        let processingResult = try controller.benchmarkSkyLightDisplayStreamProcessing(
+                            displayID: resolvedDisplayID,
+                            sampleDuration: sampleDuration,
+                            minimumFrameTime: resolvedMinimumFrameTime,
+                            queueDepth: resolvedQueueDepth,
+                            showCursor: showCursor,
+                            processingMode: processingMode
+                        )
+                        if json {
+                            let encoder = JSONEncoder()
+                            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                            let data = try encoder.encode(processingResult)
+                            if let text = String(data: data, encoding: .utf8) {
+                                print(text)
+                            }
+                        } else {
+                            print(MDKHostBenchmarkFormatter.formatSkyLightDisplayStreamProcessingBenchmarkResult(processingResult))
+                        }
+                        return processingResult.status == 0 && processingResult.completeFrameCount > 0 ? 0 : 2
+                    }
                     result = try controller.benchmarkSkyLightDisplayStream(
                         displayID: resolvedDisplayID,
                         sampleDuration: sampleDuration,
@@ -460,6 +489,27 @@ enum MDKHostCommandLine {
                         showCursor: showCursor
                     )
                 } else {
+                    if let processingMode {
+                        let processingResult = try controller.benchmarkSkyLightDisplayStreamProcessing(
+                            displayID: resolvedDisplayID,
+                            sampleDuration: sampleDuration,
+                            minimumFrameTime: request120LikeProperties ? (1.0 / 240.0) : 0.0,
+                            queueDepth: request120LikeProperties ? 8 : 3,
+                            showCursor: false,
+                            processingMode: processingMode
+                        )
+                        if json {
+                            let encoder = JSONEncoder()
+                            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                            let data = try encoder.encode(processingResult)
+                            if let text = String(data: data, encoding: .utf8) {
+                                print(text)
+                            }
+                        } else {
+                            print(MDKHostBenchmarkFormatter.formatSkyLightDisplayStreamProcessingBenchmarkResult(processingResult))
+                        }
+                        return processingResult.status == 0 && processingResult.completeFrameCount > 0 ? 0 : 2
+                    }
                     result = try controller.benchmarkSkyLightDisplayStream(
                         displayID: resolvedDisplayID,
                         sampleDuration: sampleDuration,
@@ -502,6 +552,29 @@ enum MDKHostCommandLine {
                 return report.bestEvaluation != nil ? 0 : 2
             } catch {
                 fputs("Failed to run raw SkyLight display stream tuning matrix: \(error)\n", stderr)
+                return 1
+            }
+        case .skyLightDisplayStreamProcessingMatrix(let displayID, let sampleDuration, let json, let useMetalStimulus):
+            do {
+                let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
+                let report = controller.benchmarkSkyLightDisplayStreamProcessingMatrix(
+                    displayID: resolvedDisplayID,
+                    sampleDuration: sampleDuration,
+                    useMetalStimulus: useMetalStimulus
+                )
+                if json {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    let data = try encoder.encode(report)
+                    if let text = String(data: data, encoding: .utf8) {
+                        print(text)
+                    }
+                } else {
+                    print(MDKHostBenchmarkFormatter.formatSkyLightDisplayStreamProcessingMatrixReport(report))
+                }
+                return report.bestEvaluation != nil ? 0 : 2
+            } catch {
+                fputs("Failed to run raw SkyLight display stream processing matrix: \(error)\n", stderr)
                 return 1
             }
         case .benchmark(let displayID, let targetIdentifier, let intent, let processingMode, let json):
@@ -760,6 +833,7 @@ enum MDKHostCommandLine {
                 request120LikeProperties: tokens.contains("--request-120-like"),
                 minimumFrameTimeOverride: parseMinimumFrameTime(tokens: tokens),
                 queueDepthOverride: parseQueueDepth(tokens: tokens),
+                processingMode: parseProcessingMode(tokens: tokens),
                 showCursor: tokens.contains("--show-cursor"),
                 json: tokens.contains("--json"),
                 useMetalStimulus: tokens.contains("--with-metal-stimulus")
@@ -771,6 +845,18 @@ enum MDKHostCommandLine {
             tokens: tokens
         ) {
             return .skyLightDisplayStreamTuningMatrix(
+                displayID: displayID,
+                sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
+                json: tokens.contains("--json"),
+                useMetalStimulus: tokens.contains("--with-metal-stimulus")
+            )
+        }
+
+        if let displayID = parseOptionalDisplayID(
+            flag: "--experimental-skylight-displaystream-processing-matrix-display",
+            tokens: tokens
+        ) {
+            return .skyLightDisplayStreamProcessingMatrix(
                 displayID: displayID,
                 sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
                 json: tokens.contains("--json"),

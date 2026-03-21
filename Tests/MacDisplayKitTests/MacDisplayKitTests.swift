@@ -348,6 +348,41 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(result.cadenceClassification, "120hz-like")
     }
 
+    func testSkyLightDisplayStreamProcessingBenchmarkResultRoundTripsThroughJSON() throws {
+        let result = MDKSkyLightDisplayStreamProcessingBenchmarkResult(
+            displayID: 2,
+            status: 0,
+            stopStatus: 0,
+            processingMode: .videoToolboxEncode,
+            sampleDuration: 2.0,
+            callbackCount: 200,
+            completeFrameCount: 193,
+            observedFrameRate: 96.5,
+            processedFrameCount: 190,
+            processingFailureCount: 3,
+            processingErrorHistogram: ["example": 3],
+            processedFrameRate: 95.0,
+            processedFrameRatio: 0.984,
+            requestedMinimumFrameTime: 1.0 / 240.0,
+            requestedQueueDepth: 8,
+            requestedShowCursor: false,
+            surfaceWidth: 5120,
+            surfaceHeight: 2880,
+            pixelFormat: kCVPixelFormatType_32BGRA,
+            intervalCount: 192,
+            minIntervalMilliseconds: 4.167,
+            maxIntervalMilliseconds: 62.499,
+            intervalHistogram: ["8.3ms": 101],
+            cadenceClassification: "120hz-like",
+            frameStatusHistogram: ["frame-complete": 193],
+            notes: ["raw processing benchmark payload"]
+        )
+
+        let data = try JSONEncoder().encode(result)
+        let decoded = try JSONDecoder().decode(MDKSkyLightDisplayStreamProcessingBenchmarkResult.self, from: data)
+        XCTAssertEqual(decoded, result)
+    }
+
     func testSkyLightDisplayStreamTuningMatrixPrefers120LikeCandidate() {
         let mixedResult = MDKSkyLightDisplayStreamBenchmarkResult(
             displayID: 2,
@@ -468,6 +503,145 @@ final class MacDisplayKitTests: XCTestCase {
         )
 
         XCTAssertEqual(report.bestEvaluation, evaluation)
+    }
+
+    func testSkyLightDisplayStreamProcessingMatrixRanksSuccessfulCandidates() throws {
+        let rawControlCandidate = MDKSkyLightDisplayStreamProcessingMatrixCandidate(
+            identifier: "none/baseline-q3",
+            processingMode: .none,
+            tuningCandidate: MDKSkyLightDisplayStreamTuningCandidate(
+                identifier: "baseline-q3",
+                minimumFrameTime: 0,
+                queueDepth: 3,
+                showCursor: false
+            )
+        )
+        let rawControlResult = MDKSkyLightDisplayStreamProcessingBenchmarkResult(
+            displayID: 2,
+            status: 0,
+            stopStatus: 0,
+            processingMode: .none,
+            sampleDuration: 2.0,
+            callbackCount: 200,
+            completeFrameCount: 200,
+            observedFrameRate: 112.0,
+            processedFrameCount: 200,
+            processingFailureCount: 0,
+            processingErrorHistogram: [:],
+            processedFrameRate: 112.0,
+            processedFrameRatio: 1.0,
+            requestedMinimumFrameTime: 0,
+            requestedQueueDepth: 3,
+            requestedShowCursor: false,
+            surfaceWidth: 5120,
+            surfaceHeight: 2880,
+            pixelFormat: kCVPixelFormatType_32BGRA,
+            intervalCount: 199,
+            minIntervalMilliseconds: 8.333,
+            maxIntervalMilliseconds: 16.667,
+            intervalHistogram: ["8.3ms": 200],
+            cadenceClassification: "60hz-like",
+            frameStatusHistogram: ["frame-complete": 200],
+            notes: []
+        )
+        let winningCandidate = MDKSkyLightDisplayStreamProcessingMatrixCandidate(
+            identifier: "metal-copy/min-frame-240hz-q8",
+            processingMode: .metalCopy,
+            tuningCandidate: MDKSkyLightDisplayStreamTuningCandidate(
+                identifier: "min-frame-240hz-q8",
+                minimumFrameTime: 1.0 / 240.0,
+                queueDepth: 8,
+                showCursor: false
+            )
+        )
+        let winningResult = MDKSkyLightDisplayStreamProcessingBenchmarkResult(
+            displayID: 2,
+            status: 0,
+            stopStatus: 0,
+            processingMode: .metalCopy,
+            sampleDuration: 2.0,
+            callbackCount: 198,
+            completeFrameCount: 198,
+            observedFrameRate: 102.0,
+            processedFrameCount: 198,
+            processingFailureCount: 0,
+            processingErrorHistogram: [:],
+            processedFrameRate: 99.0,
+            processedFrameRatio: 1.0,
+            requestedMinimumFrameTime: 1.0 / 240.0,
+            requestedQueueDepth: 8,
+            requestedShowCursor: false,
+            surfaceWidth: 5120,
+            surfaceHeight: 2880,
+            pixelFormat: kCVPixelFormatType_32BGRA,
+            intervalCount: 197,
+            minIntervalMilliseconds: 4.167,
+            maxIntervalMilliseconds: 16.667,
+            intervalHistogram: ["4.2ms": 198],
+            cadenceClassification: "120hz-like",
+            frameStatusHistogram: ["frame-complete": 198],
+            notes: []
+        )
+        let evaluations = [
+            MDKSkyLightDisplayStreamProcessingMatrixEvaluation(
+                candidate: rawControlCandidate,
+                result: rawControlResult,
+                errorDescription: nil
+            ),
+            MDKSkyLightDisplayStreamProcessingMatrixEvaluation(
+                candidate: winningCandidate,
+                result: winningResult,
+                errorDescription: nil
+            )
+        ]
+
+        XCTAssertEqual(MDKSkyLightDisplayStreamProcessingMatrix.bestEvaluationIndex(for: evaluations), 1)
+        let report = MDKSkyLightDisplayStreamProcessingMatrixReport(
+            displayID: 2,
+            sampleDuration: 2.0,
+            useMetalStimulus: true,
+            evaluations: evaluations,
+            bestEvaluationIndex: 1,
+            notes: ["processing matrix report"]
+        )
+        XCTAssertEqual(report.bestEvaluation?.candidate, winningCandidate)
+
+        let data = try JSONEncoder().encode(report)
+        let decoded = try JSONDecoder().decode(MDKSkyLightDisplayStreamProcessingMatrixReport.self, from: data)
+        XCTAssertEqual(decoded, report)
+    }
+
+    func testSkyLightDisplayStreamProcessingBenchmarkMarks120LikeTarget() {
+        let result = MDKSkyLightDisplayStreamProcessingBenchmarkResult(
+            displayID: 2,
+            status: 0,
+            stopStatus: 0,
+            processingMode: .videoToolboxEncode,
+            sampleDuration: 2.0,
+            callbackCount: 220,
+            completeFrameCount: 220,
+            observedFrameRate: 110.0,
+            processedFrameCount: 218,
+            processingFailureCount: 0,
+            processingErrorHistogram: [:],
+            processedFrameRate: 109.0,
+            processedFrameRatio: 0.99,
+            requestedMinimumFrameTime: 1.0 / 240.0,
+            requestedQueueDepth: 8,
+            requestedShowCursor: false,
+            surfaceWidth: 5120,
+            surfaceHeight: 2880,
+            pixelFormat: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            intervalCount: 219,
+            minIntervalMilliseconds: 4.166,
+            maxIntervalMilliseconds: 8.333,
+            intervalHistogram: ["4.2ms": 160, "8.3ms": 59],
+            cadenceClassification: "120hz-like",
+            frameStatusHistogram: ["frame-complete": 220],
+            notes: []
+        )
+
+        XCTAssertTrue(result.meets120LikeTarget)
     }
 
     func testScreenCaptureKitProxyHandshakeTraceRoundTripsThroughJSON() throws {

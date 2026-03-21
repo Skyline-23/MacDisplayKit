@@ -4,6 +4,7 @@ public enum MDKCaptureBenchmarkProcessingMode: String, CaseIterable, Codable, Se
     case none
     case metalBind = "metal-bind"
     case metalCopy = "metal-copy"
+    case videoToolboxEncode = "vt-encode"
 
     public var localizedName: String {
         switch self {
@@ -13,6 +14,8 @@ public enum MDKCaptureBenchmarkProcessingMode: String, CaseIterable, Codable, Se
             return "metal-bind"
         case .metalCopy:
             return "metal-copy"
+        case .videoToolboxEncode:
+            return "vt-encode"
         }
     }
 }
@@ -58,8 +61,22 @@ public final class MDKMetalBoundFrame: NSObject {
     }
 }
 
+struct MDKCaptureFrameProcessingSummary: Sendable, Equatable {
+    let processedFrameCount: UInt64
+    let processingFailureCount: UInt64
+    let processingErrorHistogram: [String: Int]
+    let notes: [String]
+}
+
 protocol MDKCaptureFrameProcessing: AnyObject, Sendable {
     func process(frame: MDKCaptureFrame) throws
+    func finalize() -> MDKCaptureFrameProcessingSummary?
+}
+
+extension MDKCaptureFrameProcessing {
+    func finalize() -> MDKCaptureFrameProcessingSummary? {
+        nil
+    }
 }
 
 public final class MDKNoopCaptureFrameProcessor: MDKCaptureFrameProcessing, @unchecked Sendable {

@@ -12551,6 +12551,206 @@ static NSString *MDKDescribeDisplayStreamFrameStatus(CGDisplayStreamFrameStatus 
 static constexpr double MDKSLDisplayStreamTunedMinimumFrameTime = 1.0 / 240.0;
 static constexpr NSInteger MDKSLDisplayStreamTunedQueueDepth = 8;
 
+static BOOL MDKResolveDisplayModeSize(
+    NSUInteger displayID,
+    size_t *widthOut,
+    size_t *heightOut
+) {
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(static_cast<CGDirectDisplayID>(displayID));
+    if (mode == nil) {
+        return NO;
+    }
+
+    if (widthOut != nullptr) {
+        *widthOut = std::max(static_cast<size_t>(CGDisplayModeGetPixelWidth(mode)), static_cast<size_t>(1));
+    }
+    if (heightOut != nullptr) {
+        *heightOut = std::max(static_cast<size_t>(CGDisplayModeGetPixelHeight(mode)), static_cast<size_t>(1));
+    }
+    CFRelease(mode);
+    return YES;
+}
+
+static BOOL MDKPopulateSkyLightDisplayStreamProperties(
+    double minimumFrameTime,
+    NSInteger queueDepth,
+    BOOL showCursor,
+    NSMutableDictionary *streamProperties,
+    NSUInteger *appliedPropertyCount
+) {
+    if (streamProperties == nil) {
+        return NO;
+    }
+
+    NSUInteger propertyCount = 0;
+    if (CFStringRef minimumFrameTimeKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamMinimumFrameTime")) {
+        streamProperties[(__bridge NSString *) minimumFrameTimeKey] = @(std::max(minimumFrameTime, 0.0));
+        propertyCount += 1;
+    }
+    if (CFStringRef queueDepthKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamQueueDepth")) {
+        streamProperties[(__bridge NSString *) queueDepthKey] = @(std::max<NSInteger>(queueDepth, 1));
+        propertyCount += 1;
+    }
+    if (CFStringRef showCursorKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamShowCursor")) {
+        streamProperties[(__bridge NSString *) showCursorKey] = @(showCursor);
+        propertyCount += 1;
+    }
+
+    if (appliedPropertyCount != nullptr) {
+        *appliedPropertyCount = propertyCount;
+    }
+    return propertyCount > 0;
+}
+
+@interface MDKShimSkyLightDisplayStreamSession () {
+    CGDisplayStreamRef _stream;
+    dispatch_queue_t _queue;
+    MDKShimSkyLightDisplayStreamFrameHandler _frameHandler;
+}
+@end
+
+@implementation MDKShimSkyLightDisplayStreamSession
+
+- (instancetype)initWithDisplayID:(NSUInteger)displayID
+                 minimumFrameTime:(double)minimumFrameTime
+                       queueDepth:(NSInteger)queueDepth
+                       showCursor:(BOOL)showCursor
+                      pixelFormat:(uint32_t)pixelFormat
+                     frameHandler:(MDKShimSkyLightDisplayStreamFrameHandler)frameHandler {
+    self = [super init];
+    if (self == nil) {
+        return nil;
+    }
+
+    _displayID = displayID;
+    _minimumFrameTime = std::max(minimumFrameTime, 0.0);
+    _queueDepth = std::max<NSInteger>(queueDepth, 1);
+    _showCursor = showCursor;
+    _pixelFormat = pixelFormat;
+    _frameHandler = [frameHandler copy];
+    _queue = dispatch_queue_create("com.skyline23.MacDisplayKit.skylight.displaystream.session", DISPATCH_QUEUE_SERIAL);
+    return self;
+}
+
+- (void)dealloc {
+    [self stop];
+}
+
+- (BOOL)start:(NSError * _Nullable * _Nullable)error {
+    if (_stream != nil) {
+        _running = YES;
+        return YES;
+    }
+
+    using MDKSLDisplayStreamCreateWithDispatchQueueFn = CGDisplayStreamRef (*)(
+        CGDirectDisplayID,
+        size_t,
+        size_t,
+        int32_t,
+        CFDictionaryRef _Nullable,
+        dispatch_queue_t,
+        CGDisplayStreamFrameAvailableHandler
+    );
+    using MDKSLDisplayStreamStartFn = CGError (*)(CGDisplayStreamRef);
+
+    auto createSymbol = reinterpret_cast<MDKSLDisplayStreamCreateWithDispatchQueueFn>(
+        MDKLookupCaptureSymbol("SLDisplayStreamCreateWithDispatchQueue")
+    );
+    auto startSymbol = reinterpret_cast<MDKSLDisplayStreamStartFn>(
+        MDKLookupCaptureSymbol("SLDisplayStreamStart")
+    );
+    if (createSymbol == nullptr || startSymbol == nullptr) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
+                                         code:1
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"One or more raw SkyLight SLDisplayStream symbols are unavailable."
+                                     }];
+        }
+        return NO;
+    }
+
+    size_t width = 0;
+    size_t height = 0;
+    if (!MDKResolveDisplayModeSize(_displayID, &width, &height)) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
+                                         code:2
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Unable to resolve the current display mode for the requested display."
+                                     }];
+        }
+        return NO;
+    }
+
+    NSMutableDictionary *streamProperties = [NSMutableDictionary dictionary];
+    MDKPopulateSkyLightDisplayStreamProperties(_minimumFrameTime, _queueDepth, _showCursor, streamProperties, nullptr);
+    const CFDictionaryRef streamPropertiesRef =
+        streamProperties.count > 0 ? (__bridge CFDictionaryRef) streamProperties : nil;
+
+    __weak MDKShimSkyLightDisplayStreamSession *weakSelf = self;
+    _stream = createSymbol(
+        static_cast<CGDirectDisplayID>(_displayID),
+        width,
+        height,
+        static_cast<int32_t>(_pixelFormat),
+        streamPropertiesRef,
+        _queue,
+        ^(CGDisplayStreamFrameStatus status,
+          uint64_t displayTime,
+          IOSurfaceRef frameSurface,
+          __unused CGDisplayStreamUpdateRef updateRef) {
+            MDKShimSkyLightDisplayStreamSession *strongSelf = weakSelf;
+            if (strongSelf == nil || strongSelf->_frameHandler == nil) {
+                return;
+            }
+
+            strongSelf->_frameHandler(status, displayTime, frameSurface);
+        }
+    );
+    if (_stream == nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
+                                         code:3
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"SLDisplayStreamCreateWithDispatchQueue returned nil."
+                                     }];
+        }
+        return NO;
+    }
+
+    const CGError startStatus = startSymbol(_stream);
+    _running = (startStatus == kCGErrorSuccess);
+    if (!_running && error != nullptr) {
+        *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
+                                     code:startStatus
+                                 userInfo:@{
+                                     NSLocalizedDescriptionKey: @"SLDisplayStreamStart returned a non-zero status."
+                                 }];
+    }
+    return _running;
+}
+
+- (int32_t)stop {
+    using MDKSLDisplayStreamStopFn = CGError (*)(CGDisplayStreamRef);
+    auto stopSymbol = reinterpret_cast<MDKSLDisplayStreamStopFn>(
+        MDKLookupCaptureSymbol("SLDisplayStreamStop")
+    );
+
+    CGError stopStatus = kCGErrorSuccess;
+    if (_stream != nil && stopSymbol != nullptr) {
+        stopStatus = stopSymbol(_stream);
+        dispatch_sync(_queue, ^{
+        });
+        CFRelease(_stream);
+        _stream = nil;
+    }
+    _running = NO;
+    return stopStatus;
+}
+
+@end
+
 static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBenchmarkPayload(
     NSUInteger displayID,
     NSTimeInterval sampleDuration,
@@ -12591,8 +12791,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
         return nil;
     }
 
-    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(static_cast<CGDirectDisplayID>(displayID));
-    if (mode == nil) {
+    size_t width = 0;
+    size_t height = 0;
+    if (!MDKResolveDisplayModeSize(displayID, &width, &height)) {
         if (error != nullptr) {
             *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
                                          code:2
@@ -12603,28 +12804,18 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
         return nil;
     }
 
-    const size_t width = std::max(static_cast<size_t>(CGDisplayModeGetPixelWidth(mode)), static_cast<size_t>(1));
-    const size_t height = std::max(static_cast<size_t>(CGDisplayModeGetPixelHeight(mode)), static_cast<size_t>(1));
-    CFRelease(mode);
-
     NSMutableDictionary *streamProperties = [NSMutableDictionary dictionary];
-    NSUInteger appliedPropertyCount = 0;
     const double requestedMinimumFrameTime = std::max(minimumFrameTime, 0.0);
     const NSInteger requestedQueueDepth = std::max<NSInteger>(queueDepth, 1);
     const BOOL requestedShowCursor = showCursor;
-
-    if (CFStringRef minimumFrameTimeKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamMinimumFrameTime")) {
-        streamProperties[(__bridge NSString *) minimumFrameTimeKey] = @(requestedMinimumFrameTime);
-        appliedPropertyCount += 1;
-    }
-    if (CFStringRef queueDepthKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamQueueDepth")) {
-        streamProperties[(__bridge NSString *) queueDepthKey] = @(requestedQueueDepth);
-        appliedPropertyCount += 1;
-    }
-    if (CFStringRef showCursorKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamShowCursor")) {
-        streamProperties[(__bridge NSString *) showCursorKey] = @(requestedShowCursor);
-        appliedPropertyCount += 1;
-    }
+    NSUInteger appliedPropertyCount = 0;
+    MDKPopulateSkyLightDisplayStreamProperties(
+        requestedMinimumFrameTime,
+        requestedQueueDepth,
+        requestedShowCursor,
+        streamProperties,
+        &appliedPropertyCount
+    );
 
     const CFDictionaryRef streamPropertiesRef =
         streamProperties.count > 0 ? (__bridge CFDictionaryRef) streamProperties : nil;
