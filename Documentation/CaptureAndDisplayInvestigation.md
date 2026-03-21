@@ -955,3 +955,23 @@ Interpretation:
   remaining wakeup path is now best modeled as either:
   - a libdispatch- or CoreMedia-internal producer path that bypasses imported write stubs, or
   - a cross-process feed into the paired pipe endpoint that never surfaces as a local write import
+
+Follow-up passive trace after interposing `xpc_fd_dup` / `xpc_dictionary_dup_fd` on the same images:
+
+- `xpcFDInterposeAttempted=1`
+- `xpcFDInterposeInstalled=1`
+- `xpcFDInterposeInstalledImageCount=3`
+- `xpcFDDupEventCount=0`
+- `xpcDictionaryDupFDEventCount=0`
+
+Interpretation:
+
+- the host process does not appear to materialize the observed `RecvFd` / `SendFd` queue artifacts by
+  calling imported `xpc_fd_dup` or `xpc_dictionary_dup_fd` during the passive trace window
+- that cuts off another same-process handoff theory: the fd-bearing queue object is present in the
+  host, but the live wakeup path is not exposing itself through imported xpc fd duplication either
+- with `dispatch`, `read`, `write`, and xpc fd duplication all eliminated in the host process, the
+  next best upstream boundaries are now:
+  - `CMCapture`'s xpc request/reply transport (`xpc_pipe_create`, `xpc_pipe_simpleroutine`)
+  - local `pipe` creation / duplication in the capture stack
+  - the cross-process producer (`replayd`) that brokers those pipe-backed queue endpoints

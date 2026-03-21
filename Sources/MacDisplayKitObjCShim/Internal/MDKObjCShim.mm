@@ -783,6 +783,8 @@ using MDKDispatchSourceSetEventHandlerFn = void (*)(dispatch_source_t, dispatch_
 using MDKDispatchSourceSetEventHandlerFFn = void (*)(dispatch_source_t, dispatch_function_t);
 using MDKReadFn = ssize_t (*)(int, void *, size_t);
 using MDKWriteFn = ssize_t (*)(int, const void *, size_t);
+using MDKXPCFDDupFn = int (*)(xpc_object_t);
+using MDKXPCDictionaryDupFDFn = int (*)(xpc_object_t, const char *);
 using MDKDispatchSourceHandlerBlockInvokeFn = void (*)(void *);
 static MDKRQReceiverSetSourceBlockInvokeFn MDKOriginalRQReceiverSetSourceBlockInvoke = nullptr;
 static MDKDispatchSourceInvokeInternalFn MDKOriginalDispatchSourceInvokeInternal = nullptr;
@@ -795,8 +797,11 @@ static MDKReadFn MDKOriginalRead = nullptr;
 static MDKReadFn MDKOriginalReadNoCancel = nullptr;
 static MDKWriteFn MDKOriginalWrite = nullptr;
 static MDKWriteFn MDKOriginalWriteNoCancel = nullptr;
+static MDKXPCFDDupFn MDKOriginalXPCFDDup = nullptr;
+static MDKXPCDictionaryDupFDFn MDKOriginalXPCDictionaryDupFD = nullptr;
 thread_local NSUInteger MDKInterposedFIFOReadDepth = 0;
 thread_local NSUInteger MDKInterposedFIFOWriteDepth = 0;
+thread_local NSUInteger MDKInterposedXPCFDDepth = 0;
 
 static void MDKRecordSCKTraceEvent(NSString *kind, NSDictionary<NSString *, id> *payload);
 static NSDictionary<NSString *, id> *MDKSummarizeSampleBuffer(CMSampleBufferRef sampleBuffer);
@@ -2017,6 +2022,9 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"fifoWriteEventCount": @0,
             @"fifoWriteNoCancelEventCount": @0,
             @"fifoWriteInterposeEventCount": @0,
+            @"xpcFDDupEventCount": @0,
+            @"xpcDictionaryDupFDEventCount": @0,
+            @"xpcFDInterposeEventCount": @0,
             @"dispatchSourceHandlerCallbackEventCount": @0,
             @"dispatchSourceHandlerBlocks": [NSMutableDictionary dictionary],
             @"dispatchSourceHandlerInvokes": [NSMutableDictionary dictionary],
@@ -3541,6 +3549,57 @@ static void MDKRecordFIFOWriteInterposeEvent(
     MDKRecordSCKTraceEvent(kind, payload);
 }
 
+static BOOL MDKShouldTraceXPCFDDupKey(const char *key) {
+    if (key == nullptr) {
+        return NO;
+    }
+
+    return strcmp(key, "RecvFd") == 0 || strcmp(key, "SendFd") == 0;
+}
+
+static void MDKRecordXPCFDInterposeEvent(
+    NSString *kind,
+    xpc_object_t object,
+    const char *key,
+    int resultFD,
+    int savedErrno
+) {
+    BOOL shouldRecord = NO;
+    NSUInteger overallEventCount = 0;
+    NSString *counterKey = [kind isEqualToString:@"xpc-dictionary-dup-fd"] ?
+        @"xpcDictionaryDupFDEventCount" :
+        @"xpcFDDupEventCount";
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            MDKActiveSCKTraceState[counterKey] =
+                @([MDKActiveSCKTraceState[counterKey] unsignedIntegerValue] + 1);
+            overallEventCount = [MDKActiveSCKTraceState[@"xpcFDInterposeEventCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"xpcFDInterposeEventCount"] = @(overallEventCount);
+            shouldRecord = overallEventCount <= 128;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    NSMutableDictionary<NSString *, id> *payload = [@{
+        @"key": key != nullptr ? [NSString stringWithUTF8String:key] : [NSNull null],
+        @"resultFD": @(resultFD),
+        @"errno": @(savedErrno),
+        @"resultIsFIFO": @(MDKShouldTraceFIFOReadFD(resultFD)),
+        @"wrapperSequenceID": MDKCurrentVideoQueueWrapperSequence() > 0 ? @(MDKCurrentVideoQueueWrapperSequence()) : [NSNull null],
+        @"wrapperDepth": @(MDKCurrentVideoQueueWrapperSequenceDepth()),
+    } mutableCopy];
+    NSDictionary<NSString *, id> *xpcSummary = MDKSummarizeXPCObject(object);
+    if (xpcSummary != nil) {
+        payload[@"xpcObject"] = xpcSummary;
+    }
+    if (overallEventCount <= 8) {
+        payload[@"backtrace"] = MDKCopyBacktraceFrames(10, 3);
+    }
+    MDKRecordSCKTraceEvent(kind, payload);
+}
+
 static void MDKRecordDispatchSourceHandlerCallbackEvent(void) {
     BOOL shouldRecord = NO;
     NSUInteger eventCount = 0;
@@ -4256,6 +4315,8 @@ extern "C" ssize_t MDKInterposedRead(int fd, void *buffer, size_t size);
 extern "C" ssize_t MDKInterposedReadNoCancel(int fd, void *buffer, size_t size);
 extern "C" ssize_t MDKInterposedWrite(int fd, const void *buffer, size_t size);
 extern "C" ssize_t MDKInterposedWriteNoCancel(int fd, const void *buffer, size_t size);
+extern "C" int MDKInterposedXPCFDDup(xpc_object_t object);
+extern "C" int MDKInterposedXPCDictionaryDupFD(xpc_object_t object, const char *key);
 
 static void MDKInstallRuntimeFigRemoteQueueReceiverInterposes(void) {
     static dispatch_once_t onceToken;
@@ -4536,6 +4597,82 @@ static void MDKInstallFIFOWriteInterposes(void) {
         }
 
         MDKAppendSCKTraceNote([NSString stringWithFormat:@"Installed fifo write interpose on %lu image(s) using %lu symbol(s).",
+                               (unsigned long)installedImageCount,
+                               (unsigned long)interposeCount]);
+    });
+}
+
+static void MDKInstallXPCFDInterposes(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        using MDKDyldDynamicInterposeFn = void (*)(const mach_header *, const MDKDyldInterposeTuple[], size_t);
+
+        MDKSetSCKTraceStateValue(@"xpcFDInterposeAttempted", @YES);
+        auto dynamicInterpose =
+            reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "dyld_dynamic_interpose"));
+        if (dynamicInterpose == nullptr) {
+            dynamicInterpose =
+                reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "_dyld_dynamic_interpose"));
+        }
+        MDKSetSCKTraceStateValue(@"xpcFDInterposeDyldAvailable", @(dynamicInterpose != nullptr));
+        if (dynamicInterpose == nullptr) {
+            return;
+        }
+
+        MDKOriginalXPCFDDup = reinterpret_cast<MDKXPCFDDupFn>(dlsym(RTLD_DEFAULT, "xpc_fd_dup"));
+        MDKOriginalXPCDictionaryDupFD =
+            reinterpret_cast<MDKXPCDictionaryDupFDFn>(dlsym(RTLD_DEFAULT, "xpc_dictionary_dup_fd"));
+        MDKSetSCKTraceStateValue(@"xpcFDInterposeXPCFDDupSymbolAvailable", @(MDKOriginalXPCFDDup != nullptr));
+        MDKSetSCKTraceStateValue(@"xpcFDInterposeXPCDictionaryDupFDSymbolAvailable", @(MDKOriginalXPCDictionaryDupFD != nullptr));
+        if (MDKOriginalXPCFDDup == nullptr && MDKOriginalXPCDictionaryDupFD == nullptr) {
+            MDKAppendSCKTraceNote(@"Neither xpc_fd_dup nor xpc_dictionary_dup_fd was available, so xpc fd interpose stayed disabled.");
+            return;
+        }
+
+        MDKDyldInterposeTuple interposes[2] = {};
+        size_t interposeCount = 0;
+        if (MDKOriginalXPCFDDup != nullptr) {
+            interposes[interposeCount++] = {
+                reinterpret_cast<const void *>(&MDKInterposedXPCFDDup),
+                reinterpret_cast<const void *>(MDKOriginalXPCFDDup),
+            };
+        }
+        if (MDKOriginalXPCDictionaryDupFD != nullptr) {
+            interposes[interposeCount++] = {
+                reinterpret_cast<const void *>(&MDKInterposedXPCDictionaryDupFD),
+                reinterpret_cast<const void *>(MDKOriginalXPCDictionaryDupFD),
+            };
+        }
+
+        NSUInteger installedImageCount = 0;
+        const mach_header *screenCaptureKitHeader =
+            MDKFindLoadedImageHeader("/System/Library/Frameworks/ScreenCaptureKit.framework/");
+        if (screenCaptureKitHeader != nullptr) {
+            dynamicInterpose(screenCaptureKitHeader, interposes, interposeCount);
+            installedImageCount += 1;
+        }
+        const mach_header *cmCaptureHeader =
+            MDKFindLoadedImageHeader("/System/Library/PrivateFrameworks/CMCapture.framework/");
+        if (cmCaptureHeader != nullptr) {
+            dynamicInterpose(cmCaptureHeader, interposes, interposeCount);
+            installedImageCount += 1;
+        }
+        const mach_header *libxpcHeader =
+            MDKFindLoadedImageHeader("/usr/lib/system/libxpc.dylib");
+        if (libxpcHeader != nullptr) {
+            dynamicInterpose(libxpcHeader, interposes, interposeCount);
+            installedImageCount += 1;
+        }
+
+        MDKSetSCKTraceStateValue(@"xpcFDInterposeInstalledImageCount", @(installedImageCount));
+        MDKSetSCKTraceStateValue(@"xpcFDInterposeInstalledSymbolCount", @(interposeCount));
+        MDKSetSCKTraceStateValue(@"xpcFDInterposeInstalled", @(installedImageCount > 0));
+        if (installedImageCount == 0) {
+            MDKAppendSCKTraceNote(@"ScreenCaptureKit, CMCapture, and libxpc were absent from the loaded image list, so xpc fd interpose stayed disabled.");
+            return;
+        }
+
+        MDKAppendSCKTraceNote([NSString stringWithFormat:@"Installed xpc fd interpose on %lu image(s) using %lu symbol(s).",
                                (unsigned long)installedImageCount,
                                (unsigned long)interposeCount]);
     });
@@ -4830,6 +4967,41 @@ extern "C" ssize_t MDKInterposedWriteNoCancel(int fd, const void *buffer, size_t
     MDKInterposedFIFOWriteDepth -= 1;
     if (shouldTrace) {
         MDKRecordFIFOWriteInterposeEvent(@"fifo-write-nocancel", fd, size, result, savedErrno);
+    }
+    errno = savedErrno;
+    return result;
+}
+
+extern "C" int MDKInterposedXPCFDDup(xpc_object_t object) {
+    if (MDKOriginalXPCFDDup == nullptr) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    MDKInterposedXPCFDDepth += 1;
+    const int result = MDKOriginalXPCFDDup(object);
+    const int savedErrno = errno;
+    MDKInterposedXPCFDDepth -= 1;
+    if (MDKInterposedXPCFDDepth == 0 && MDKShouldTraceFIFOReadFD(result)) {
+        MDKRecordXPCFDInterposeEvent(@"xpc-fd-dup", object, nullptr, result, savedErrno);
+    }
+    errno = savedErrno;
+    return result;
+}
+
+extern "C" int MDKInterposedXPCDictionaryDupFD(xpc_object_t object, const char *key) {
+    if (MDKOriginalXPCDictionaryDupFD == nullptr) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    MDKInterposedXPCFDDepth += 1;
+    const int result = MDKOriginalXPCDictionaryDupFD(object, key);
+    const int savedErrno = errno;
+    MDKInterposedXPCFDDepth -= 1;
+    if (MDKInterposedXPCFDDepth == 0 &&
+        (MDKShouldTraceXPCFDDupKey(key) || MDKShouldTraceFIFOReadFD(result))) {
+        MDKRecordXPCFDInterposeEvent(@"xpc-dictionary-dup-fd", object, key, result, savedErrno);
     }
     errno = savedErrno;
     return result;
@@ -5346,6 +5518,7 @@ static void MDKInstallSCKProxyTraceHooks(void) {
         MDKInstallDispatchReadSourceInterposes();
         MDKInstallFIFOReadInterposes();
         MDKInstallFIFOWriteInterposes();
+        MDKInstallXPCFDInterposes();
         Class daemonProxyClass = NSClassFromString(@"RPDaemonProxy");
         if (daemonProxyClass == Nil) {
             return;
@@ -8540,6 +8713,18 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             @"fifo-write-nocancel",
         ]]
     );
+    NSDictionary<NSString *, id> *xpcFDDupCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"xpc-fd-dup",
+        ]]
+    );
+    NSDictionary<NSString *, id> *xpcDictionaryDupFDCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"xpc-dictionary-dup-fd",
+        ]]
+    );
     NSDictionary<NSString *, id> *surfaceTransportHandleMessageCadenceSummary = MDKCopyTraceEventCadenceSummary(
         traceEvents,
         [NSSet setWithArray:@[
@@ -8829,6 +9014,18 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"fifoWriteDeltaHistogram=%@", MDKDescribeTraceValue(fifoWriteCadenceSummary[@"deltaHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"fifoWrite120HzEquivalentCount=%@", MDKDescribeTraceValue(fifoWriteCadenceSummary[@"delta120HzEquivalentCount"])]];
     [notes addObject:[NSString stringWithFormat:@"fifoWriteCadenceClassification=%@", MDKDescribeTraceValue(fifoWriteCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcFDInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"xpcFDInterposeAttempted"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcFDInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"xpcFDInterposeInstalled"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcFDInterposeInstalledImageCount=%@", MDKDescribeTraceValue(snapshot[@"xpcFDInterposeInstalledImageCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcFDInterposeInstalledSymbolCount=%@", MDKDescribeTraceValue(snapshot[@"xpcFDInterposeInstalledSymbolCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcFDDupEventCount=%@", MDKDescribeTraceValue(xpcFDDupCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcFDDupDeltaCount=%@", MDKDescribeTraceValue(xpcFDDupCadenceSummary[@"deltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcFDDupDeltaHistogram=%@", MDKDescribeTraceValue(xpcFDDupCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcFDDupCadenceClassification=%@", MDKDescribeTraceValue(xpcFDDupCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcDictionaryDupFDEventCount=%@", MDKDescribeTraceValue(xpcDictionaryDupFDCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcDictionaryDupFDDeltaCount=%@", MDKDescribeTraceValue(xpcDictionaryDupFDCadenceSummary[@"deltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcDictionaryDupFDDeltaHistogram=%@", MDKDescribeTraceValue(xpcDictionaryDupFDCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcDictionaryDupFDCadenceClassification=%@", MDKDescribeTraceValue(xpcDictionaryDupFDCadenceSummary[@"cadenceClassification"])]];
     [notes addObject:[NSString stringWithFormat:@"dispatchSourceHandlerInstalledCount=%@", MDKDescribeTraceValue(dispatchSourceHandlerInstallSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"dispatchSourceHandlerCallbackEventCount=%@", MDKDescribeTraceValue(dispatchSourceHandlerCadenceSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"dispatchSourceHandlerCallbackDeltaCount=%@", MDKDescribeTraceValue(dispatchSourceHandlerCadenceSummary[@"deltaCount"])]];
