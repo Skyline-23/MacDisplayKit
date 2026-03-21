@@ -1725,3 +1725,32 @@ Interpretation:
     - the framework can now surface queue-depth selection to Apollo instead of hiding it inside benchmark-only presets
     - on the current loaded host, `ProRes Proxy` is still below the realtime floor but is less stall-heavy than full-resolution `HEVC`
     - raw auto-tuning now avoids selecting unstable `120hz-like` burst patterns when they hide materially worse stall behavior
+- 2026-03-21 the `VT` path now defaults to codec-friendly capture pixel formats, keeps detached staging for hardware encoders, and uses the retuned `request-120-like` shorthand
+  - implementation changes:
+    - host-side processing benchmarks now infer the raw capture pixel format from the encoder mode instead of defaulting every processing run to `BGRA`
+    - `HEVC` therefore auto-tuned against `x420` raw capture, while `ProRes Proxy` stays on `BGRA`
+    - direct submission of capture-owned `IOSurface`s into `VTCompressionSession` was reverted for `HEVC`/`ProRes`; detached staging remains the default because direct submission collapsed the raw source cadence behind output-callback ownership
+    - the raw `request-120-like` shorthand and the reusable raw tuning advisor now point at the retuned queue-depth-1 candidate instead of the stale queue-depth-3/8 era assumptions
+  - current direct measurements on the host:
+    - `HEVC` auto-tuned raw benchmark now requests `0x78343230` (`x420`) by default and currently picks `baseline-q3`
+      - `autoTunedRawObservedFrameRate≈118.16`
+      - `completedOutputFrameRate≈97.85`
+      - `completedOutputFrameRatio=1.0`
+    - explicit `HEVC q1/x420` under current host load:
+      - `completedOutputFrameRate≈91.31`
+    - explicit `HEVC q3/x420` under current host load:
+      - `completedOutputFrameRate≈104.33`
+    - `ProRes Proxy` auto-tuned raw benchmark now stays on `BGRA` and currently picks `baseline-q3`
+      - `autoTunedRawObservedFrameRate≈103.00`
+      - `completedOutputFrameRate≈107.66`
+      - `completedOutputFrameRatio=1.0`
+  - current interpretation:
+    - the old auto-tuned `HEVC≈40 fps` result was mostly a bad default-capture-format problem; `x420` is now the correct default for the `HEVC` path
+    - under the current `WindowServer/ColorSync` load, `q3` is outperforming `q1` for `HEVC`, so queue depth must stay configurable and cannot be hardcoded globally
+    - the remaining `HEVC` ceiling is no longer a dropped-output problem; it is source slowdown while processing is active
+- 2026-03-21 detached staging still pays a per-frame setup cost, so the processor now caches source `MTLTexture` bindings by capture-surface identity and reduces pool minimum pressure without reducing the slot ceiling
+  - implementation changes:
+    - source `MTLTexture` arrays are now cached per `surfaceID` + plane descriptor set instead of being rebuilt on every frame
+    - the `VT` staging pool still allows up to `128` inflight staged slots, but the pool's minimum-buffer count is now capped at `12` to avoid overstating pressure on `CVPixelBufferPool`
+  - current interpretation:
+    - this does not yet eliminate the `HEVC` source slowdown under current system load, but it keeps the safe detached-staging design and removes one obvious per-frame setup cost while avoiding the slot-exhaustion regression seen when the total inflight slot cap itself was lowered

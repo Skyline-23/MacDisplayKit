@@ -80,6 +80,11 @@ private struct MDKVideoToolboxStagingSlot {
     let textures: [MTLTexture]
 }
 
+private struct MDKVideoToolboxSourceTextureCacheEntry {
+    let descriptors: [MDKMetalPlaneDescriptor]
+    let textures: [MTLTexture]
+}
+
 private final class MDKMetalBilinearScaler {
     private let scaler: MPSImageBilinearScale
 
@@ -138,6 +143,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var pixelBufferAttributes: CFDictionary?
     private var encoderPixelBufferAttributes: CFDictionary?
     private var pixelBufferCache: [UInt32: CVPixelBuffer] = [:]
+    private var sourceTextureCache: [UInt32: MDKVideoToolboxSourceTextureCacheEntry] = [:]
     private var stagingPixelBufferPool: CVPixelBufferPool?
     private var stagingSlots: [Int: MDKVideoToolboxStagingSlot] = [:]
     private var availableStagingSlotIdentifiers: [Int] = []
@@ -158,9 +164,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var encoderPixelBufferPoolIsShared: Bool?
     private var recommendedParallelizationLimit: Int?
     private var sessionConfigurationNotes: [String] = []
+    private var directSubmissionFrameCount: UInt64 = 0
+    private var stagedSubmissionFrameCount: UInt64 = 0
     private let colorConverterInitializationErrorDescription: String?
     private let outputDrainGroup = DispatchGroup()
+    private let stagingSubmissionGroup = DispatchGroup()
     private let encodeQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode")
+    private let encodeQueueSpecificKey = DispatchSpecificKey<UInt8>()
+    private let encodeQueueSpecificValue: UInt8 = 1
 
     public init(
         codec: MDKVideoEncoderCodec = .hevc,
@@ -186,11 +197,16 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             self.colorConverterInitializationErrorDescription = "Metal device unavailable."
         }
         self.maxInflightStagingSlots = max(maxInflightStagingSlots, 1)
+        self.encodeQueue.setSpecific(key: encodeQueueSpecificKey, value: encodeQueueSpecificValue)
     }
 
     deinit {
-        encodeQueue.sync {
+        if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) == encodeQueueSpecificValue {
             invalidateSession()
+        } else {
+            encodeQueue.sync {
+                invalidateSession()
+            }
         }
     }
 
@@ -211,7 +227,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         encodeQueue.async { [self, retainedFrame] in
             do {
                 try encode(frame: retainedFrame)
-                processedFrameCount += 1
             } catch {
                 let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
                 processingFailureCount += 1
@@ -221,7 +236,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     }
 
     func finalize() -> MDKCaptureFrameProcessingSummary? {
-        encodeQueue.sync { [self] in
+        encodeQueue.sync {}
+        let stagingSubmissionWaitStatus = stagingSubmissionGroup.wait(timeout: .now() + 1.5)
+        return encodeQueue.sync { [self] in
             if let compressionSession {
                 VTCompressionSessionCompleteFrames(compressionSession, untilPresentationTimeStamp: .invalid)
             }
@@ -252,10 +269,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     "videoToolboxOutputCallback=non-nil",
                     "videoToolboxCodec=\(codec.rawValue)",
                     "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
-                    "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "metal-staging-pool")",
+                    "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "hybrid-direct-or-metal-staging")",
+                    "videoToolboxDirectSubmissionFrameCount=\(directSubmissionFrameCount)",
+                    "videoToolboxStagedSubmissionFrameCount=\(stagedSubmissionFrameCount)",
                     "videoToolboxColorConversionMode=\(sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) ? "custom" : "passthrough")",
                     "videoToolboxMaxInflightStagingSlots=\(maxInflightStagingSlots)",
                     "videoToolboxSubmittedFrameCount=\(outputSummary.0)",
+                    "videoToolboxStagingSubmissionWait=\(stagingSubmissionWaitStatus == .success ? "success" : "timeout")",
                     "videoToolboxOutputDrainWait=\(outputDrainWaitStatus == .success ? "success" : "timeout")",
                     "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
                     "videoToolboxPixelBufferPoolIsShared=\(describeHardwareAcceleration(encoderPixelBufferPoolIsShared))",
@@ -280,10 +300,16 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             pixelFormat: targetPixelFormat
         )
 
-        if let commandQueue {
+        let needsPixelFormatConversion = frame.pixelFormat != targetPixelFormat
+        let needsScaling = outputDimensions.x != frame.width || outputDimensions.y != frame.height
+
+        if let commandQueue, (needsPixelFormatConversion || needsScaling || codec.prefersDetachedSubmissionSurface) {
+            // Capture-owned IOSurfaces for HEVC/ProRes must be detached from the encoder.
+            // Direct submission pins the producer's surface pool behind VT output callbacks
+            // and collapses source fps even when the surface format already matches the encoder.
             try stageAndEncode(frame: frame, targetPixelFormat: targetPixelFormat, commandQueue: commandQueue)
         } else {
-            guard frame.pixelFormat == targetPixelFormat else {
+            guard !needsPixelFormatConversion && !needsScaling else {
                 throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
                     sourcePixelFormat: frame.pixelFormat,
                     targetPixelFormat: targetPixelFormat
@@ -300,6 +326,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
         let imageBuffer = try wrappedPixelBuffer(for: frame, surface: surface)
         try submitToEncoder(imageBuffer: imageBuffer, slotIdentifier: nil)
+        directSubmissionFrameCount += 1
+        processedFrameCount += 1
     }
 
     private func stageAndEncode(
@@ -314,10 +342,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             throw MDKVideoToolboxProcessingError.surfaceUnavailable
         }
 
-        let sourceTextures = try makeTextures(
-            for: surface,
-            device: device,
-            usage: [.shaderRead]
+        let sourceTextures = try makeSourceTextures(
+            for: frame,
+            surface: surface,
+            device: device
         )
         let outputDimensions = preprocessStrategy.outputDimensions(
             sourceWidth: frame.width,
@@ -338,9 +366,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
         let presentationTimeStamp = CMTime(value: frameIndex, timescale: 120)
         frameIndex += 1
+        stagingSubmissionGroup.enter()
 
         if frame.pixelFormat != targetPixelFormat {
             guard let colorConverter else {
+                stagingSubmissionGroup.leave()
                 releaseStagingSlot(identifier: slotIdentifier)
                 throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
                     sourcePixelFormat: frame.pixelFormat,
@@ -364,6 +394,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             )
         } else if requiresScaling(sourceTextures: sourceTextures, destinationTextures: slot.textures) {
             guard let scaler else {
+                stagingSubmissionGroup.leave()
                 releaseStagingSlot(identifier: slotIdentifier)
                 throw MDKVideoToolboxProcessingError.scalerUnavailable
             }
@@ -374,6 +405,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             )
         } else {
             guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
+                stagingSubmissionGroup.leave()
                 releaseStagingSlot(identifier: slotIdentifier)
                 throw MDKVideoToolboxProcessingError.blitEncoderUnavailable
             }
@@ -404,11 +436,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     self.processingFailureCount += 1
                     self.processingErrorHistogram["Metal staged copy failed (\(commandBufferStatus.rawValue)).", default: 0] += 1
                     self.releaseStagingSlot(identifier: slotIdentifier)
+                    self.stagingSubmissionGroup.leave()
                     return
                 }
                 guard let slot = self.stagingSlots[slotIdentifier] else {
                     self.processingFailureCount += 1
                     self.processingErrorHistogram["Metal staged slot \(slotIdentifier) was missing before encode submit.", default: 0] += 1
+                    self.stagingSubmissionGroup.leave()
                     return
                 }
 
@@ -418,12 +452,15 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                         slotIdentifier: slotIdentifier,
                         presentationTimeStamp: presentationTimeStamp
                     )
+                    self.stagedSubmissionFrameCount += 1
+                    self.processedFrameCount += 1
                 } catch {
                     let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
                     self.processingFailureCount += 1
                     self.processingErrorHistogram[errorDescription, default: 0] += 1
                     self.releaseStagingSlot(identifier: slotIdentifier)
                 }
+                self.stagingSubmissionGroup.leave()
             }
         }
         commandBuffer.commit()
@@ -696,7 +733,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         attributes[kCVPixelBufferMetalCompatibilityKey] = true
         attributes[kCVPixelBufferIOSurfacePropertiesKey] = [:] as [CFString: Any]
         let poolAttributes: [CFString: Any] = [
-            kCVPixelBufferPoolMinimumBufferCountKey: maxInflightStagingSlots
+            kCVPixelBufferPoolMinimumBufferCountKey: min(maxInflightStagingSlots, 12)
         ]
 
         var pool: CVPixelBufferPool?
@@ -737,6 +774,48 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         return textures
+    }
+
+    private func makeSourceTextures(
+        for frame: MDKCaptureFrame,
+        surface: MDKCaptureSurface,
+        device: any MTLDevice
+    ) throws -> [MTLTexture] {
+        let descriptors = try makePlaneDescriptors(for: surface)
+        if let cachedEntry = sourceTextureCache[frame.surfaceID],
+           cachedEntry.descriptors == descriptors {
+            return cachedEntry.textures
+        }
+
+        let textures = try makeTextures(
+            for: surface,
+            device: device,
+            usage: [.shaderRead]
+        )
+        sourceTextureCache[frame.surfaceID] = MDKVideoToolboxSourceTextureCacheEntry(
+            descriptors: descriptors,
+            textures: textures
+        )
+        if sourceTextureCache.count > maxInflightStagingSlots {
+            sourceTextureCache.removeAll(keepingCapacity: true)
+            sourceTextureCache[frame.surfaceID] = MDKVideoToolboxSourceTextureCacheEntry(
+                descriptors: descriptors,
+                textures: textures
+            )
+        }
+        return textures
+    }
+
+    private func makePlaneDescriptors(
+        for surface: MDKCaptureSurface
+    ) throws -> [MDKMetalPlaneDescriptor] {
+        let planeCount = max(surface.planeCount, 1)
+        var descriptors: [MDKMetalPlaneDescriptor] = []
+        descriptors.reserveCapacity(planeCount)
+        for plane in 0..<planeCount {
+            descriptors.append(try surface.metalPlaneDescriptor(for: plane))
+        }
+        return descriptors
     }
 
     private func requiresScaling(
@@ -788,12 +867,15 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         pixelBufferAttributes = nil
         encoderPixelBufferAttributes = nil
         pixelBufferCache.removeAll(keepingCapacity: true)
+        sourceTextureCache.removeAll(keepingCapacity: true)
         stagingPixelBufferPool = nil
         stagingSlots.removeAll(keepingCapacity: true)
         availableStagingSlotIdentifiers.removeAll(keepingCapacity: true)
         nextStagingSlotIdentifier = 0
         frameIndex = 0
         sessionConfigurationNotes.removeAll(keepingCapacity: true)
+        directSubmissionFrameCount = 0
+        stagedSubmissionFrameCount = 0
         outputQueue.sync {
             submittedFrameCount = 0
             outputCallbackCount = 0

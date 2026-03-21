@@ -2,6 +2,7 @@ import Foundation
 import MacDisplayKit
 import MacDisplayCaptureKit
 import CoreGraphics
+import CoreVideo
 
 final class MDKHostBenchmarkController {
     static let benchmarkWarmupDuration: TimeInterval = 1.0
@@ -187,7 +188,8 @@ final class MDKHostBenchmarkController {
         pixelFormat: UInt32? = nil,
         processingMode: MDKCaptureBenchmarkProcessingMode
     ) throws -> MDKSkyLightDisplayStreamProcessingBenchmarkResult {
-        try MDKSkyLightDisplayStreamProcessingBenchmark.run(
+        let resolvedPixelFormat = pixelFormat ?? processingMode.preferredCapturePixelFormat
+        return try MDKSkyLightDisplayStreamProcessingBenchmark.run(
             displayID: displayID,
             sampleDuration: sampleDuration,
             minimumFrameTime: minimumFrameTime,
@@ -195,7 +197,7 @@ final class MDKHostBenchmarkController {
             showCursor: showCursor,
             outputWidth: outputWidth,
             outputHeight: outputHeight,
-            pixelFormat: pixelFormat,
+            pixelFormat: resolvedPixelFormat,
             processingMode: processingMode
         )
         .appendingNotes(captureRelevantProcessLoadNotes())
@@ -210,12 +212,14 @@ final class MDKHostBenchmarkController {
         pixelFormat: UInt32? = nil,
         processingMode: MDKCaptureBenchmarkProcessingMode
     ) throws -> MDKSkyLightDisplayStreamProcessingBenchmarkResult {
+        let resolvedPixelFormat = pixelFormat ?? processingMode.preferredCapturePixelFormat
         let candidateSet = MDKSkyLightDisplayStreamTuningAdvisor.recommendedCandidates(for: processingMode)
         let tuningReport = try benchmarkSkyLightDisplayStreamTuningMatrix(
             displayID: displayID,
             sampleDuration: sampleDuration,
             useMetalStimulus: useMetalStimulus,
-            candidates: candidateSet
+            candidates: candidateSet,
+            pixelFormat: resolvedPixelFormat
         )
 
         guard let bestEvaluation = tuningReport.bestEvaluation else {
@@ -230,7 +234,7 @@ final class MDKHostBenchmarkController {
             tuning: bestEvaluation.candidate,
             outputWidth: outputWidth,
             outputHeight: outputHeight,
-            pixelFormat: pixelFormat
+            pixelFormat: resolvedPixelFormat
         )
 
         return try benchmarkSkyLightDisplayStreamProcessing(
@@ -255,7 +259,8 @@ final class MDKHostBenchmarkController {
         displayID: UInt32,
         sampleDuration: TimeInterval,
         useMetalStimulus: Bool,
-        candidates: [MDKSkyLightDisplayStreamTuningCandidate] = MDKSkyLightDisplayStreamTuningMatrix.defaultCandidates
+        candidates: [MDKSkyLightDisplayStreamTuningCandidate] = MDKSkyLightDisplayStreamTuningMatrix.defaultCandidates,
+        pixelFormat: UInt32? = nil
     ) throws -> MDKSkyLightDisplayStreamTuningMatrixReport {
         let evaluations = try candidates.map { candidate in
             try MDKSkyLightDisplayStreamTuningEvaluation(
@@ -264,7 +269,8 @@ final class MDKHostBenchmarkController {
                     displayID: displayID,
                     sampleDuration: sampleDuration,
                     useMetalStimulus: useMetalStimulus,
-                    candidate: candidate
+                    candidate: candidate,
+                    pixelFormat: pixelFormat
                 )
             )
         }
@@ -319,7 +325,8 @@ final class MDKHostBenchmarkController {
         displayID: UInt32,
         sampleDuration: TimeInterval,
         useMetalStimulus: Bool,
-        candidate: MDKSkyLightDisplayStreamTuningCandidate
+        candidate: MDKSkyLightDisplayStreamTuningCandidate,
+        pixelFormat: UInt32?
     ) throws -> MDKSkyLightDisplayStreamBenchmarkResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
@@ -337,6 +344,10 @@ final class MDKHostBenchmarkController {
         ]
         if candidate.showCursor {
             arguments.append("--show-cursor")
+        }
+        if let pixelFormat {
+            arguments.append("--pixel-format")
+            arguments.append(Self.pixelFormatAlias(for: pixelFormat))
         }
         if useMetalStimulus {
             arguments.append("--with-metal-stimulus")
@@ -377,6 +388,23 @@ final class MDKHostBenchmarkController {
                     "stderr": stderrText
                 ]
             )
+        }
+    }
+
+    private static func pixelFormatAlias(for pixelFormat: UInt32) -> String {
+        switch pixelFormat {
+        case kCVPixelFormatType_32BGRA:
+            return "BGRA"
+        case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange:
+            return "x420"
+        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
+            return "420v"
+        case kCVPixelFormatType_420YpCbCr10BiPlanarFullRange:
+            return "xf20"
+        case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
+            return "420f"
+        default:
+            return String(format: "0x%08X", pixelFormat)
         }
     }
 

@@ -115,6 +115,13 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    var prefersDetachedSubmissionSurface: Bool {
+        switch self {
+        case .h264, .hevc, .proResProxy:
+            return true
+        }
+    }
+
     func averageBitRate(
         width: Int,
         height: Int,
@@ -125,7 +132,7 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         case .h264:
             return min(max(pixelsPerSecond / 12, 20_000_000), 60_000_000)
         case .hevc:
-            return min(max(pixelsPerSecond / 20, 12_000_000), 36_000_000)
+            return min(max(pixelsPerSecond / 10, 32_000_000), 96_000_000)
         case .proResProxy:
             return min(max(pixelsPerSecond / 5, 40_000_000), 140_000_000)
         }
@@ -137,8 +144,8 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         frameRate: Int
     ) -> [NSNumber] {
         let averageBitRate = averageBitRate(width: width, height: height, frameRate: frameRate)
-        let oneSecondLimitBytes = Int((Double(averageBitRate) / 8.0) * 1.20)
-        let quarterSecondLimitBytes = Int((Double(averageBitRate) / 8.0) * 0.35)
+        let oneSecondLimitBytes = Int((Double(averageBitRate) / 8.0) * 1.50)
+        let quarterSecondLimitBytes = Int((Double(averageBitRate) / 8.0) * 0.50)
         return [
             NSNumber(value: quarterSecondLimitBytes),
             NSNumber(value: 0.25),

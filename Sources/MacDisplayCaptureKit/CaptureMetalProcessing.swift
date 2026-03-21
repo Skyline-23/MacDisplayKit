@@ -1,3 +1,4 @@
+import CoreVideo
 import Metal
 
 public enum MDKCaptureBenchmarkProcessingMode: String, CaseIterable, Codable, Sendable {
@@ -51,6 +52,21 @@ public enum MDKCaptureBenchmarkProcessingMode: String, CaseIterable, Codable, Se
             return .downscale2x
         default:
             return .none
+        }
+    }
+
+    public var preferredCapturePixelFormat: UInt32? {
+        switch self {
+        case .videoToolboxEncode,
+             .videoToolboxEncodeDownscale2x:
+            return kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        case .videoToolboxEncodeH264,
+             .videoToolboxEncodeH264Downscale2x:
+            return kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        case .videoToolboxEncodeProResProxyExperimental:
+            return kCVPixelFormatType_32BGRA
+        case .none, .metalBind, .metalCopy:
+            return nil
         }
     }
 

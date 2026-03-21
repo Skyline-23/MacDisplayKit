@@ -550,12 +550,12 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(appended.stallCountOver16Milliseconds, result.stallCountOver16Milliseconds)
     }
 
-    func testRequest120LikeCandidateUsesRetunedQ3Configuration() {
+    func testRequest120LikeCandidateUsesRetunedQ1Configuration() {
         let candidate = MDKSkyLightDisplayStreamTuningMatrix.request120LikeCandidate
 
-        XCTAssertEqual(candidate.identifier, "min-frame-240hz-q3")
+        XCTAssertEqual(candidate.identifier, "min-frame-240hz-q1")
         XCTAssertEqual(candidate.minimumFrameTime, 1.0 / 240.0, accuracy: 0.000_001)
-        XCTAssertEqual(candidate.queueDepth, 3)
+        XCTAssertEqual(candidate.queueDepth, 1)
         XCTAssertFalse(candidate.showCursor)
     }
 
@@ -587,7 +587,8 @@ final class MacDisplayKitTests: XCTestCase {
             for: .videoToolboxEncode
         )
 
-        XCTAssertEqual(candidates.first?.identifier, "min-frame-240hz-q3")
+        XCTAssertEqual(candidates.first?.identifier, "min-frame-240hz-q1")
+        XCTAssertTrue(candidates.contains(where: { $0.identifier == "baseline-q1" }))
         XCTAssertTrue(candidates.contains(where: { $0.identifier == "baseline-q4" }))
     }
 
