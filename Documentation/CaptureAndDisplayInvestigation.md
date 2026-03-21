@@ -1096,6 +1096,12 @@ Follow-up passive trace after swizzling `NSXPCConnection` setup in the host proc
 - `firstNSXPCRemoteObjectProxy=<null>`
 - `firstNSXPCRemoteObjectProxyWithErrorHandler={"className":"__NSXPCInterfaceProxy_RPDaemonProtocol","present":true}`
 - `firstNSXPCSynchronousRemoteObjectProxyWithErrorHandler=<null>`
+- `nsxpcInterfaceWithProtocolEventCount=2`
+- `nsxpcInterfaceSetClassesEventCount=0`
+- `nsxpcInterfaceSetInterfaceEventCount=0`
+- `nsxpcInterfaceSetReplyBlockSignatureEventCount=0`
+- `nsxpcInterfaceProtocolHistogram={"RPClientProtocol":1,"RPDaemonProtocol":1}`
+- `nsxpcInterfaceSelectorHistogram={}`
 
 Interpretation:
 
@@ -1107,9 +1113,13 @@ Interpretation:
 - the host does not request a plain `remoteObjectProxy`, but it *does* request a
   `remoteObjectProxyWithErrorHandler:` object three times during a healthy passive trace
 - the first returned proxy is a concrete `__NSXPCInterfaceProxy_RPDaemonProtocol` instance
+- the contract setup only materializes as two `interfaceWithProtocol:` calls, one for
+  `RPDaemonProtocol` and one for `RPClientProtocol`
+- there are no observed `setClasses:...`, `setInterface:...`, or `setReplyBlockSignature:...`
+  calls, so the passive path is not building a richer selector/class map through public `NSXPCInterface`
 - that is the first direct host-side confirmation that the passive `SCStream` capture path is brokered through
   `replayd`, even though the lower imported C shims stay dark
 - this shifts the next reverse-engineering target from generic host-side imported stubs to two sharper paths:
   - `__NSXPCInterfaceProxy_RPDaemonProtocol` invocation flow
-  - `RPDaemonProtocol` contract wiring on `NSXPCInterface`
+  - `RPDaemonProtocol` selector dispatch below the proxy boundary
   - `replayd` itself, especially `SCContentSharingSessionService` and the session creation / reply path

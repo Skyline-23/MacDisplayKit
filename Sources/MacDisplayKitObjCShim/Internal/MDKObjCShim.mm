@@ -1038,6 +1038,10 @@ using MDKNSXPCResumeFn = void (*)(id, SEL);
 using MDKNSXPCSetInterfaceFn = void (*)(id, SEL, NSXPCInterface *);
 using MDKNSXPCRemoteObjectProxyFn = id (*)(id, SEL);
 using MDKNSXPCRemoteObjectProxyWithErrorHandlerFn = id (*)(id, SEL, id);
+using MDKNSXPCInterfaceWithProtocolFn = id (*)(id, SEL, Protocol *);
+using MDKNSXPCInterfaceSetClassesFn = void (*)(id, SEL, NSSet *, SEL, NSUInteger, BOOL);
+using MDKNSXPCInterfaceSetNestedInterfaceFn = void (*)(id, SEL, NSXPCInterface *, SEL, NSUInteger, BOOL);
+using MDKNSXPCInterfaceSetReplyBlockSignatureFn = void (*)(id, SEL, id, SEL);
 using MDKVideoReceiveQueueCallbackBlock = void (^)(int, MDKFigRemoteQueueMessage *, void *);
 using MDKVideoReceiveQueueBlockInvokeFn = void (*)(void *, int, MDKFigRemoteQueueMessage *, void *);
 using MDKVideoQueueNestedBlockInvokeFn = void (*)(void *, int, void *, void *);
@@ -1072,6 +1076,10 @@ static MDKNSXPCSetInterfaceFn MDKOriginalNSXPCSetExportedInterface = nullptr;
 static MDKNSXPCRemoteObjectProxyFn MDKOriginalNSXPCRemoteObjectProxy = nullptr;
 static MDKNSXPCRemoteObjectProxyWithErrorHandlerFn MDKOriginalNSXPCRemoteObjectProxyWithErrorHandler = nullptr;
 static MDKNSXPCRemoteObjectProxyWithErrorHandlerFn MDKOriginalNSXPCSynchronousRemoteObjectProxyWithErrorHandler = nullptr;
+static MDKNSXPCInterfaceWithProtocolFn MDKOriginalNSXPCInterfaceWithProtocol = nullptr;
+static MDKNSXPCInterfaceSetClassesFn MDKOriginalNSXPCInterfaceSetClasses = nullptr;
+static MDKNSXPCInterfaceSetNestedInterfaceFn MDKOriginalNSXPCInterfaceSetNestedInterface = nullptr;
+static MDKNSXPCInterfaceSetReplyBlockSignatureFn MDKOriginalNSXPCInterfaceSetReplyBlockSignature = nullptr;
 static MDKRPIOSurfaceSetFn MDKOriginalRPIOSurfaceSet = nullptr;
 static MDKRPIOSurfaceGetFn MDKOriginalRPIOSurfaceGet = nullptr;
 static MDKCaptureHandlerWithSampleFn MDKOriginalDaemonCaptureHandlerWithSample = nullptr;
@@ -1081,6 +1089,16 @@ static MDKFrameSenderSendSampleFn MDKOriginalFrameSenderServiceSendFrame = nullp
 static MDKFrameSenderNewSampleBufferFn MDKOriginalFrameSenderServiceNewSampleBuffer = nullptr;
 static MDKCAContentStreamProduceSurfaceFn MDKOriginalCAContentStreamProduceSurface = nullptr;
 static MDKCAContentStreamReleaseSurfaceFn MDKOriginalCAContentStreamReleaseSurface = nullptr;
+
+static void MDKRecordNSXPCInterfaceEvent(
+    NSString *kind,
+    Protocol *protocol,
+    NSXPCInterface *interface,
+    SEL selector,
+    id object,
+    NSUInteger argumentIndex,
+    BOOL ofReply
+);
 static MDKCAContentStreamReleaseSurfaceWithIDFn MDKOriginalCAContentStreamReleaseSurfaceWithID = nullptr;
 static MDKIOSurfaceRemoteAddSurfaceFn MDKOriginalIOSurfaceRemoteAddSurface = nullptr;
 static MDKIOSurfaceRemoteSetSurfaceStatesFn MDKOriginalIOSurfaceRemoteSetSurfaceStates = nullptr;
@@ -2185,6 +2203,13 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"nsxpcSynchronousRemoteObjectProxyWithErrorHandlerEventCount": @0,
             @"nsxpcConnectionEventCount": @0,
             @"nsxpcServiceHistogram": [NSMutableDictionary dictionary],
+            @"nsxpcInterfaceWithProtocolEventCount": @0,
+            @"nsxpcInterfaceSetClassesEventCount": @0,
+            @"nsxpcInterfaceSetInterfaceEventCount": @0,
+            @"nsxpcInterfaceSetReplyBlockSignatureEventCount": @0,
+            @"nsxpcInterfaceEventCount": @0,
+            @"nsxpcInterfaceProtocolHistogram": [NSMutableDictionary dictionary],
+            @"nsxpcInterfaceSelectorHistogram": [NSMutableDictionary dictionary],
             @"xpcPipeCreateEventCount": @0,
             @"xpcPipeSimpleRoutineEventCount": @0,
             @"xpcPipeInterposeEventCount": @0,
@@ -2895,6 +2920,43 @@ static id MDKSwizzledNSXPCConnectionSynchronousRemoteObjectProxyWithErrorHandler
     return proxy;
 }
 
+static id MDKSwizzledNSXPCInterfaceWithProtocol(id self, SEL _cmd, Protocol *protocol) {
+    if (MDKOriginalNSXPCInterfaceWithProtocol == nullptr) {
+        return nil;
+    }
+
+    id interface = MDKOriginalNSXPCInterfaceWithProtocol(self, _cmd, protocol);
+    MDKRecordNSXPCInterfaceEvent(@"nsxpc-interface-with-protocol", protocol, interface, nullptr, nil, 0, NO);
+    return interface;
+}
+
+static void MDKSwizzledNSXPCInterfaceSetClasses(id self, SEL _cmd, NSSet *classes, SEL selector, NSUInteger argumentIndex, BOOL ofReply) {
+    if (MDKOriginalNSXPCInterfaceSetClasses == nullptr) {
+        return;
+    }
+
+    MDKRecordNSXPCInterfaceEvent(@"nsxpc-interface-set-classes", nullptr, self, selector, classes, argumentIndex, ofReply);
+    MDKOriginalNSXPCInterfaceSetClasses(self, _cmd, classes, selector, argumentIndex, ofReply);
+}
+
+static void MDKSwizzledNSXPCInterfaceSetInterface(id self, SEL _cmd, NSXPCInterface *interface, SEL selector, NSUInteger argumentIndex, BOOL ofReply) {
+    if (MDKOriginalNSXPCInterfaceSetNestedInterface == nullptr) {
+        return;
+    }
+
+    MDKRecordNSXPCInterfaceEvent(@"nsxpc-interface-set-interface", nullptr, self, selector, interface, argumentIndex, ofReply);
+    MDKOriginalNSXPCInterfaceSetNestedInterface(self, _cmd, interface, selector, argumentIndex, ofReply);
+}
+
+static void MDKSwizzledNSXPCInterfaceSetReplyBlockSignature(id self, SEL _cmd, id signature, SEL selector) {
+    if (MDKOriginalNSXPCInterfaceSetReplyBlockSignature == nullptr) {
+        return;
+    }
+
+    MDKRecordNSXPCInterfaceEvent(@"nsxpc-interface-set-reply-block-signature", nullptr, self, selector, signature, 0, YES);
+    MDKOriginalNSXPCInterfaceSetReplyBlockSignature(self, _cmd, signature, selector);
+}
+
 static void MDKSwizzledProxyCoreGraphics(
     id self,
     SEL _cmd,
@@ -3490,6 +3552,83 @@ static void MDKRecordNSXPCConnectionEvent(
         @"wrapperDepth": @(MDKCurrentVideoQueueWrapperSequenceDepth()),
     } mutableCopy];
     if (overallEventCount <= 8) {
+        payload[@"backtrace"] = MDKCopyBacktraceFrames(10, 3);
+    }
+    MDKRecordSCKTraceEvent(kind, payload);
+}
+
+static void MDKRecordNSXPCInterfaceEvent(
+    NSString *kind,
+    Protocol *protocol,
+    NSXPCInterface *interface,
+    SEL selector,
+    id object,
+    NSUInteger argumentIndex,
+    BOOL ofReply
+) {
+    NSDictionary<NSString *, id> *interfaceSummary = interface != nil ? MDKSummarizeObject(interface) : @{};
+    NSString *protocolName = nil;
+    if (protocol != nullptr) {
+        const char *rawProtocolName = protocol_getName(protocol);
+        if (rawProtocolName != nullptr) {
+            protocolName = [NSString stringWithUTF8String:rawProtocolName];
+        }
+    }
+    if (protocolName.length == 0) {
+        protocolName =
+            [interfaceSummary[@"protocolName"] isKindOfClass:[NSString class]] ? interfaceSummary[@"protocolName"] : nil;
+    }
+    NSString *selectorName = selector != nullptr ? NSStringFromSelector(selector) : nil;
+    const BOOL interesting =
+        [protocolName hasPrefix:@"RP"] ||
+        [selectorName containsString:@"RP"] ||
+        [selectorName containsString:@"reply"] ||
+        [selectorName containsString:@"Reply"];
+
+    BOOL shouldRecord = NO;
+    NSUInteger overallEventCount = 0;
+    NSString *counterKey = @"nsxpcInterfaceWithProtocolEventCount";
+    if ([kind isEqualToString:@"nsxpc-interface-set-classes"]) {
+        counterKey = @"nsxpcInterfaceSetClassesEventCount";
+    } else if ([kind isEqualToString:@"nsxpc-interface-set-interface"]) {
+        counterKey = @"nsxpcInterfaceSetInterfaceEventCount";
+    } else if ([kind isEqualToString:@"nsxpc-interface-set-reply-block-signature"]) {
+        counterKey = @"nsxpcInterfaceSetReplyBlockSignatureEventCount";
+    }
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            MDKActiveSCKTraceState[counterKey] =
+                @([MDKActiveSCKTraceState[counterKey] unsignedIntegerValue] + 1);
+            overallEventCount = [MDKActiveSCKTraceState[@"nsxpcInterfaceEventCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"nsxpcInterfaceEventCount"] = @(overallEventCount);
+            if (protocolName.length > 0) {
+                NSMutableDictionary<NSString *, NSNumber *> *histogram = MDKActiveSCKTraceState[@"nsxpcInterfaceProtocolHistogram"];
+                histogram[protocolName] = @([histogram[protocolName] unsignedIntegerValue] + 1);
+            }
+            if (selectorName.length > 0) {
+                NSMutableDictionary<NSString *, NSNumber *> *histogram = MDKActiveSCKTraceState[@"nsxpcInterfaceSelectorHistogram"];
+                histogram[selectorName] = @([histogram[selectorName] unsignedIntegerValue] + 1);
+            }
+            shouldRecord = interesting || overallEventCount <= 96;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    NSMutableDictionary<NSString *, id> *payload = [@{
+        @"protocolName": protocolName ?: [NSNull null],
+        @"interface": interfaceSummary,
+        @"selectorName": selectorName ?: [NSNull null],
+        @"object": object != nil ? MDKSummarizeObject(object) : @{},
+        @"argumentIndex": @(argumentIndex),
+        @"ofReply": @(ofReply),
+        @"interesting": @(interesting),
+        @"wrapperSequenceID": MDKCurrentVideoQueueWrapperSequence() > 0 ? @(MDKCurrentVideoQueueWrapperSequence()) : [NSNull null],
+        @"wrapperDepth": @(MDKCurrentVideoQueueWrapperSequenceDepth()),
+    } mutableCopy];
+    if (overallEventCount <= 12) {
         payload[@"backtrace"] = MDKCopyBacktraceFrames(10, 3);
     }
     MDKRecordSCKTraceEvent(kind, payload);
@@ -6950,6 +7089,60 @@ static void MDKInstallSCKProxyTraceHooks(void) {
                 method_setImplementation(
                     synchronousRemoteObjectProxyWithErrorHandlerMethod,
                     reinterpret_cast<IMP>(MDKSwizzledNSXPCConnectionSynchronousRemoteObjectProxyWithErrorHandler)
+                );
+            }
+        }
+        Class nsxpcInterfaceClass = NSClassFromString(@"NSXPCInterface");
+        if (nsxpcInterfaceClass != Nil) {
+            Method interfaceWithProtocolMethod = class_getClassMethod(
+                nsxpcInterfaceClass,
+                sel_registerName("interfaceWithProtocol:")
+            );
+            if (interfaceWithProtocolMethod != nullptr) {
+                MDKOriginalNSXPCInterfaceWithProtocol =
+                    reinterpret_cast<MDKNSXPCInterfaceWithProtocolFn>(method_getImplementation(interfaceWithProtocolMethod));
+                method_setImplementation(
+                    interfaceWithProtocolMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledNSXPCInterfaceWithProtocol)
+                );
+            }
+
+            Method setClassesMethod = class_getInstanceMethod(
+                nsxpcInterfaceClass,
+                sel_registerName("setClasses:forSelector:argumentIndex:ofReply:")
+            );
+            if (setClassesMethod != nullptr) {
+                MDKOriginalNSXPCInterfaceSetClasses =
+                    reinterpret_cast<MDKNSXPCInterfaceSetClassesFn>(method_getImplementation(setClassesMethod));
+                method_setImplementation(
+                    setClassesMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledNSXPCInterfaceSetClasses)
+                );
+            }
+
+            Method setInterfaceMethod = class_getInstanceMethod(
+                nsxpcInterfaceClass,
+                sel_registerName("setInterface:forSelector:argumentIndex:ofReply:")
+            );
+            if (setInterfaceMethod != nullptr) {
+                MDKOriginalNSXPCInterfaceSetNestedInterface =
+                    reinterpret_cast<MDKNSXPCInterfaceSetNestedInterfaceFn>(method_getImplementation(setInterfaceMethod));
+                method_setImplementation(
+                    setInterfaceMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledNSXPCInterfaceSetInterface)
+                );
+            }
+
+            Method setReplyBlockSignatureMethod = class_getInstanceMethod(
+                nsxpcInterfaceClass,
+                sel_registerName("setReplyBlockSignature:forSelector:")
+            );
+            if (setReplyBlockSignatureMethod != nullptr) {
+                MDKOriginalNSXPCInterfaceSetReplyBlockSignature =
+                    reinterpret_cast<MDKNSXPCInterfaceSetReplyBlockSignatureFn>(method_getImplementation(setReplyBlockSignatureMethod));
+                method_setImplementation(
+                    setReplyBlockSignatureMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledNSXPCInterfaceSetReplyBlockSignature)
                 );
             }
         }
@@ -10723,6 +10916,12 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"firstNSXPCRemoteObjectProxy=%@", MDKDescribeTraceValue(firstNSXPCRemoteObjectProxy)]];
     [notes addObject:[NSString stringWithFormat:@"firstNSXPCRemoteObjectProxyWithErrorHandler=%@", MDKDescribeTraceValue(firstNSXPCRemoteObjectProxyWithErrorHandler)]];
     [notes addObject:[NSString stringWithFormat:@"firstNSXPCSynchronousRemoteObjectProxyWithErrorHandler=%@", MDKDescribeTraceValue(firstNSXPCSynchronousRemoteObjectProxyWithErrorHandler)]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcInterfaceWithProtocolEventCount=%@", MDKDescribeTraceValue(snapshot[@"nsxpcInterfaceWithProtocolEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcInterfaceSetClassesEventCount=%@", MDKDescribeTraceValue(snapshot[@"nsxpcInterfaceSetClassesEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcInterfaceSetInterfaceEventCount=%@", MDKDescribeTraceValue(snapshot[@"nsxpcInterfaceSetInterfaceEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcInterfaceSetReplyBlockSignatureEventCount=%@", MDKDescribeTraceValue(snapshot[@"nsxpcInterfaceSetReplyBlockSignatureEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcInterfaceProtocolHistogram=%@", MDKDescribeTraceValue(snapshot[@"nsxpcInterfaceProtocolHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcInterfaceSelectorHistogram=%@", MDKDescribeTraceValue(snapshot[@"nsxpcInterfaceSelectorHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeAttempted"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalled"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalledImageCount=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalledImageCount"])]];
