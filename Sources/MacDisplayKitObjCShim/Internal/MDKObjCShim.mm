@@ -1622,6 +1622,7 @@ static NSArray<NSString *> * _Nullable MDKSortedDictionaryKeys(id object) {
 }
 
 static NSDictionary<NSString *, id> * _Nullable MDKSummarizeNSXPCInterface(NSXPCInterface *interface);
+static NSString * _Nullable MDKPointerKey(id object);
 
 static NSDictionary<NSString *, id> *MDKSummarizeObject(id object) {
     if (object == nil) {
@@ -1682,6 +1683,7 @@ static NSDictionary<NSString *, id> *MDKSummarizeObject(id object) {
 
     id remoteQueue = MDKPerformObjectGetter(object, sel_registerName("remoteQueue"));
     if (remoteQueue != nil) {
+        summary[@"remoteQueuePointer"] = MDKPointerKey(remoteQueue) ?: [NSNull null];
         summary[@"remoteQueueClassName"] = NSStringFromClass([remoteQueue class]) ?: @"<unknown>";
         summary[@"remoteQueueDescription"] = [remoteQueue description] ?: @"";
         if ([summary[@"remoteQueueClassName"] hasPrefix:@"OS_xpc_"]) {
@@ -3347,6 +3349,7 @@ static void MDKRecordRPDaemonProxyEvent(NSString *kind, id proxy, id connection,
             [invocation getArgument:&queue atIndex:2];
             [invocation getArgument:&streamID atIndex:3];
             summary[@"queue"] = queue != nil ? MDKSummarizeObject(queue) : @{};
+            summary[@"queuePointer"] = MDKPointerKey(queue) ?: [NSNull null];
             summary[@"streamID"] = streamID != nil ? MDKSummarizeObject(streamID) : @{};
         }
         if (summary.count > 0) {
@@ -6951,6 +6954,7 @@ static void MDKRecordRemoteQueueConsumerEvent(NSString *kind, id queue) {
     MDKRecordSCKTraceEvent(
         kind,
         @{
+            @"queuePointer": queueKey ?: [NSNull null],
             @"queue": MDKSummarizeObject(queue),
         }
     );
@@ -10069,6 +10073,65 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     id firstNSXPCRemoteObjectProxyWithErrorHandler = firstNSXPCRemoteObjectProxyWithErrorHandlerEvent[@"object"];
     id firstNSXPCSynchronousRemoteObjectProxyWithErrorHandler =
         firstNSXPCSynchronousRemoteObjectProxyWithErrorHandlerEvent[@"object"];
+    NSDictionary<NSString *, id> *rpDaemonProxyFirstStartRemoteQueueInvocation =
+        [snapshot[@"rpDaemonProxyFirstStartRemoteQueueInvocation"] isKindOfClass:[NSDictionary class]] ?
+            snapshot[@"rpDaemonProxyFirstStartRemoteQueueInvocation"] : nil;
+    NSDictionary<NSString *, id> *rpDaemonProxyFirstStartRemoteQueue =
+        [rpDaemonProxyFirstStartRemoteQueueInvocation[@"queue"] isKindOfClass:[NSDictionary class]] ?
+            rpDaemonProxyFirstStartRemoteQueueInvocation[@"queue"] : nil;
+    NSString *rpDaemonProxyFirstStartRemoteQueuePointer =
+        [rpDaemonProxyFirstStartRemoteQueueInvocation[@"queuePointer"] isKindOfClass:[NSString class]] ?
+            rpDaemonProxyFirstStartRemoteQueueInvocation[@"queuePointer"] : nil;
+    NSDictionary<NSString *, id> *rpDaemonProxyFirstStartRemoteQueueStreamID =
+        [rpDaemonProxyFirstStartRemoteQueueInvocation[@"streamID"] isKindOfClass:[NSDictionary class]] ?
+            rpDaemonProxyFirstStartRemoteQueueInvocation[@"streamID"] : nil;
+    NSString *rpDaemonProxyFirstStartRemoteQueueStreamIDValue =
+        [rpDaemonProxyFirstStartRemoteQueueStreamID[@"value"] isKindOfClass:[NSString class]] ?
+            rpDaemonProxyFirstStartRemoteQueueStreamID[@"value"] : nil;
+    NSDictionary<NSString *, id> *firstStreamStartRemoteVideoReceiveQueueEvent = nil;
+    for (NSDictionary<NSString *, id> *event in traceEvents) {
+        if ([event[@"kind"] isEqualToString:@"stream-start-remote-video-receive-queue"]) {
+            firstStreamStartRemoteVideoReceiveQueueEvent = event;
+            break;
+        }
+    }
+    NSDictionary<NSString *, id> *firstStreamStartRemoteVideoReceiveQueue =
+        [firstStreamStartRemoteVideoReceiveQueueEvent[@"queue"] isKindOfClass:[NSDictionary class]] ?
+            firstStreamStartRemoteVideoReceiveQueueEvent[@"queue"] : nil;
+    NSString *firstStreamStartRemoteVideoReceiveQueuePointer =
+        [firstStreamStartRemoteVideoReceiveQueueEvent[@"queuePointer"] isKindOfClass:[NSString class]] ?
+            firstStreamStartRemoteVideoReceiveQueueEvent[@"queuePointer"] : nil;
+    NSString *rpDaemonProxyFirstStartRemoteQueueRemoteQueuePointer =
+        [rpDaemonProxyFirstStartRemoteQueue[@"remoteQueuePointer"] isKindOfClass:[NSString class]] ?
+            rpDaemonProxyFirstStartRemoteQueue[@"remoteQueuePointer"] : nil;
+    NSString *rpDaemonProxyFirstStartRemoteQueueRemoteQueueDescription =
+        [rpDaemonProxyFirstStartRemoteQueue[@"remoteQueueDescription"] isKindOfClass:[NSString class]] ?
+            rpDaemonProxyFirstStartRemoteQueue[@"remoteQueueDescription"] : nil;
+    NSString *firstStreamStartRemoteVideoReceiveQueueRemoteQueueDescription =
+        [firstStreamStartRemoteVideoReceiveQueue[@"description"] isKindOfClass:[NSString class]] ?
+            firstStreamStartRemoteVideoReceiveQueue[@"description"] : nil;
+    NSNumber *rpDaemonProxyToSCStreamVideoQueuePointerMatched = nil;
+    if (rpDaemonProxyFirstStartRemoteQueuePointer != nil && firstStreamStartRemoteVideoReceiveQueuePointer != nil) {
+        rpDaemonProxyToSCStreamVideoQueuePointerMatched =
+            @([rpDaemonProxyFirstStartRemoteQueuePointer isEqualToString:firstStreamStartRemoteVideoReceiveQueuePointer]);
+    }
+    NSNumber *rpDaemonProxyToSCStreamRemoteQueuePointerMatched = nil;
+    if (rpDaemonProxyFirstStartRemoteQueueRemoteQueuePointer != nil &&
+        firstStreamStartRemoteVideoReceiveQueuePointer != nil) {
+        rpDaemonProxyToSCStreamRemoteQueuePointerMatched =
+            @([rpDaemonProxyFirstStartRemoteQueueRemoteQueuePointer isEqualToString:firstStreamStartRemoteVideoReceiveQueuePointer]);
+    }
+    NSNumber *rpDaemonProxyToSCStreamRemoteQueueDescriptionMatched = nil;
+    if (rpDaemonProxyFirstStartRemoteQueueRemoteQueueDescription != nil &&
+        firstStreamStartRemoteVideoReceiveQueueRemoteQueueDescription != nil) {
+        rpDaemonProxyToSCStreamRemoteQueueDescriptionMatched =
+            @([rpDaemonProxyFirstStartRemoteQueueRemoteQueueDescription isEqualToString:firstStreamStartRemoteVideoReceiveQueueRemoteQueueDescription]);
+    }
+    NSNumber *rpDaemonProxyFirstStartRemoteQueueStreamIDMatchesTraceStreamID = nil;
+    if (rpDaemonProxyFirstStartRemoteQueueStreamIDValue != nil && streamID.length > 0) {
+        rpDaemonProxyFirstStartRemoteQueueStreamIDMatchesTraceStreamID =
+            @([rpDaemonProxyFirstStartRemoteQueueStreamIDValue isEqualToString:streamID]);
+    }
     NSMutableDictionary<NSString *, NSNumber *> *videoQueueWrapperToNestedLeadHistogramMutable = [NSMutableDictionary dictionary];
     NSUInteger videoQueueWrapperToNestedLeadPairCount = 0;
     double videoQueueWrapperToNestedLeadMinMilliseconds = DBL_MAX;
@@ -11057,6 +11120,12 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"rpDaemonProxySelectorHistogram=%@", MDKDescribeTraceValue(snapshot[@"rpDaemonProxySelectorHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"rpDaemonProxyReplyHistogram=%@", MDKDescribeTraceValue(snapshot[@"rpDaemonProxyReplyHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"rpDaemonProxyFirstStartRemoteQueueInvocation=%@", MDKDescribeTraceValue(snapshot[@"rpDaemonProxyFirstStartRemoteQueueInvocation"])]];
+    [notes addObject:[NSString stringWithFormat:@"firstStreamStartRemoteVideoReceiveQueue=%@", MDKDescribeTraceValue(firstStreamStartRemoteVideoReceiveQueue)]];
+    [notes addObject:[NSString stringWithFormat:@"firstStreamStartRemoteVideoReceiveQueuePointer=%@", MDKDescribeTraceValue(firstStreamStartRemoteVideoReceiveQueuePointer)]];
+    [notes addObject:[NSString stringWithFormat:@"rpDaemonProxyToSCStreamVideoQueuePointerMatched=%@", MDKDescribeTraceValue(rpDaemonProxyToSCStreamVideoQueuePointerMatched)]];
+    [notes addObject:[NSString stringWithFormat:@"rpDaemonProxyToSCStreamRemoteQueuePointerMatched=%@", MDKDescribeTraceValue(rpDaemonProxyToSCStreamRemoteQueuePointerMatched)]];
+    [notes addObject:[NSString stringWithFormat:@"rpDaemonProxyToSCStreamRemoteQueueDescriptionMatched=%@", MDKDescribeTraceValue(rpDaemonProxyToSCStreamRemoteQueueDescriptionMatched)]];
+    [notes addObject:[NSString stringWithFormat:@"rpDaemonProxyFirstStartRemoteQueueStreamIDMatchesTraceStreamID=%@", MDKDescribeTraceValue(rpDaemonProxyFirstStartRemoteQueueStreamIDMatchesTraceStreamID)]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeAttempted"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalled"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalledImageCount=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalledImageCount"])]];

@@ -1127,10 +1127,17 @@ Interpretation:
 - the first selector that clearly surfaces in that invocation histogram is `startRemoteQueue:streamID:`
 - the first `startRemoteQueue:streamID:` request carries an `SCRemoteQueueXPCObject` with `queueType=1`
   and the same `streamID` value later seen on the `SCStream` side
+- the outer `SCRemoteQueueXPCObject` pointer does **not** survive into
+  `SCStream startRemoteVideoReceiveQueue:` because the local consumer is handed the
+  inner `OS_xpc_dictionary` directly
+- the inner `remoteQueue` pointer *does* survive that handoff intact:
+  `rpDaemonProxyToSCStreamRemoteQueuePointerMatched=1`
+- the `streamID` continuity also holds in the same trace:
+  `rpDaemonProxyFirstStartRemoteQueueStreamIDMatchesTraceStreamID=1`
 - the current request/reply split is `4` requests vs `2` replies in a healthy `1`-second passive trace
 - that is the first direct host-side confirmation that the passive `SCStream` capture path is brokered through
   `replayd`, even though the lower imported C shims stay dark
 - this shifts the next reverse-engineering target from generic host-side imported stubs to two sharper paths:
-  - object continuity between `RPDaemonProxy startRemoteQueue:streamID:` and `SCStream startRemoteVideoReceiveQueue:`
-  - the next selector below that start-queue dispatch boundary
+  - the next selector or queue transition below that start-queue dispatch boundary
+  - the first producer-side transition that fills the matched `remoteQueue` dictionary
   - `replayd` itself, especially `SCContentSharingSessionService` and the session creation / reply path
