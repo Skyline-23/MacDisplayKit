@@ -783,3 +783,28 @@ Interpretation:
   meaningful interpose target has moved one frame higher into the `rqReceiverSetSource` path
 - the immediate next technical target is therefore the CMCapture receive-source boundary around
   `__rqReceiverSetSource_block_invoke`, not the later ScreenCaptureKit local receive block
+
+Follow-up passive trace after attempting a direct interpose on
+`CMCapture::__rqReceiverSetSource_block_invoke` and then enriching the wrapper-side container
+summary:
+
+- `rqReceiverSetSourceInterposeInstalled=1`
+- `rqReceiverSetSourceInvokeEntryEventCount=0`
+- `videoReceiveQueueWrapperSlot32PointeeObjectClassName=__NSCFType`
+- `videoReceiveQueueWrapperSlot32PointeeWord6ObjectClassName=OS_dispatch_source`
+- `videoReceiveQueueWrapperSlot32PointeeWord6ObjectDescription=<OS_dispatch_source: 0xc5f2d5280>`
+- `videoReceiveQueueWrapperSlot32PointeeWord7BlockInvokeSymbol=_ZL34MDKInterposedVideoQueueBlockInvokePviP24MDKFigRemoteQueueMessageS_`
+- `videoQueueWrapperInvokeEntryCadenceClassification=60hz-like`
+
+Interpretation:
+
+- the dyld interpose attempt on `__rqReceiverSetSource_block_invoke` resolves and installs, but it
+  never receives live callbacks in-process; this is consistent with an internal block invoke path
+  that is not reached through a relocatable external call site
+- the wrapper's auxiliary slot-32 container is now confirmed to hold an `OS_dispatch_source`
+  alongside the live wrapper block itself
+- that makes the dispatch-source wakeup boundary the next meaningful upstream cadence gate, not the
+  already-confirmed ScreenCaptureKit local receive block or the wrapper invoke body
+- in practical terms, the remaining ceiling is now best modeled as `dispatch source scheduling ->
+  CMCapture wrapper block -> SCStream nested block -> public sample`, with the first stage still
+  unproven and the latter three already observed as `60hz-like` or sub-millisecond handoffs

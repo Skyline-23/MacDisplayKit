@@ -184,6 +184,7 @@ static const mach_header *MDKFindLoadedImageHeader(const char *needle) {
 static void MDKInstallRuntimeFigRemoteQueueReceiverInterposes(void);
 static NSString *MDKCopyBlockSignatureString(id block);
 static NSDictionary<NSString *, id> *MDKDescribeBlockLiteralObject(id block);
+static NSDictionary<NSString *, id> *MDKSummarizeObject(id object);
 static void MDKRescanNestedVideoQueueBlockIfPossible(id stream, NSString *reason);
 
 static void MDKAppendFilteredMethodNamesForClassToSet(Class cls, NSMutableSet<NSString *> *names) {
@@ -291,6 +292,60 @@ static NSDictionary<NSString *, id> *MDKDescribeCodePointer(const void *pointer)
     return summary;
 }
 
+static NSDictionary<NSString *, id> *MDKDescribeShallowPointerPointee(const void *pointer) {
+    if (pointer == nullptr) {
+        return nil;
+    }
+
+    const size_t allocationSize = malloc_size(const_cast<void *>(pointer));
+    if (allocationSize == 0) {
+        return nil;
+    }
+
+    NSMutableDictionary<NSString *, id> *summary = [@{
+        @"mallocSize": @(allocationSize),
+    } mutableCopy];
+
+    uintptr_t firstWordRawValue = 0;
+    memcpy(&firstWordRawValue, pointer, sizeof(firstWordRawValue));
+    if (firstWordRawValue != 0) {
+        const void *firstWordPointer = reinterpret_cast<const void *>(firstWordRawValue);
+        NSDictionary<NSString *, id> *firstWordCodePointer = MDKDescribeCodePointer(firstWordPointer);
+        if ([firstWordCodePointer[@"present"] boolValue]) {
+            summary[@"word0CodePointer"] = firstWordCodePointer;
+        }
+
+        NSString *word0Symbol =
+            [firstWordCodePointer[@"symbolName"] isKindOfClass:[NSString class]] ? firstWordCodePointer[@"symbolName"] : nil;
+        if (word0Symbol != nil) {
+            if ([word0Symbol hasPrefix:@"OBJC_CLASS_$"] || [word0Symbol hasPrefix:@"OBJC_METACLASS_$"]) {
+                @try {
+                    NSMutableDictionary<NSString *, id> *objectSummary =
+                        [[MDKSummarizeObject((__bridge id) pointer) mutableCopy] ?: [NSMutableDictionary dictionary] mutableCopy];
+                    NSString *className =
+                        [objectSummary[@"className"] isKindOfClass:[NSString class]] ? objectSummary[@"className"] : nil;
+                    if (className != nil &&
+                        ([className hasPrefix:@"OS_dispatch_"] || [className isEqualToString:@"__NSCFType"])) {
+                        NSString *description = [(__bridge id) pointer description];
+                        if ([description isKindOfClass:[NSString class]] && description.length > 0) {
+                            objectSummary[@"description"] = description;
+                        }
+                    }
+                    summary[@"object"] = objectSummary;
+                } @catch (__unused NSException *exception) {
+                }
+            } else if ([word0Symbol containsString:@"Block"]) {
+                @try {
+                    summary[@"block"] = MDKDescribeBlockLiteralObject((__bridge id) pointer);
+                } @catch (__unused NSException *exception) {
+                }
+            }
+        }
+    }
+
+    return summary;
+}
+
 static NSArray<NSDictionary<NSString *, id> *> *MDKDescribePointerWords(
     const void *pointer,
     size_t allocationSize,
@@ -318,6 +373,10 @@ static NSArray<NSDictionary<NSString *, id> *> *MDKDescribePointerWords(
             NSDictionary<NSString *, id> *codePointer = MDKDescribeCodePointer(wordPointer);
             if ([codePointer[@"present"] boolValue]) {
                 word[@"codePointer"] = codePointer;
+            }
+            NSDictionary<NSString *, id> *shallowPointee = MDKDescribeShallowPointerPointee(wordPointer);
+            if (shallowPointee != nil) {
+                word[@"pointee"] = shallowPointee;
             }
         } else {
             word[@"pointer"] = @"";
@@ -638,6 +697,8 @@ static NSMutableDictionary<NSString *, id> *MDKActiveFigRemoteQueueReceiverState
 static BOOL MDKActiveSCKAllowPrivateQueueProbes = NO;
 static BOOL MDKActiveSCKAllowVideoQueueWrapperProbe = NO;
 static std::atomic<uint64_t> MDKVideoQueueWrapperSequenceCounter{0};
+static void *MDKResolvedRQReceiverSetSourceBlockInvokeAddress = nullptr;
+static void *MDKResolvedRQReceiverSetSourceBlockInvokeImageHeader = nullptr;
 
 namespace {
 constexpr size_t MDKVideoQueueWrapperTLSStackCapacity = 16;
@@ -652,6 +713,8 @@ struct MDKFigRemoteQueueMessage {
 };
 
 using MDKFigRemoteQueueReceiverHandlerBlock = void (^)(int, MDKFigRemoteQueueMessage *, void *);
+using MDKRQReceiverSetSourceBlockInvokeFn = void (*)(void *);
+static MDKRQReceiverSetSourceBlockInvokeFn MDKOriginalRQReceiverSetSourceBlockInvoke = nullptr;
 
 static void MDKRecordSCKTraceEvent(NSString *kind, NSDictionary<NSString *, id> *payload);
 static NSDictionary<NSString *, id> *MDKSummarizeSampleBuffer(CMSampleBufferRef sampleBuffer);
@@ -755,6 +818,19 @@ static NSArray<NSDictionary<NSString *, id> *> *MDKCopyBacktraceFrames(NSUIntege
     }
 
     return frames;
+}
+
+static void *MDKParsePointerString(NSString *value) {
+    if (value.length == 0) {
+        return nullptr;
+    }
+
+    unsigned long long rawValue = 0;
+    NSScanner *scanner = [NSScanner scannerWithString:value];
+    if (![scanner scanHexLongLong:&rawValue]) {
+        return nullptr;
+    }
+    return reinterpret_cast<void *>(static_cast<uintptr_t>(rawValue));
 }
 
 @implementation MDKShimStreamOutputCollector
@@ -1483,6 +1559,24 @@ static NSDictionary<NSString *, id> *MDKDescribeRemoteQueueWrapperSlot(
     const size_t allocationSize = malloc_size(const_cast<void *>(slotValue));
     if (allocationSize > 0) {
         summary[@"mallocSize"] = @(allocationSize);
+        NSArray<NSDictionary<NSString *, id> *> *pointeeWords =
+            MDKDescribePointerWords(slotValue, allocationSize, 8);
+        if (pointeeWords.count > 0) {
+            summary[@"pointeeWords"] = pointeeWords;
+            NSDictionary<NSString *, id> *word0 =
+                [pointeeWords[0] isKindOfClass:[NSDictionary class]] ? pointeeWords[0] : nil;
+            NSDictionary<NSString *, id> *word0CodePointer =
+                [word0[@"codePointer"] isKindOfClass:[NSDictionary class]] ? word0[@"codePointer"] : nil;
+            NSString *word0Symbol =
+                [word0CodePointer[@"symbolName"] isKindOfClass:[NSString class]] ? word0CodePointer[@"symbolName"] : nil;
+            if (word0Symbol != nil &&
+                ([word0Symbol hasPrefix:@"OBJC_CLASS_$"] || [word0Symbol hasPrefix:@"OBJC_METACLASS_$"])) {
+                @try {
+                    summary[@"pointeeObject"] = MDKSummarizeObject((__bridge id) slotValue);
+                } @catch (__unused NSException *exception) {
+                }
+            }
+        }
     }
 
     if (inspectForBlockSignature && allocationSize > 0) {
@@ -1833,6 +1927,8 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"videoQueueWrapperCallbackEventCount": @0,
             @"videoQueueWrapperInvokeEntryEventCount": @0,
             @"videoQueueWrapperInvokeExitEventCount": @0,
+            @"rqReceiverSetSourceInvokeEntryEventCount": @0,
+            @"rqReceiverSetSourceInvokeExitEventCount": @0,
             @"videoQueueWrapperBlocks": [NSMutableDictionary dictionary],
             @"videoQueueWrapperInvokes": [NSMutableDictionary dictionary],
             @"videoQueueNestedBlockCallbackEventCount": @0,
@@ -2879,6 +2975,100 @@ static void MDKRecordRemoteQueueObjectEvent(NSString *kind, NSDictionary<NSStrin
     MDKRecordSCKTraceEvent(kind, payload);
 }
 
+extern "C" void MDKInterposedRQReceiverSetSourceBlockInvoke(void *blockLiteral);
+
+static void MDKInstallRQReceiverSetSourceBlockInterposeIfPossible(
+    NSDictionary<NSString *, id> *interestingFrame
+) {
+    NSString *symbolName = [interestingFrame[@"symbolName"] isKindOfClass:[NSString class]] ? interestingFrame[@"symbolName"] : nil;
+    NSString *imagePath = [interestingFrame[@"imagePath"] isKindOfClass:[NSString class]] ? interestingFrame[@"imagePath"] : nil;
+    NSString *symbolAddress = [interestingFrame[@"symbolAddress"] isKindOfClass:[NSString class]] ? interestingFrame[@"symbolAddress"] : nil;
+    if (symbolName == nil || imagePath == nil || symbolAddress == nil) {
+        return;
+    }
+    if (![symbolName isEqualToString:@"__rqReceiverSetSource_block_invoke"] ||
+        ![imagePath containsString:@"/CMCapture.framework/"]) {
+        return;
+    }
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        if ([MDKActiveSCKTraceState[@"rqReceiverSetSourceInterposeInstalled"] boolValue]) {
+            return;
+        }
+        MDKActiveSCKTraceState[@"rqReceiverSetSourceInterposeAttempted"] = @YES;
+    }
+
+    using MDKDyldDynamicInterposeFn = void (*)(const mach_header *, const MDKDyldInterposeTuple[], size_t);
+    auto dynamicInterpose =
+        reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "dyld_dynamic_interpose"));
+    if (dynamicInterpose == nullptr) {
+        dynamicInterpose =
+            reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "_dyld_dynamic_interpose"));
+    }
+    if (dynamicInterpose == nullptr) {
+        @synchronized(MDKActiveSCKTraceLock) {
+            MDKActiveSCKTraceState[@"rqReceiverSetSourceInterposeInstalled"] = @NO;
+        }
+        return;
+    }
+
+    MDKEnsureCaptureImageLoaded("/System/Library/PrivateFrameworks/CMCapture.framework/CMCapture");
+    const mach_header *cmCaptureHeader =
+        MDKFindLoadedImageHeader("/System/Library/PrivateFrameworks/CMCapture.framework/");
+    void *replacee = MDKParsePointerString(symbolAddress);
+    if (cmCaptureHeader == nullptr || replacee == nullptr) {
+        @synchronized(MDKActiveSCKTraceLock) {
+            MDKActiveSCKTraceState[@"rqReceiverSetSourceInterposeInstalled"] = @NO;
+        }
+        return;
+    }
+
+    MDKOriginalRQReceiverSetSourceBlockInvoke =
+        reinterpret_cast<MDKRQReceiverSetSourceBlockInvokeFn>(replacee);
+    MDKResolvedRQReceiverSetSourceBlockInvokeAddress = replacee;
+    MDKResolvedRQReceiverSetSourceBlockInvokeImageHeader = const_cast<mach_header *>(cmCaptureHeader);
+    const MDKDyldInterposeTuple interposes[] = {
+        { reinterpret_cast<const void *>(&MDKInterposedRQReceiverSetSourceBlockInvoke), replacee },
+    };
+    dynamicInterpose(cmCaptureHeader, interposes, sizeof(interposes) / sizeof(interposes[0]));
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            MDKActiveSCKTraceState[@"rqReceiverSetSourceInterposeInstalled"] = @YES;
+            MDKActiveSCKTraceState[@"rqReceiverSetSourceInterposeSymbolAddress"] = symbolAddress;
+        }
+    }
+}
+
+static void MDKRecordRQReceiverSetSourceInvokeBoundaryEvent(
+    NSString *kind,
+    void *blockLiteral
+) {
+    BOOL shouldRecord = NO;
+    NSUInteger eventCount = 0;
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            NSString *counterKey =
+                [kind isEqualToString:@"rq-receiver-set-source-invoke-exit"] ?
+                    @"rqReceiverSetSourceInvokeExitEventCount" :
+                    @"rqReceiverSetSourceInvokeEntryEventCount";
+            eventCount = [MDKActiveSCKTraceState[counterKey] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[counterKey] = @(eventCount);
+            shouldRecord = eventCount <= 512;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    NSMutableDictionary<NSString *, id> *payload = [@{
+        @"blockLiteral": MDKSummarizePointerValue(blockLiteral),
+    } mutableCopy];
+    if (eventCount <= 4) {
+        payload[@"backtrace"] = MDKCopyBacktraceFrames(8, 3);
+    }
+    MDKRecordSCKTraceEvent(kind, payload);
+}
+
 static void MDKRecordVideoQueueWrapperCallbackEvent(
     uint64_t sequenceID,
     NSUInteger wrapperDepth,
@@ -2947,7 +3137,15 @@ static void MDKRecordVideoQueueWrapperInvokeBoundaryEvent(
         @"context": MDKSummarizePointerValue(context),
     } mutableCopy];
     if (eventCount <= 4) {
-        payload[@"backtrace"] = MDKCopyBacktraceFrames(8, 3);
+        NSArray<NSDictionary<NSString *, id> *> *backtrace = MDKCopyBacktraceFrames(8, 3);
+        payload[@"backtrace"] = backtrace;
+        for (NSDictionary<NSString *, id> *frame in backtrace) {
+            NSString *frameSymbolName = [frame[@"symbolName"] isKindOfClass:[NSString class]] ? frame[@"symbolName"] : nil;
+            if ([frameSymbolName isEqualToString:@"__rqReceiverSetSource_block_invoke"]) {
+                MDKInstallRQReceiverSetSourceBlockInterposeIfPossible(frame);
+                break;
+            }
+        }
     }
     MDKRecordSCKTraceEvent(kind, payload);
 }
@@ -3034,6 +3232,14 @@ static void MDKInterposedVideoQueueBlockInvoke(
         context
     );
     MDKPopVideoQueueWrapperSequence();
+}
+
+extern "C" void MDKInterposedRQReceiverSetSourceBlockInvoke(void *blockLiteral) {
+    MDKRecordRQReceiverSetSourceInvokeBoundaryEvent(@"rq-receiver-set-source-invoke-entry", blockLiteral);
+    if (MDKOriginalRQReceiverSetSourceBlockInvoke != nullptr) {
+        MDKOriginalRQReceiverSetSourceBlockInvoke(blockLiteral);
+    }
+    MDKRecordRQReceiverSetSourceInvokeBoundaryEvent(@"rq-receiver-set-source-invoke-exit", blockLiteral);
 }
 
 static void MDKInterposedVideoQueueNestedBlockInvoke(
@@ -6584,6 +6790,18 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             @"video-queue-wrapper-invoke-exit",
         ]]
     );
+    NSDictionary<NSString *, id> *rqReceiverSetSourceInvokeEntryCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"rq-receiver-set-source-invoke-entry",
+        ]]
+    );
+    NSDictionary<NSString *, id> *rqReceiverSetSourceInvokeExitCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"rq-receiver-set-source-invoke-exit",
+        ]]
+    );
     NSDictionary<NSString *, id> *videoQueueNestedBlockCadenceSummary = MDKCopyTraceEventCadenceSummary(
         traceEvents,
         [NSSet setWithArray:@[
@@ -6592,6 +6810,8 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     );
     NSArray<NSDictionary<NSString *, id> *> *firstVideoQueueWrapperInvokeEntryBacktrace = nil;
     NSArray<NSDictionary<NSString *, id> *> *firstVideoQueueWrapperInvokeExitBacktrace = nil;
+    NSArray<NSDictionary<NSString *, id> *> *firstRQReceiverSetSourceInvokeEntryBacktrace = nil;
+    NSArray<NSDictionary<NSString *, id> *> *firstRQReceiverSetSourceInvokeExitBacktrace = nil;
     auto copyFirstInterestingWrapperBacktraceFrame = ^NSDictionary<NSString *, id> * _Nullable(NSArray<NSDictionary<NSString *, id> *> *frames) {
         for (NSDictionary<NSString *, id> *frame in frames) {
             NSString *imagePath = [frame[@"imagePath"] isKindOfClass:[NSString class]] ? frame[@"imagePath"] : nil;
@@ -6622,9 +6842,17 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         } else if (firstVideoQueueWrapperInvokeExitBacktrace == nil &&
                    [kind isEqualToString:@"video-queue-wrapper-invoke-exit"]) {
             firstVideoQueueWrapperInvokeExitBacktrace = backtrace;
+        } else if (firstRQReceiverSetSourceInvokeEntryBacktrace == nil &&
+                   [kind isEqualToString:@"rq-receiver-set-source-invoke-entry"]) {
+            firstRQReceiverSetSourceInvokeEntryBacktrace = backtrace;
+        } else if (firstRQReceiverSetSourceInvokeExitBacktrace == nil &&
+                   [kind isEqualToString:@"rq-receiver-set-source-invoke-exit"]) {
+            firstRQReceiverSetSourceInvokeExitBacktrace = backtrace;
         }
         if (firstVideoQueueWrapperInvokeEntryBacktrace != nil &&
-            firstVideoQueueWrapperInvokeExitBacktrace != nil) {
+            firstVideoQueueWrapperInvokeExitBacktrace != nil &&
+            firstRQReceiverSetSourceInvokeEntryBacktrace != nil &&
+            firstRQReceiverSetSourceInvokeExitBacktrace != nil) {
             break;
         }
     }
@@ -6632,6 +6860,10 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         copyFirstInterestingWrapperBacktraceFrame(firstVideoQueueWrapperInvokeEntryBacktrace ?: @[]);
     NSDictionary<NSString *, id> *firstVideoQueueWrapperInvokeExitFirstInterestingFrame =
         copyFirstInterestingWrapperBacktraceFrame(firstVideoQueueWrapperInvokeExitBacktrace ?: @[]);
+    NSDictionary<NSString *, id> *firstRQReceiverSetSourceInvokeEntryFirstInterestingFrame =
+        copyFirstInterestingWrapperBacktraceFrame(firstRQReceiverSetSourceInvokeEntryBacktrace ?: @[]);
+    NSDictionary<NSString *, id> *firstRQReceiverSetSourceInvokeExitFirstInterestingFrame =
+        copyFirstInterestingWrapperBacktraceFrame(firstRQReceiverSetSourceInvokeExitBacktrace ?: @[]);
     NSMutableDictionary<NSString *, NSNumber *> *videoQueueWrapperToNestedLeadHistogramMutable = [NSMutableDictionary dictionary];
     NSUInteger videoQueueWrapperToNestedLeadPairCount = 0;
     double videoQueueWrapperToNestedLeadMinMilliseconds = DBL_MAX;
@@ -6848,7 +7080,12 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     NSDictionary<NSString *, id> *videoReceiveQueuePrimaryBlock = nil;
     NSArray<NSDictionary<NSString *, id> *> *videoReceiveQueueWrapperSlots =
         [videoReceiveQueueWrapper[@"slots"] isKindOfClass:[NSArray class]] ? videoReceiveQueueWrapper[@"slots"] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32 = nil;
     for (NSDictionary<NSString *, id> *slot in videoReceiveQueueWrapperSlots) {
+        NSNumber *offset = [slot[@"offset"] isKindOfClass:[NSNumber class]] ? slot[@"offset"] : nil;
+        if (offset != nil && offset.unsignedIntegerValue == 32) {
+            videoReceiveQueueWrapperSlot32 = slot;
+        }
         NSDictionary<NSString *, id> *blockSummary =
             [slot[@"block"] isKindOfClass:[NSDictionary class]] ? slot[@"block"] : nil;
         if (blockSummary != nil) {
@@ -6910,6 +7147,40 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         [videoReceiveQueuePrimaryBlockCaptureSlot32PointeeBlockInvoke[@"imagePath"] isKindOfClass:[NSString class]] ? videoReceiveQueuePrimaryBlockCaptureSlot32PointeeBlockInvoke[@"imagePath"] : nil;
     NSArray<NSDictionary<NSString *, id> *> *videoReceiveQueuePrimaryBlockCaptureSlot32PointeeBlockCaptureSlots =
         [videoReceiveQueuePrimaryBlockCaptureSlot32PointeeBlock[@"captureSlots"] isKindOfClass:[NSArray class]] ? videoReceiveQueuePrimaryBlockCaptureSlot32PointeeBlock[@"captureSlots"] : nil;
+    NSString *videoReceiveQueueWrapperSlot32Pointer =
+        [videoReceiveQueueWrapperSlot32[@"pointer"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32[@"pointer"] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32PointeeObject =
+        [videoReceiveQueueWrapperSlot32[@"pointeeObject"] isKindOfClass:[NSDictionary class]] ? videoReceiveQueueWrapperSlot32[@"pointeeObject"] : nil;
+    NSString *videoReceiveQueueWrapperSlot32PointeeObjectClassName =
+        [videoReceiveQueueWrapperSlot32PointeeObject[@"className"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32PointeeObject[@"className"] : nil;
+    NSString *videoReceiveQueueWrapperSlot32PointeeObjectDescription =
+        [videoReceiveQueueWrapperSlot32PointeeObject[@"description"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32PointeeObject[@"description"] : nil;
+    NSArray<NSDictionary<NSString *, id> *> *videoReceiveQueueWrapperSlot32PointeeWords =
+        [videoReceiveQueueWrapperSlot32[@"pointeeWords"] isKindOfClass:[NSArray class]] ? videoReceiveQueueWrapperSlot32[@"pointeeWords"] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32PointeeWord6 =
+        videoReceiveQueueWrapperSlot32PointeeWords.count > 6 ? videoReceiveQueueWrapperSlot32PointeeWords[6] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32PointeeWord7 =
+        videoReceiveQueueWrapperSlot32PointeeWords.count > 7 ? videoReceiveQueueWrapperSlot32PointeeWords[7] : nil;
+    NSString *videoReceiveQueueWrapperSlot32PointeeWord6Pointer =
+        [videoReceiveQueueWrapperSlot32PointeeWord6[@"pointer"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32PointeeWord6[@"pointer"] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32PointeeWord6Pointee =
+        [videoReceiveQueueWrapperSlot32PointeeWord6[@"pointee"] isKindOfClass:[NSDictionary class]] ? videoReceiveQueueWrapperSlot32PointeeWord6[@"pointee"] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32PointeeWord6Object =
+        [videoReceiveQueueWrapperSlot32PointeeWord6Pointee[@"object"] isKindOfClass:[NSDictionary class]] ? videoReceiveQueueWrapperSlot32PointeeWord6Pointee[@"object"] : nil;
+    NSString *videoReceiveQueueWrapperSlot32PointeeWord6ObjectClassName =
+        [videoReceiveQueueWrapperSlot32PointeeWord6Object[@"className"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32PointeeWord6Object[@"className"] : nil;
+    NSString *videoReceiveQueueWrapperSlot32PointeeWord6ObjectDescription =
+        [videoReceiveQueueWrapperSlot32PointeeWord6Object[@"description"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32PointeeWord6Object[@"description"] : nil;
+    NSString *videoReceiveQueueWrapperSlot32PointeeWord7Pointer =
+        [videoReceiveQueueWrapperSlot32PointeeWord7[@"pointer"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32PointeeWord7[@"pointer"] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32PointeeWord7Pointee =
+        [videoReceiveQueueWrapperSlot32PointeeWord7[@"pointee"] isKindOfClass:[NSDictionary class]] ? videoReceiveQueueWrapperSlot32PointeeWord7[@"pointee"] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32PointeeWord7Block =
+        [videoReceiveQueueWrapperSlot32PointeeWord7Pointee[@"block"] isKindOfClass:[NSDictionary class]] ? videoReceiveQueueWrapperSlot32PointeeWord7Pointee[@"block"] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32PointeeWord7BlockInvoke =
+        [videoReceiveQueueWrapperSlot32PointeeWord7Block[@"invoke"] isKindOfClass:[NSDictionary class]] ? videoReceiveQueueWrapperSlot32PointeeWord7Block[@"invoke"] : nil;
+    NSString *videoReceiveQueueWrapperSlot32PointeeWord7BlockInvokeSymbol =
+        [videoReceiveQueueWrapperSlot32PointeeWord7BlockInvoke[@"symbolName"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32PointeeWord7BlockInvoke[@"symbolName"] : nil;
     NSDictionary<NSString *, id> *figRemoteQueueReceiverSetHandlerSummary = MDKCopyTraceEventCadenceSummary(
         traceEvents,
         [NSSet setWithArray:@[
@@ -7062,6 +7333,21 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeExitCadenceClassification=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeExitCadenceSummary[@"cadenceClassification"])]];
     [notes addObject:[NSString stringWithFormat:@"firstVideoQueueWrapperInvokeExitBacktrace=%@", MDKDescribeTraceValue(firstVideoQueueWrapperInvokeExitBacktrace)]];
     [notes addObject:[NSString stringWithFormat:@"firstVideoQueueWrapperInvokeExitFirstInterestingFrame=%@", MDKDescribeTraceValue(firstVideoQueueWrapperInvokeExitFirstInterestingFrame)]];
+    [notes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"rqReceiverSetSourceInterposeAttempted"])]];
+    [notes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"rqReceiverSetSourceInterposeInstalled"])]];
+    [notes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInterposeSymbolAddress=%@", MDKDescribeTraceValue(snapshot[@"rqReceiverSetSourceInterposeSymbolAddress"])]];
+    [notes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInvokeEntryEventCount=%@", MDKDescribeTraceValue(rqReceiverSetSourceInvokeEntryCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInvokeEntryDeltaHistogram=%@", MDKDescribeTraceValue(rqReceiverSetSourceInvokeEntryCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInvokeEntry120HzEquivalentCount=%@", MDKDescribeTraceValue(rqReceiverSetSourceInvokeEntryCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInvokeEntryCadenceClassification=%@", MDKDescribeTraceValue(rqReceiverSetSourceInvokeEntryCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"firstRQReceiverSetSourceInvokeEntryBacktrace=%@", MDKDescribeTraceValue(firstRQReceiverSetSourceInvokeEntryBacktrace)]];
+    [notes addObject:[NSString stringWithFormat:@"firstRQReceiverSetSourceInvokeEntryFirstInterestingFrame=%@", MDKDescribeTraceValue(firstRQReceiverSetSourceInvokeEntryFirstInterestingFrame)]];
+    [notes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInvokeExitEventCount=%@", MDKDescribeTraceValue(rqReceiverSetSourceInvokeExitCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInvokeExitDeltaHistogram=%@", MDKDescribeTraceValue(rqReceiverSetSourceInvokeExitCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInvokeExit120HzEquivalentCount=%@", MDKDescribeTraceValue(rqReceiverSetSourceInvokeExitCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInvokeExitCadenceClassification=%@", MDKDescribeTraceValue(rqReceiverSetSourceInvokeExitCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"firstRQReceiverSetSourceInvokeExitBacktrace=%@", MDKDescribeTraceValue(firstRQReceiverSetSourceInvokeExitBacktrace)]];
+    [notes addObject:[NSString stringWithFormat:@"firstRQReceiverSetSourceInvokeExitFirstInterestingFrame=%@", MDKDescribeTraceValue(firstRQReceiverSetSourceInvokeExitFirstInterestingFrame)]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackEventCount=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackDeltaCount=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"deltaCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackDeltaHistogram=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"deltaHistogram"])]];
@@ -7092,6 +7378,14 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperPointer=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperPointer)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperMallocSize=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperMallocSize)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperCandidateBlockOffsets=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperCandidateBlockOffsets)]];
+    [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32Pointer=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32Pointer)]];
+    [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeObjectClassName=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeObjectClassName)]];
+    [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeObjectDescription=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeObjectDescription)]];
+    [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6Pointer=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6Pointer)]];
+    [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6ObjectClassName=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6ObjectClassName)]];
+    [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6ObjectDescription=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6ObjectDescription)]];
+    [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord7Pointer=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord7Pointer)]];
+    [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord7BlockInvokeSymbol=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord7BlockInvokeSymbol)]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInstalledOffset=%@", MDKDescribeTraceValue(videoQueueWrapperInstalledOffset)]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperOriginalInvokeSymbol=%@", MDKDescribeTraceValue(videoQueueWrapperOriginalInvokeSymbol)]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperOriginalInvokeImagePath=%@", MDKDescribeTraceValue(videoQueueWrapperOriginalInvokeImagePath)]];
@@ -7244,6 +7538,14 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperPointer=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperPointer)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperMallocSize=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperMallocSize)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperCandidateBlockOffsets=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperCandidateBlockOffsets)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32Pointer=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32Pointer)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeObjectClassName=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeObjectClassName)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeObjectDescription=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeObjectDescription)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6Pointer=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6Pointer)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6ObjectClassName=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6ObjectClassName)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6ObjectDescription=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6ObjectDescription)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord7Pointer=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord7Pointer)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord7BlockInvokeSymbol=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord7BlockInvokeSymbol)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperCallbackEventCount=%@", MDKDescribeTraceValue(videoQueueWrapperCadenceSummary[@"eventCount"])]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeEntryEventCount=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeEntryCadenceSummary[@"eventCount"])]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeEntryCadenceClassification=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeEntryCadenceSummary[@"cadenceClassification"])]];
@@ -7251,6 +7553,15 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeExitEventCount=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeExitCadenceSummary[@"eventCount"])]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeExitCadenceClassification=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeExitCadenceSummary[@"cadenceClassification"])]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueWrapperInvokeExitFirstInterestingFrame=%@", MDKDescribeTraceValue(firstVideoQueueWrapperInvokeExitFirstInterestingFrame)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"rqReceiverSetSourceInterposeAttempted"])]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"rqReceiverSetSourceInterposeInstalled"])]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInterposeSymbolAddress=%@", MDKDescribeTraceValue(snapshot[@"rqReceiverSetSourceInterposeSymbolAddress"])]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInvokeEntryEventCount=%@", MDKDescribeTraceValue(rqReceiverSetSourceInvokeEntryCadenceSummary[@"eventCount"])]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInvokeEntryCadenceClassification=%@", MDKDescribeTraceValue(rqReceiverSetSourceInvokeEntryCadenceSummary[@"cadenceClassification"])]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstRQReceiverSetSourceInvokeEntryFirstInterestingFrame=%@", MDKDescribeTraceValue(firstRQReceiverSetSourceInvokeEntryFirstInterestingFrame)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInvokeExitEventCount=%@", MDKDescribeTraceValue(rqReceiverSetSourceInvokeExitCadenceSummary[@"eventCount"])]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInvokeExitCadenceClassification=%@", MDKDescribeTraceValue(rqReceiverSetSourceInvokeExitCadenceSummary[@"cadenceClassification"])]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstRQReceiverSetSourceInvokeExitFirstInterestingFrame=%@", MDKDescribeTraceValue(firstRQReceiverSetSourceInvokeExitFirstInterestingFrame)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackEventCount=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"eventCount"])]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueNestedAttributedCallbackCount=%@", MDKDescribeTraceValue(@(videoQueueNestedAttributedCallbackCount))]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueNestedUnattributedCallbackCount=%@", MDKDescribeTraceValue(@(videoQueueNestedUnattributedCallbackCount))]];
