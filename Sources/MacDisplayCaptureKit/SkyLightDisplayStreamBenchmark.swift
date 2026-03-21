@@ -221,6 +221,23 @@ public enum MDKSkyLightDisplayStreamBenchmark {
     public static func run(
         displayID: UInt32,
         sampleDuration: TimeInterval,
+        configuration: MDKSkyLightDisplayStreamConfiguration
+    ) throws -> MDKSkyLightDisplayStreamBenchmarkResult {
+        try run(
+            displayID: displayID,
+            sampleDuration: sampleDuration,
+            minimumFrameTime: configuration.resolvedMinimumFrameTime,
+            queueDepth: configuration.resolvedQueueDepth,
+            showCursor: configuration.tuning.showCursor,
+            outputWidth: configuration.resolvedOutputWidth == 0 ? nil : configuration.resolvedOutputWidth,
+            outputHeight: configuration.resolvedOutputHeight == 0 ? nil : configuration.resolvedOutputHeight,
+            pixelFormat: configuration.resolvedPixelFormatOverride == 0 ? nil : configuration.resolvedPixelFormatOverride
+        )
+    }
+
+    public static func run(
+        displayID: UInt32,
+        sampleDuration: TimeInterval,
         request120LikeProperties: Bool
     ) throws -> MDKSkyLightDisplayStreamBenchmarkResult {
         var nsError: NSError?

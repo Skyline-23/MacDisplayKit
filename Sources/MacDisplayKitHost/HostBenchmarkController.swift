@@ -201,6 +201,56 @@ final class MDKHostBenchmarkController {
         .appendingNotes(captureRelevantProcessLoadNotes())
     }
 
+    func benchmarkAutoTunedSkyLightDisplayStreamProcessing(
+        displayID: UInt32,
+        sampleDuration: TimeInterval,
+        useMetalStimulus: Bool,
+        outputWidth: Int? = nil,
+        outputHeight: Int? = nil,
+        pixelFormat: UInt32? = nil,
+        processingMode: MDKCaptureBenchmarkProcessingMode
+    ) throws -> MDKSkyLightDisplayStreamProcessingBenchmarkResult {
+        let candidateSet = MDKSkyLightDisplayStreamTuningAdvisor.recommendedCandidates(for: processingMode)
+        let tuningReport = try benchmarkSkyLightDisplayStreamTuningMatrix(
+            displayID: displayID,
+            sampleDuration: sampleDuration,
+            useMetalStimulus: useMetalStimulus,
+            candidates: candidateSet
+        )
+
+        guard let bestEvaluation = tuningReport.bestEvaluation else {
+            throw NSError(
+                domain: "MacDisplayKitHost",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "No raw SkyLight tuning candidate succeeded for \(processingMode.rawValue)."]
+            )
+        }
+
+        let configuration = MDKSkyLightDisplayStreamConfiguration(
+            tuning: bestEvaluation.candidate,
+            outputWidth: outputWidth,
+            outputHeight: outputHeight,
+            pixelFormat: pixelFormat
+        )
+
+        return try benchmarkSkyLightDisplayStreamProcessing(
+            displayID: displayID,
+            sampleDuration: sampleDuration,
+            minimumFrameTime: configuration.resolvedMinimumFrameTime,
+            queueDepth: configuration.resolvedQueueDepth,
+            showCursor: configuration.tuning.showCursor,
+            outputWidth: configuration.resolvedOutputWidth == 0 ? nil : configuration.resolvedOutputWidth,
+            outputHeight: configuration.resolvedOutputHeight == 0 ? nil : configuration.resolvedOutputHeight,
+            pixelFormat: configuration.resolvedPixelFormatOverride == 0 ? nil : configuration.resolvedPixelFormatOverride,
+            processingMode: processingMode
+        )
+        .appendingNotes([
+            "autoTunedRawCandidate=\(bestEvaluation.candidate.identifier)",
+            "autoTunedRawObservedFrameRate=\(String(format: "%.2f", bestEvaluation.result.observedFrameRate))",
+            "autoTunedRawCadence=\(bestEvaluation.result.cadenceClassification)"
+        ])
+    }
+
     func benchmarkSkyLightDisplayStreamTuningMatrix(
         displayID: UInt32,
         sampleDuration: TimeInterval,

@@ -1704,3 +1704,24 @@ Interpretation:
   - current interpretation:
     - the old `~8 fps` `HEVC` result was no longer representative after the custom Metal color conversion and corrected output-drain accounting
     - raw `HEVC Main10` on the panel-native `3840x2160` path is now finally in the `4K120HDR` target range
+- 2026-03-21 framework-facing raw tuning is now exposed as a reusable configuration surface, and auto-tuned raw candidate selection penalizes stall-heavy winners
+  - implementation changes:
+    - `MDKSkyLightDisplayStreamConfiguration` now wraps the raw `minimumFrameTime`/`queueDepth` tuning plus optional output sizing and pixel-format overrides
+    - raw `SkyLight` benchmark + processing entry points accept the shared configuration surface instead of separate argument lists
+    - host-side `--auto-tune-raw` now chooses from processing-mode-specific candidate sets and carries the chosen raw winner into the final processing benchmark
+    - raw tuning and processing matrix ranking now penalize `>16ms`, `>33ms`, and `>100ms` stalls before preferring burstier cadence labels
+  - current direct measurements on the host:
+    - `HEVC + auto-tune-raw` picked `baseline-q3`
+      - `autoTunedRawObservedFrameRate≈138.27`
+      - `completedOutputFrameRate≈39.65`
+      - `stallCountOver16Milliseconds=51`
+      - `stallCountOver33Milliseconds=37`
+    - `ProRes Proxy + auto-tune-raw` picked `baseline-q2`
+      - `autoTunedRawObservedFrameRate≈75.50`
+      - `completedOutputFrameRate≈56.98`
+      - `stallCountOver16Milliseconds=41`
+      - `stallCountOver33Milliseconds=32`
+  - current interpretation:
+    - the framework can now surface queue-depth selection to Apollo instead of hiding it inside benchmark-only presets
+    - on the current loaded host, `ProRes Proxy` is still below the realtime floor but is less stall-heavy than full-resolution `HEVC`
+    - raw auto-tuning now avoids selecting unstable `120hz-like` burst patterns when they hide materially worse stall behavior

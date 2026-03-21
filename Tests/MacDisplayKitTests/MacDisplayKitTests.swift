@@ -559,6 +559,38 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertFalse(candidate.showCursor)
     }
 
+    func testSkyLightConfigurationWrapsTuningAndOptionalOverrides() {
+        let configuration = MDKSkyLightDisplayStreamConfiguration.panelNative(
+            tuning: MDKSkyLightDisplayStreamTuningMatrix.baselineQueue2Candidate,
+            pixelFormat: kCVPixelFormatType_32BGRA
+        )
+
+        XCTAssertEqual(configuration.tuning.identifier, "baseline-q2")
+        XCTAssertNil(configuration.outputWidth)
+        XCTAssertNil(configuration.outputHeight)
+        XCTAssertEqual(configuration.pixelFormat, kCVPixelFormatType_32BGRA)
+        XCTAssertEqual(configuration.resolvedMinimumFrameTime, 0)
+        XCTAssertEqual(configuration.resolvedQueueDepth, 2)
+        XCTAssertEqual(configuration.resolvedPixelFormatOverride, kCVPixelFormatType_32BGRA)
+    }
+
+    func testTuningAdvisorPrefersLowerQueueDepthForProRes() {
+        let candidates = MDKSkyLightDisplayStreamTuningAdvisor.recommendedCandidates(
+            for: .videoToolboxEncodeProResProxyExperimental
+        )
+
+        XCTAssertEqual(candidates.map(\.identifier), ["baseline-q1", "baseline-q2", "baseline-q3"])
+    }
+
+    func testTuningAdvisorKeeps120LikeCandidateForHEVC() {
+        let candidates = MDKSkyLightDisplayStreamTuningAdvisor.recommendedCandidates(
+            for: .videoToolboxEncode
+        )
+
+        XCTAssertEqual(candidates.first?.identifier, "min-frame-240hz-q3")
+        XCTAssertTrue(candidates.contains(where: { $0.identifier == "baseline-q4" }))
+    }
+
     func testSkyLightDisplayStreamProcessingBenchmarkResultRoundTripsThroughJSON() throws {
         let result = MDKSkyLightDisplayStreamProcessingBenchmarkResult(
             displayID: 2,
@@ -593,6 +625,9 @@ final class MacDisplayKitTests: XCTestCase {
             minIntervalMilliseconds: 4.167,
             maxIntervalMilliseconds: 62.499,
             intervalHistogram: ["8.3ms": 101],
+            stallCountOver16Milliseconds: 6,
+            stallCountOver33Milliseconds: 1,
+            stallCountOver100Milliseconds: 0,
             cadenceClassification: "120hz-like",
             frameStatusHistogram: ["frame-complete": 193],
             notes: ["raw processing benchmark payload"]
@@ -725,6 +760,84 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(report.bestEvaluation, evaluation)
     }
 
+    func testSkyLightDisplayStreamTuningMatrixPrefersLowerStallCandidateWhenFrameRateIsClose() {
+        let stableEvaluation = MDKSkyLightDisplayStreamTuningEvaluation(
+            candidate: MDKSkyLightDisplayStreamTuningCandidate(
+                identifier: "baseline-q2",
+                minimumFrameTime: 0,
+                queueDepth: 2,
+                showCursor: false
+            ),
+            result: MDKSkyLightDisplayStreamBenchmarkResult(
+                displayID: 2,
+                status: 0,
+                stopStatus: 0,
+                sampleDuration: 2.0,
+                callbackCount: 182,
+                completeFrameCount: 182,
+                observedFrameRate: 91.0,
+                requested120LikeProperties: false,
+                requestedMinimumFrameTime: 0,
+                requestedQueueDepth: 2,
+                requestedShowCursor: false,
+                appliedPropertyCount: 3,
+                surfaceWidth: 3840,
+                surfaceHeight: 2160,
+                pixelFormat: kCVPixelFormatType_32BGRA,
+                intervalCount: 181,
+                minIntervalMilliseconds: 8.333,
+                maxIntervalMilliseconds: 18.0,
+                stallCountOver16Milliseconds: 8,
+                stallCountOver33Milliseconds: 0,
+                stallCountOver100Milliseconds: 0,
+                intervalHistogram: ["8.3ms": 120, "16.7ms": 61],
+                cadenceClassification: "coalesced-or-mixed",
+                frameStatusHistogram: ["frame-complete": 182],
+                notes: []
+            )
+        )
+        let burstyEvaluation = MDKSkyLightDisplayStreamTuningEvaluation(
+            candidate: MDKSkyLightDisplayStreamTuningCandidate(
+                identifier: "baseline-q4",
+                minimumFrameTime: 0,
+                queueDepth: 4,
+                showCursor: false
+            ),
+            result: MDKSkyLightDisplayStreamBenchmarkResult(
+                displayID: 2,
+                status: 0,
+                stopStatus: 0,
+                sampleDuration: 2.0,
+                callbackCount: 184,
+                completeFrameCount: 184,
+                observedFrameRate: 92.0,
+                requested120LikeProperties: false,
+                requestedMinimumFrameTime: 0,
+                requestedQueueDepth: 4,
+                requestedShowCursor: false,
+                appliedPropertyCount: 3,
+                surfaceWidth: 3840,
+                surfaceHeight: 2160,
+                pixelFormat: kCVPixelFormatType_32BGRA,
+                intervalCount: 183,
+                minIntervalMilliseconds: 4.167,
+                maxIntervalMilliseconds: 41.0,
+                stallCountOver16Milliseconds: 40,
+                stallCountOver33Milliseconds: 6,
+                stallCountOver100Milliseconds: 0,
+                intervalHistogram: ["4.2ms": 80, "33.3ms": 103],
+                cadenceClassification: "120hz-like",
+                frameStatusHistogram: ["frame-complete": 184],
+                notes: []
+            )
+        )
+
+        XCTAssertEqual(
+            MDKSkyLightDisplayStreamTuningMatrix.bestEvaluationIndex(for: [stableEvaluation, burstyEvaluation]),
+            0
+        )
+    }
+
     func testSkyLightDisplayStreamProcessingMatrixRanksSuccessfulCandidates() throws {
         let rawControlCandidate = MDKSkyLightDisplayStreamProcessingMatrixCandidate(
             identifier: "none/baseline-q3",
@@ -769,6 +882,9 @@ final class MacDisplayKitTests: XCTestCase {
             minIntervalMilliseconds: 8.333,
             maxIntervalMilliseconds: 16.667,
             intervalHistogram: ["8.3ms": 200],
+            stallCountOver16Milliseconds: 0,
+            stallCountOver33Milliseconds: 0,
+            stallCountOver100Milliseconds: 0,
             cadenceClassification: "60hz-like",
             frameStatusHistogram: ["frame-complete": 200],
             notes: []
@@ -816,6 +932,9 @@ final class MacDisplayKitTests: XCTestCase {
             minIntervalMilliseconds: 4.167,
             maxIntervalMilliseconds: 16.667,
             intervalHistogram: ["4.2ms": 198],
+            stallCountOver16Milliseconds: 0,
+            stallCountOver33Milliseconds: 0,
+            stallCountOver100Milliseconds: 0,
             cadenceClassification: "120hz-like",
             frameStatusHistogram: ["frame-complete": 198],
             notes: []
@@ -883,6 +1002,9 @@ final class MacDisplayKitTests: XCTestCase {
             minIntervalMilliseconds: 8.333,
             maxIntervalMilliseconds: 20.0,
             intervalHistogram: ["8.3ms": 80],
+            stallCountOver16Milliseconds: 4,
+            stallCountOver33Milliseconds: 0,
+            stallCountOver100Milliseconds: 0,
             cadenceClassification: "120hz-like",
             frameStatusHistogram: ["frame-complete": 110],
             notes: []
@@ -920,6 +1042,9 @@ final class MacDisplayKitTests: XCTestCase {
             minIntervalMilliseconds: 16.667,
             maxIntervalMilliseconds: 17.0,
             intervalHistogram: ["16.7ms": 121],
+            stallCountOver16Milliseconds: 121,
+            stallCountOver33Milliseconds: 0,
+            stallCountOver100Milliseconds: 0,
             cadenceClassification: "60hz-like",
             frameStatusHistogram: ["frame-complete": 122],
             notes: []
@@ -959,6 +1084,121 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(MDKSkyLightDisplayStreamProcessingMatrix.bestEvaluationIndex(for: evaluations), 1)
     }
 
+    func testProcessingMatrixPrefersLowerStallEncoderCandidateWhenRealtimeFloorMatches() {
+        let stable = MDKSkyLightDisplayStreamProcessingBenchmarkResult(
+            displayID: 2,
+            status: 0,
+            stopStatus: 0,
+            processingMode: .videoToolboxEncode,
+            videoEncoderCodec: .hevc,
+            sampleDuration: 2.0,
+            callbackCount: 150,
+            completeFrameCount: 150,
+            observedFrameRate: 75.0,
+            processedFrameCount: 150,
+            processingFailureCount: 0,
+            processingErrorHistogram: [:],
+            processedFrameRate: 75.0,
+            processedFrameRatio: 1.0,
+            outputCallbackCount: 150,
+            completedOutputFrameCount: 150,
+            completedOutputFrameRate: 75.0,
+            completedOutputFrameRatio: 1.0,
+            outputCallbackStatusHistogram: ["noErr": 150],
+            outputCallbackLatencyHistogram: ["10.8ms": 120, "16.7ms": 30],
+            minOutputCallbackLatencyMilliseconds: 10.8,
+            maxOutputCallbackLatencyMilliseconds: 16.7,
+            requestedMinimumFrameTime: 0,
+            requestedQueueDepth: 2,
+            requestedShowCursor: false,
+            surfaceWidth: 3840,
+            surfaceHeight: 2160,
+            pixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+            intervalCount: 149,
+            minIntervalMilliseconds: 12.5,
+            maxIntervalMilliseconds: 18.0,
+            intervalHistogram: ["16.7ms": 149],
+            stallCountOver16Milliseconds: 6,
+            stallCountOver33Milliseconds: 0,
+            stallCountOver100Milliseconds: 0,
+            cadenceClassification: "60hz-like",
+            frameStatusHistogram: ["frame-complete": 150],
+            notes: []
+        )
+        let bursty = MDKSkyLightDisplayStreamProcessingBenchmarkResult(
+            displayID: 2,
+            status: 0,
+            stopStatus: 0,
+            processingMode: .videoToolboxEncode,
+            videoEncoderCodec: .hevc,
+            sampleDuration: 2.0,
+            callbackCount: 154,
+            completeFrameCount: 154,
+            observedFrameRate: 77.0,
+            processedFrameCount: 154,
+            processingFailureCount: 0,
+            processingErrorHistogram: [:],
+            processedFrameRate: 77.0,
+            processedFrameRatio: 1.0,
+            outputCallbackCount: 154,
+            completedOutputFrameCount: 154,
+            completedOutputFrameRate: 77.0,
+            completedOutputFrameRatio: 1.0,
+            outputCallbackStatusHistogram: ["noErr": 154],
+            outputCallbackLatencyHistogram: ["10.8ms": 100, "33.3ms": 54],
+            minOutputCallbackLatencyMilliseconds: 10.8,
+            maxOutputCallbackLatencyMilliseconds: 33.3,
+            requestedMinimumFrameTime: 1.0 / 240.0,
+            requestedQueueDepth: 4,
+            requestedShowCursor: false,
+            surfaceWidth: 3840,
+            surfaceHeight: 2160,
+            pixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+            intervalCount: 153,
+            minIntervalMilliseconds: 4.167,
+            maxIntervalMilliseconds: 41.0,
+            intervalHistogram: ["4.2ms": 70, "33.3ms": 83],
+            stallCountOver16Milliseconds: 44,
+            stallCountOver33Milliseconds: 8,
+            stallCountOver100Milliseconds: 0,
+            cadenceClassification: "120hz-like",
+            frameStatusHistogram: ["frame-complete": 154],
+            notes: []
+        )
+        let evaluations = [
+            MDKSkyLightDisplayStreamProcessingMatrixEvaluation(
+                candidate: MDKSkyLightDisplayStreamProcessingMatrixCandidate(
+                    identifier: "stable-hevc",
+                    processingMode: .videoToolboxEncode,
+                    tuningCandidate: MDKSkyLightDisplayStreamTuningCandidate(
+                        identifier: "baseline-q2",
+                        minimumFrameTime: 0,
+                        queueDepth: 2,
+                        showCursor: false
+                    )
+                ),
+                result: stable,
+                errorDescription: nil
+            ),
+            MDKSkyLightDisplayStreamProcessingMatrixEvaluation(
+                candidate: MDKSkyLightDisplayStreamProcessingMatrixCandidate(
+                    identifier: "bursty-hevc",
+                    processingMode: .videoToolboxEncode,
+                    tuningCandidate: MDKSkyLightDisplayStreamTuningCandidate(
+                        identifier: "min-frame-240hz-q4",
+                        minimumFrameTime: 1.0 / 240.0,
+                        queueDepth: 4,
+                        showCursor: false
+                    )
+                ),
+                result: bursty,
+                errorDescription: nil
+            )
+        ]
+
+        XCTAssertEqual(MDKSkyLightDisplayStreamProcessingMatrix.bestEvaluationIndex(for: evaluations), 0)
+    }
+
     func testSkyLightDisplayStreamProcessingBenchmarkMarks120LikeTarget() {
         let result = MDKSkyLightDisplayStreamProcessingBenchmarkResult(
             displayID: 2,
@@ -993,6 +1233,9 @@ final class MacDisplayKitTests: XCTestCase {
             minIntervalMilliseconds: 4.166,
             maxIntervalMilliseconds: 8.333,
             intervalHistogram: ["4.2ms": 160, "8.3ms": 59],
+            stallCountOver16Milliseconds: 0,
+            stallCountOver33Milliseconds: 0,
+            stallCountOver100Milliseconds: 0,
             cadenceClassification: "120hz-like",
             frameStatusHistogram: ["frame-complete": 220],
             notes: []

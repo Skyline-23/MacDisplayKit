@@ -26,6 +26,7 @@ private enum MDKHostCLICommand {
         displayID: UInt32?,
         sampleDuration: TimeInterval,
         request120LikeProperties: Bool,
+        autoTuneRawProperties: Bool,
         minimumFrameTimeOverride: Double?,
         queueDepthOverride: Int?,
         surfaceWidthOverride: Int?,
@@ -445,6 +446,7 @@ enum MDKHostCommandLine {
             let displayID,
             let sampleDuration,
             let request120LikeProperties,
+            let autoTuneRawProperties,
             let minimumFrameTimeOverride,
             let queueDepthOverride,
             let surfaceWidthOverride,
@@ -473,17 +475,30 @@ enum MDKHostCommandLine {
                     let resolvedQueueDepth = queueDepthOverride
                         ?? (request120LikeProperties ? request120LikeCandidate.queueDepth : 3)
                     if let processingMode {
-                        let processingResult = try controller.benchmarkSkyLightDisplayStreamProcessing(
-                            displayID: resolvedDisplayID,
-                            sampleDuration: sampleDuration,
-                            minimumFrameTime: resolvedMinimumFrameTime,
-                            queueDepth: resolvedQueueDepth,
-                            showCursor: showCursor,
-                            outputWidth: surfaceWidthOverride,
-                            outputHeight: surfaceHeightOverride,
-                            pixelFormat: pixelFormatOverride,
-                            processingMode: processingMode
-                        )
+                        let processingResult: MDKSkyLightDisplayStreamProcessingBenchmarkResult
+                        if autoTuneRawProperties {
+                            processingResult = try controller.benchmarkAutoTunedSkyLightDisplayStreamProcessing(
+                                displayID: resolvedDisplayID,
+                                sampleDuration: sampleDuration,
+                                useMetalStimulus: useMetalStimulus,
+                                outputWidth: surfaceWidthOverride,
+                                outputHeight: surfaceHeightOverride,
+                                pixelFormat: pixelFormatOverride,
+                                processingMode: processingMode
+                            )
+                        } else {
+                            processingResult = try controller.benchmarkSkyLightDisplayStreamProcessing(
+                                displayID: resolvedDisplayID,
+                                sampleDuration: sampleDuration,
+                                minimumFrameTime: resolvedMinimumFrameTime,
+                                queueDepth: resolvedQueueDepth,
+                                showCursor: showCursor,
+                                outputWidth: surfaceWidthOverride,
+                                outputHeight: surfaceHeightOverride,
+                                pixelFormat: pixelFormatOverride,
+                                processingMode: processingMode
+                            )
+                        }
                         if json {
                             let encoder = JSONEncoder()
                             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -508,17 +523,30 @@ enum MDKHostCommandLine {
                         )
                 } else {
                     if let processingMode {
-                        let processingResult = try controller.benchmarkSkyLightDisplayStreamProcessing(
-                            displayID: resolvedDisplayID,
-                            sampleDuration: sampleDuration,
-                            minimumFrameTime: request120LikeProperties ? request120LikeCandidate.minimumFrameTime : 0.0,
-                            queueDepth: request120LikeProperties ? request120LikeCandidate.queueDepth : 3,
-                            showCursor: false,
-                            outputWidth: surfaceWidthOverride,
-                            outputHeight: surfaceHeightOverride,
-                            pixelFormat: pixelFormatOverride,
-                            processingMode: processingMode
-                        )
+                        let processingResult: MDKSkyLightDisplayStreamProcessingBenchmarkResult
+                        if autoTuneRawProperties {
+                            processingResult = try controller.benchmarkAutoTunedSkyLightDisplayStreamProcessing(
+                                displayID: resolvedDisplayID,
+                                sampleDuration: sampleDuration,
+                                useMetalStimulus: useMetalStimulus,
+                                outputWidth: surfaceWidthOverride,
+                                outputHeight: surfaceHeightOverride,
+                                pixelFormat: pixelFormatOverride,
+                                processingMode: processingMode
+                            )
+                        } else {
+                            processingResult = try controller.benchmarkSkyLightDisplayStreamProcessing(
+                                displayID: resolvedDisplayID,
+                                sampleDuration: sampleDuration,
+                                minimumFrameTime: request120LikeProperties ? request120LikeCandidate.minimumFrameTime : 0.0,
+                                queueDepth: request120LikeProperties ? request120LikeCandidate.queueDepth : 3,
+                                showCursor: false,
+                                outputWidth: surfaceWidthOverride,
+                                outputHeight: surfaceHeightOverride,
+                                pixelFormat: pixelFormatOverride,
+                                processingMode: processingMode
+                            )
+                        }
                         if json {
                             let encoder = JSONEncoder()
                             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -852,6 +880,7 @@ enum MDKHostCommandLine {
                 displayID: displayID,
                             sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
                             request120LikeProperties: tokens.contains("--request-120-like"),
+                            autoTuneRawProperties: tokens.contains("--auto-tune-raw"),
                             minimumFrameTimeOverride: parseMinimumFrameTime(tokens: tokens),
                             queueDepthOverride: parseQueueDepth(tokens: tokens),
                             surfaceWidthOverride: parseSurfaceDimension(flag: "--surface-width", tokens: tokens),

@@ -39,6 +39,9 @@ public struct MDKSkyLightDisplayStreamProcessingBenchmarkResult: Codable, Equata
     public let minIntervalMilliseconds: Double?
     public let maxIntervalMilliseconds: Double?
     public let intervalHistogram: [String: Int]
+    public let stallCountOver16Milliseconds: Int
+    public let stallCountOver33Milliseconds: Int
+    public let stallCountOver100Milliseconds: Int
     public let cadenceClassification: String
     public let frameStatusHistogram: [String: Int]
     public let notes: [String]
@@ -93,6 +96,9 @@ public struct MDKSkyLightDisplayStreamProcessingBenchmarkResult: Codable, Equata
             minIntervalMilliseconds: minIntervalMilliseconds,
             maxIntervalMilliseconds: maxIntervalMilliseconds,
             intervalHistogram: intervalHistogram,
+            stallCountOver16Milliseconds: stallCountOver16Milliseconds,
+            stallCountOver33Milliseconds: stallCountOver33Milliseconds,
+            stallCountOver100Milliseconds: stallCountOver100Milliseconds,
             cadenceClassification: cadenceClassification,
             frameStatusHistogram: frameStatusHistogram,
             notes: notes + additionalNotes
@@ -116,6 +122,9 @@ private final class MDKSkyLightDisplayStreamProcessingRecorder {
     var minIntervalMilliseconds: Double?
     var maxIntervalMilliseconds: Double?
     var intervalHistogram: [String: Int] = [:]
+    var stallCountOver16Milliseconds: Int = 0
+    var stallCountOver33Milliseconds: Int = 0
+    var stallCountOver100Milliseconds: Int = 0
     var count120Like: Int = 0
     var count60Like: Int = 0
     private lazy var timebaseFactorMilliseconds: Double = {
@@ -268,6 +277,9 @@ private final class MDKSkyLightDisplayStreamProcessingRecorder {
             minIntervalMilliseconds: minIntervalMilliseconds,
             maxIntervalMilliseconds: maxIntervalMilliseconds,
             intervalHistogram: intervalHistogram,
+            stallCountOver16Milliseconds: stallCountOver16Milliseconds,
+            stallCountOver33Milliseconds: stallCountOver33Milliseconds,
+            stallCountOver100Milliseconds: stallCountOver100Milliseconds,
             cadenceClassification: classifyCadence(),
             frameStatusHistogram: frameStatusHistogram,
             notes: notes
@@ -306,6 +318,15 @@ private final class MDKSkyLightDisplayStreamProcessingRecorder {
         let rounded = (intervalMilliseconds * 10.0).rounded() / 10.0
         intervalHistogram[String(format: "%.1fms", rounded), default: 0] += 1
 
+        if intervalMilliseconds > 16.7 {
+            stallCountOver16Milliseconds += 1
+        }
+        if intervalMilliseconds > 33.3 {
+            stallCountOver33Milliseconds += 1
+        }
+        if intervalMilliseconds > 100.0 {
+            stallCountOver100Milliseconds += 1
+        }
         if intervalMilliseconds <= 10.0 {
             count120Like += 1
         }
@@ -331,6 +352,25 @@ private final class MDKSkyLightDisplayStreamProcessingRecorder {
 }
 
 public enum MDKSkyLightDisplayStreamProcessingBenchmark {
+    public static func run(
+        displayID: UInt32,
+        sampleDuration: TimeInterval,
+        configuration: MDKSkyLightDisplayStreamConfiguration,
+        processingMode: MDKCaptureBenchmarkProcessingMode
+    ) throws -> MDKSkyLightDisplayStreamProcessingBenchmarkResult {
+        try run(
+            displayID: displayID,
+            sampleDuration: sampleDuration,
+            minimumFrameTime: configuration.resolvedMinimumFrameTime,
+            queueDepth: configuration.resolvedQueueDepth,
+            showCursor: configuration.tuning.showCursor,
+            outputWidth: configuration.resolvedOutputWidth == 0 ? nil : configuration.resolvedOutputWidth,
+            outputHeight: configuration.resolvedOutputHeight == 0 ? nil : configuration.resolvedOutputHeight,
+            pixelFormat: configuration.resolvedPixelFormatOverride == 0 ? nil : configuration.resolvedPixelFormatOverride,
+            processingMode: processingMode
+        )
+    }
+
     public static func run(
         displayID: UInt32,
         sampleDuration: TimeInterval,
