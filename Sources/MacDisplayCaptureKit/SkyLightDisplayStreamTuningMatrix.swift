@@ -66,6 +66,13 @@ public struct MDKSkyLightDisplayStreamTuningMatrixReport: Codable, Equatable, Se
 }
 
 public enum MDKSkyLightDisplayStreamTuningMatrix {
+    public static let request120LikeCandidate = MDKSkyLightDisplayStreamTuningCandidate(
+        identifier: "min-frame-240hz-q3",
+        minimumFrameTime: 1.0 / 240.0,
+        queueDepth: 3,
+        showCursor: false
+    )
+
     public static let defaultCandidates: [MDKSkyLightDisplayStreamTuningCandidate] = [
         MDKSkyLightDisplayStreamTuningCandidate(
             identifier: "baseline-q3",
@@ -79,12 +86,7 @@ public enum MDKSkyLightDisplayStreamTuningMatrix {
             queueDepth: 8,
             showCursor: false
         ),
-        MDKSkyLightDisplayStreamTuningCandidate(
-            identifier: "min-frame-240hz-q3",
-            minimumFrameTime: 1.0 / 240.0,
-            queueDepth: 3,
-            showCursor: false
-        ),
+        request120LikeCandidate,
         MDKSkyLightDisplayStreamTuningCandidate(
             identifier: "min-frame-240hz-q8",
             minimumFrameTime: 1.0 / 240.0,

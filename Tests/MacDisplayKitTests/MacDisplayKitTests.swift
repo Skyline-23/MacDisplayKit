@@ -57,7 +57,7 @@ final class MacDisplayKitTests: XCTestCase {
             candidate: MDKSkyLightDisplayStreamTuningCandidate(
                 identifier: "below-floor",
                 minimumFrameTime: 1.0 / 240.0,
-                queueDepth: 8,
+                queueDepth: 3,
                 showCursor: false
             ),
             result: MDKSkyLightDisplayStreamBenchmarkResult(
@@ -70,7 +70,7 @@ final class MacDisplayKitTests: XCTestCase {
                 observedFrameRate: 55.0,
                 requested120LikeProperties: true,
                 requestedMinimumFrameTime: 1.0 / 240.0,
-                requestedQueueDepth: 8,
+                requestedQueueDepth: 3,
                 requestedShowCursor: false,
                 appliedPropertyCount: 3,
                 surfaceWidth: 5120,
@@ -389,8 +389,8 @@ final class MacDisplayKitTests: XCTestCase {
             completeFrameCount: 193,
             observedFrameRate: 96.5,
             requested120LikeProperties: true,
-            requestedMinimumFrameTime: 1.0 / 120.0,
-            requestedQueueDepth: 8,
+            requestedMinimumFrameTime: 1.0 / 240.0,
+            requestedQueueDepth: 3,
             requestedShowCursor: false,
             appliedPropertyCount: 3,
             surfaceWidth: 5120,
@@ -420,8 +420,8 @@ final class MacDisplayKitTests: XCTestCase {
             "completeFrameCount": NSNumber(value: 193),
             "observedFrameRate": NSNumber(value: 96.5),
             "requested120LikeProperties": NSNumber(value: true),
-            "requestedMinimumFrameTime": NSNumber(value: 1.0 / 120.0),
-            "requestedQueueDepth": NSNumber(value: 8),
+            "requestedMinimumFrameTime": NSNumber(value: 1.0 / 240.0),
+            "requestedQueueDepth": NSNumber(value: 3),
             "requestedShowCursor": NSNumber(value: false),
             "appliedPropertyCount": NSNumber(value: 3),
             "surfaceWidth": NSNumber(value: 5120),
@@ -443,13 +443,22 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(result.completeFrameCount, 193)
         XCTAssertEqual(result.observedFrameRate, 96.5)
         XCTAssertTrue(result.requested120LikeProperties)
-        XCTAssertEqual(result.requestedQueueDepth, 8)
+        XCTAssertEqual(result.requestedQueueDepth, 3)
         XCTAssertEqual(result.appliedPropertyCount, 3)
         XCTAssertEqual(result.surfaceWidth, 5120)
         XCTAssertEqual(result.surfaceHeight, 2880)
         XCTAssertEqual(result.intervalHistogram["8.3ms"], 101)
         XCTAssertEqual(result.frameStatusHistogram["frame-idle"], 7)
         XCTAssertEqual(result.cadenceClassification, "120hz-like")
+    }
+
+    func testRequest120LikeCandidateUsesRetunedQ3Configuration() {
+        let candidate = MDKSkyLightDisplayStreamTuningMatrix.request120LikeCandidate
+
+        XCTAssertEqual(candidate.identifier, "min-frame-240hz-q3")
+        XCTAssertEqual(candidate.minimumFrameTime, 1.0 / 240.0, accuracy: 0.000_001)
+        XCTAssertEqual(candidate.queueDepth, 3)
+        XCTAssertFalse(candidate.showCursor)
     }
 
     func testSkyLightDisplayStreamProcessingBenchmarkResultRoundTripsThroughJSON() throws {

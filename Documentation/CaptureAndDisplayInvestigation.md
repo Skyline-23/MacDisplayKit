@@ -1656,3 +1656,22 @@ Interpretation:
     - `ProRes Proxy` is worth keeping as an experimental option precisely because Apple’s hardware path is speed-oriented and it now tracks raw capture closely enough to compare against `HEVC`
     - `H.264` still needs separate tuning; the remaining problem is emitted-sample gating, not missing callbacks or missing hardware acceleration setup
     - the next leverage is not “more public `SCStream` work”; it is better raw `SLDisplayStream` auto-tuning plus codec-specific encoder tuning on top of that raw winner
+- 2026-03-21 raw `SLDisplayStream` underperformance on the current host state was traced to a stale `request-120-like` shorthand more than to the raw path itself
+  - fresh measurements on the current machine state:
+    - `minimumFrameTime=0`, `queueDepth=3`:
+      - `observedFrameRate≈65.84`
+      - `cadenceClassification=120hz-like`
+    - `minimumFrameTime=0`, `queueDepth=8`:
+      - `observedFrameRate≈48.44`
+      - `cadenceClassification=coalesced-or-mixed`
+    - `minimumFrameTime=1/240`, `queueDepth=3`:
+      - `observedFrameRate≈93.26`
+      - `cadenceClassification=coalesced-or-mixed`
+    - `minimumFrameTime=1/240`, `queueDepth=8`:
+      - `observedFrameRate≈46.11`
+      - `cadenceClassification=coalesced-or-mixed`
+  - current interpretation:
+    - the raw `SkyLight` path itself is still capable of `90+ fps` on this host
+    - the old `request-120-like` shorthand was stale because it still requested `queueDepth=8`
+    - on the current `5120x2880 @ 240Hz` scaled desktop, `queueDepth=8` correlates with a large drop in raw callback cadence
+    - concurrent `WindowServer`/`ColorSync` load is still worth tracking, but the first concrete fix is to retune the shorthand to `min-frame-240hz-q3`

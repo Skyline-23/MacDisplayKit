@@ -12549,7 +12549,7 @@ static NSString *MDKDescribeDisplayStreamFrameStatus(CGDisplayStreamFrameStatus 
 }
 
 static constexpr double MDKSLDisplayStreamTunedMinimumFrameTime = 1.0 / 240.0;
-static constexpr NSInteger MDKSLDisplayStreamTunedQueueDepth = 8;
+static constexpr NSInteger MDKSLDisplayStreamTunedQueueDepth = 3;
 
 static BOOL MDKResolveDisplayModeSize(
     NSUInteger displayID,
@@ -12925,8 +12925,8 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
         @"completeFrameCount": @(completeFrameCount),
         @"observedFrameRate": @(elapsed > 0.0 ? static_cast<double>(completeFrameCount) / elapsed : 0.0),
         @"requested120LikeProperties": @(
-            requestedMinimumFrameTime >= (MDKSLDisplayStreamTunedMinimumFrameTime - 0.000001) &&
-            requestedQueueDepth >= MDKSLDisplayStreamTunedQueueDepth &&
+            std::fabs(requestedMinimumFrameTime - MDKSLDisplayStreamTunedMinimumFrameTime) <= 0.000001 &&
+            requestedQueueDepth == MDKSLDisplayStreamTunedQueueDepth &&
             requestedShowCursor == NO
         ),
         @"requestedMinimumFrameTime": @(requestedMinimumFrameTime),

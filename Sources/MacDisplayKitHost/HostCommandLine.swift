@@ -455,11 +455,12 @@ enum MDKHostCommandLine {
                 stimulus?.start()
                 defer { stimulus?.stop() }
                 let result: MDKSkyLightDisplayStreamBenchmarkResult
+                let request120LikeCandidate = MDKSkyLightDisplayStreamTuningMatrix.request120LikeCandidate
                 if minimumFrameTimeOverride != nil || queueDepthOverride != nil || showCursor {
-                let resolvedMinimumFrameTime = minimumFrameTimeOverride
-                        ?? (request120LikeProperties ? (1.0 / 240.0) : 0.0)
+                    let resolvedMinimumFrameTime = minimumFrameTimeOverride
+                        ?? (request120LikeProperties ? request120LikeCandidate.minimumFrameTime : 0.0)
                     let resolvedQueueDepth = queueDepthOverride
-                        ?? (request120LikeProperties ? 8 : 3)
+                        ?? (request120LikeProperties ? request120LikeCandidate.queueDepth : 3)
                     if let processingMode {
                         let processingResult = try controller.benchmarkSkyLightDisplayStreamProcessing(
                             displayID: resolvedDisplayID,
@@ -493,8 +494,8 @@ enum MDKHostCommandLine {
                         let processingResult = try controller.benchmarkSkyLightDisplayStreamProcessing(
                             displayID: resolvedDisplayID,
                             sampleDuration: sampleDuration,
-                            minimumFrameTime: request120LikeProperties ? (1.0 / 240.0) : 0.0,
-                            queueDepth: request120LikeProperties ? 8 : 3,
+                            minimumFrameTime: request120LikeProperties ? request120LikeCandidate.minimumFrameTime : 0.0,
+                            queueDepth: request120LikeProperties ? request120LikeCandidate.queueDepth : 3,
                             showCursor: false,
                             processingMode: processingMode
                         )
