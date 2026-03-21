@@ -3,15 +3,18 @@ import Foundation
 public struct MDKReplaydProducerSampleIndicator: Codable, Equatable, Sendable {
     public let name: String
     public let pattern: String
+    public let matchCount: Int
     public let matchedLines: [String]
 
     public init(
         name: String,
         pattern: String,
+        matchCount: Int,
         matchedLines: [String]
     ) {
         self.name = name
         self.pattern = pattern
+        self.matchCount = matchCount
         self.matchedLines = matchedLines
     }
 }
@@ -63,15 +66,21 @@ public struct MDKReplaydProducerIndicatorComparison: Codable, Equatable, Sendabl
     public let name: String
     public let baselineObserved: Bool
     public let stimulusObserved: Bool
+    public let baselineMatchCount: Int
+    public let stimulusMatchCount: Int
 
     public init(
         name: String,
         baselineObserved: Bool,
-        stimulusObserved: Bool
+        stimulusObserved: Bool,
+        baselineMatchCount: Int,
+        stimulusMatchCount: Int
     ) {
         self.name = name
         self.baselineObserved = baselineObserved
         self.stimulusObserved = stimulusObserved
+        self.baselineMatchCount = baselineMatchCount
+        self.stimulusMatchCount = stimulusMatchCount
     }
 }
 
@@ -139,11 +148,12 @@ public enum MDKReplaydProducerSampleParser {
 
         let indicators = patterns.map { pattern in
             let expression = try? NSRegularExpression(pattern: pattern.expression)
-            let matchedLines = uniqueMatches(in: lines, using: expression)
+            let analysis = matchAnalysis(in: lines, using: expression)
             return MDKReplaydProducerSampleIndicator(
                 name: pattern.name,
                 pattern: pattern.expression,
-                matchedLines: matchedLines
+                matchCount: analysis.matchCount,
+                matchedLines: analysis.uniqueLines
             )
         }
 
@@ -167,27 +177,29 @@ public enum MDKReplaydProducerSampleParser {
         )
     }
 
-    private static func uniqueMatches(
+    private static func matchAnalysis(
         in lines: [String],
         using expression: NSRegularExpression?
-    ) -> [String] {
+    ) -> (matchCount: Int, uniqueLines: [String]) {
         guard let expression else {
-            return []
+            return (0, [])
         }
 
         var matchedLines: [String] = []
         var seen = Set<String>()
+        var matchCount = 0
         for line in lines {
             let range = NSRange(line.startIndex..<line.endIndex, in: line)
             guard expression.firstMatch(in: line, range: range) != nil else {
                 continue
             }
+            matchCount += 1
             if seen.insert(line).inserted {
                 matchedLines.append(line)
             }
         }
 
-        return matchedLines
+        return (matchCount, matchedLines)
     }
 }
 
@@ -202,6 +214,12 @@ public enum MDKReplaydProducerSampleComparator {
         let stimulusMatches = Dictionary(
             uniqueKeysWithValues: stimulus.indicators.map { ($0.name, !$0.matchedLines.isEmpty) }
         )
+        let baselineMatchCounts = Dictionary(
+            uniqueKeysWithValues: baseline.indicators.map { ($0.name, $0.matchCount) }
+        )
+        let stimulusMatchCounts = Dictionary(
+            uniqueKeysWithValues: stimulus.indicators.map { ($0.name, $0.matchCount) }
+        )
 
         var orderedNames: [String] = []
         var seenNames = Set<String>()
@@ -213,7 +231,9 @@ public enum MDKReplaydProducerSampleComparator {
             MDKReplaydProducerIndicatorComparison(
                 name: name,
                 baselineObserved: baselineMatches[name] ?? false,
-                stimulusObserved: stimulusMatches[name] ?? false
+                stimulusObserved: stimulusMatches[name] ?? false,
+                baselineMatchCount: baselineMatchCounts[name] ?? 0,
+                stimulusMatchCount: stimulusMatchCounts[name] ?? 0
             )
         }
 

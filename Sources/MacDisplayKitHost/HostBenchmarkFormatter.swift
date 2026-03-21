@@ -18,6 +18,10 @@ enum MDKHostBenchmarkFormatter {
         lines.append("Persistent indicators: \(report.comparison.persistentIndicatorNames.isEmpty ? "none" : report.comparison.persistentIndicatorNames.joined(separator: ", "))")
         lines.append("Baseline-only indicators: \(report.comparison.baselineOnlyIndicatorNames.isEmpty ? "none" : report.comparison.baselineOnlyIndicatorNames.joined(separator: ", "))")
         lines.append("Stimulus-only indicators: \(report.comparison.stimulusOnlyIndicatorNames.isEmpty ? "none" : report.comparison.stimulusOnlyIndicatorNames.joined(separator: ", "))")
+        lines.append("Indicator match counts:")
+        for comparison in report.comparison.indicatorComparisons {
+            lines.append("  - \(comparison.name): baseline=\(comparison.baselineMatchCount) stimulus=\(comparison.stimulusMatchCount)")
+        }
         return lines.joined(separator: "\n")
     }
 
@@ -43,7 +47,7 @@ enum MDKHostBenchmarkFormatter {
         if !report.replaydSample.indicators.isEmpty {
             lines.append("Indicators:")
             for indicator in report.replaydSample.indicators where !indicator.matchedLines.isEmpty {
-                lines.append("  - \(indicator.name)")
+                lines.append("  - \(indicator.name) matches=\(indicator.matchCount)")
                 for line in indicator.matchedLines {
                     lines.append("    line: \(line)")
                 }

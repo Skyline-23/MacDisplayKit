@@ -684,6 +684,7 @@ final class MacDisplayKitTests: XCTestCase {
                 MDKReplaydProducerSampleIndicator(
                     name: "producer-read-queue",
                     pattern: "rqSenderHandleDequeue",
+                    matchCount: 1,
                     matchedLines: ["rqSenderHandleDequeue  (in CMCapture) + 64  [0x1a71102c0]"]
                 )
             ]
@@ -708,9 +709,9 @@ final class MacDisplayKitTests: XCTestCase {
             observedSkyLightDisplayStreamFrameAvailable: true,
             observedSLContentStream: true,
             indicators: [
-                MDKReplaydProducerSampleIndicator(name: "producer-read-queue", pattern: "rq", matchedLines: ["rqSenderHandleDequeue"]),
-                MDKReplaydProducerSampleIndicator(name: "skylight-display-stream", pattern: "CGY", matchedLines: ["CGYDisplayStreamNotification_server"]),
-                MDKReplaydProducerSampleIndicator(name: "slcontentstream", pattern: "SLContentStream", matchedLines: ["SLContentStream"])
+                MDKReplaydProducerSampleIndicator(name: "producer-read-queue", pattern: "rq", matchCount: 3, matchedLines: ["rqSenderHandleDequeue"]),
+                MDKReplaydProducerSampleIndicator(name: "skylight-display-stream", pattern: "CGY", matchCount: 2, matchedLines: ["CGYDisplayStreamNotification_server"]),
+                MDKReplaydProducerSampleIndicator(name: "slcontentstream", pattern: "SLContentStream", matchCount: 1, matchedLines: ["SLContentStream"])
             ]
         )
         let stimulus = MDKReplaydProducerSampleReport(
@@ -726,9 +727,9 @@ final class MacDisplayKitTests: XCTestCase {
             observedSkyLightDisplayStreamFrameAvailable: true,
             observedSLContentStream: true,
             indicators: [
-                MDKReplaydProducerSampleIndicator(name: "producer-read-queue", pattern: "rq", matchedLines: []),
-                MDKReplaydProducerSampleIndicator(name: "skylight-display-stream", pattern: "CGY", matchedLines: ["CGYDisplayStreamNotification_server"]),
-                MDKReplaydProducerSampleIndicator(name: "slcontentstream", pattern: "SLContentStream", matchedLines: ["SLContentStream"])
+                MDKReplaydProducerSampleIndicator(name: "producer-read-queue", pattern: "rq", matchCount: 0, matchedLines: []),
+                MDKReplaydProducerSampleIndicator(name: "skylight-display-stream", pattern: "CGY", matchCount: 4, matchedLines: ["CGYDisplayStreamNotification_server"]),
+                MDKReplaydProducerSampleIndicator(name: "slcontentstream", pattern: "SLContentStream", matchCount: 2, matchedLines: ["SLContentStream"])
             ]
         )
 
@@ -741,5 +742,7 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(comparison.baselineOnlyIndicatorNames, ["producer-read-queue"])
         XCTAssertEqual(comparison.stimulusOnlyIndicatorNames, [])
         XCTAssertEqual(comparison.indicatorComparisons.count, 3)
+        XCTAssertEqual(comparison.indicatorComparisons[0].baselineMatchCount, 3)
+        XCTAssertEqual(comparison.indicatorComparisons[0].stimulusMatchCount, 0)
     }
 }

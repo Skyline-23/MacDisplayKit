@@ -384,11 +384,20 @@ Replayd producer trace specifics:
   - stimulus-only indicators
 - latest verified compare run on display `auto`, `2s` sample:
   - persistent indicators:
-    - `producer-read-queue`
     - `skylight-display-stream`
     - `slcontentstream`
-  - baseline-only indicators: none
+  - baseline-only indicators:
+    - `producer-read-queue`
   - stimulus-only indicators: none
+  - indicator hit counts:
+    - `producer-read-queue`: baseline `2`, stimulus `0`
+    - `skylight-display-stream`: baseline `2`, stimulus `5`
+    - `slcontentstream`: baseline `1`, stimulus `3`
+  - interpretation:
+    - the paired sample still does not prove `120-like` producer cadence
+    - but it does show a measurable shift in daemon-side producer evidence under stimulus,
+      with the visible SkyLight producer edge getting denser while the read-queue sample
+      itself was not captured in that short stimulus window
 
 Recent passive-handshake sample on display `2`:
 
@@ -1188,8 +1197,12 @@ Interpretation:
 - that makes the new host command the stable way to compare daemon-side producer evidence across
   idle and stimulus conditions without manually invoking `sample replayd`
 - the latest `--experimental-screencapturekit-replayd-producer-compare-display auto --sample-duration 2 --json`
-  run captured `rqSenderHandleDequeue` and the producer read queue in both baseline and stimulus,
-  with no divergent indicators in that shorter paired sample
+  run showed:
+  - `producer-read-queue`: baseline `2`, stimulus `0`
+  - `skylight-display-stream`: baseline `2`, stimulus `5`
+  - `slcontentstream`: baseline `1`, stimulus `3`
+  - persistent indicators: `skylight-display-stream`, `slcontentstream`
+  - baseline-only indicator: `producer-read-queue`
 - taken together, the brokered producer side now points much more strongly at
   `CMCapture`'s `FigRemoteQueueSender` path than at an ordinary host-side `libdispatch`
   or `NSXPCConnection` helper
