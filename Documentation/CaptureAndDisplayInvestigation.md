@@ -1548,3 +1548,14 @@ Interpretation:
     - `processedFrameRate≈139.37`
     - `cadenceClassification=120hz-like`
   - single ad-hoc raw runs outside the child-process matrix are still noisy after prior raw runs and should not be treated as authoritative without isolation
+- 2026-03-21 the raw `vt-encode` benchmark now records actual encoder output callback counts separately from submit success
+  - result fields:
+    - `completedOutputFrameCount`
+    - `completedOutputFrameRate`
+  - the intent is to separate:
+    - `submit throughput` (`processedFrameCount`)
+    - `encoder drain/output throughput` (`completedOutputFrameCount`)
+  - an immediate direct run on the current machine still showed `completedOutputFrameCount=0`
+  - current interpretation:
+    - the benchmark can now tell whether `VTCompressionSessionEncodeFrame(...)` success is turning into real encoder output
+    - the next validation target is the callback/flush boundary, not the raw `IOSurface -> VT` submission contract

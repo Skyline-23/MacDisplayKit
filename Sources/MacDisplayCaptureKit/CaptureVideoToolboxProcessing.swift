@@ -24,8 +24,13 @@ public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
     }
 }
 
-private let MDKVideoToolboxOutputCallback: VTCompressionOutputCallback = { _, _, _, _, _ in
-    // Raw benchmark mode only needs encode submission/completion viability.
+private let MDKVideoToolboxOutputCallback: VTCompressionOutputCallback = { _, refcon, _, _, _ in
+    guard let refcon else {
+        return
+    }
+
+    let processor = Unmanaged<MDKVideoToolboxEncodingProcessor>.fromOpaque(refcon).takeUnretainedValue()
+    processor.recordCompletedOutput()
 }
 
 public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, @unchecked Sendable {
@@ -38,6 +43,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var processedFrameCount: UInt64 = 0
     private var processingFailureCount: UInt64 = 0
     private var processingErrorHistogram: [String: Int] = [:]
+    private let outputQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.output")
+    private var completedOutputFrameCount: UInt64 = 0
     private let encodeQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode")
 
     public init() {}
@@ -83,6 +90,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 processedFrameCount: processedFrameCount,
                 processingFailureCount: processingFailureCount,
                 processingErrorHistogram: processingErrorHistogram,
+                completedOutputFrameCount: outputQueue.sync { completedOutputFrameCount },
                 notes: [
                     "videoToolboxSubmitMode=async-queue",
                     "videoToolboxOutputCallback=non-nil",
@@ -161,7 +169,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             imageBufferAttributes: sourceImageAttributes as CFDictionary,
             compressedDataAllocator: nil,
             outputCallback: MDKVideoToolboxOutputCallback,
-            refcon: nil,
+            refcon: Unmanaged.passUnretained(self).toOpaque(),
             compressionSessionOut: &session
         )
         guard status == noErr, let session else {
@@ -225,5 +233,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         pixelBufferAttributes = nil
         pixelBufferCache.removeAll(keepingCapacity: true)
         frameIndex = 0
+        outputQueue.sync {
+            completedOutputFrameCount = 0
+        }
+    }
+
+    fileprivate func recordCompletedOutput() {
+        outputQueue.async { [self] in
+            completedOutputFrameCount += 1
+        }
     }
 }

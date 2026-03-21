@@ -65,6 +65,7 @@ struct MDKCaptureFrameProcessingSummary: Sendable, Equatable {
     let processedFrameCount: UInt64
     let processingFailureCount: UInt64
     let processingErrorHistogram: [String: Int]
+    let completedOutputFrameCount: UInt64?
     let notes: [String]
 }
 

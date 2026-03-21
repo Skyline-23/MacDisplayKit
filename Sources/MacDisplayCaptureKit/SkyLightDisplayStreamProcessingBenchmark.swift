@@ -18,6 +18,8 @@ public struct MDKSkyLightDisplayStreamProcessingBenchmarkResult: Codable, Equata
     public let processingErrorHistogram: [String: Int]
     public let processedFrameRate: Double
     public let processedFrameRatio: Double
+    public let completedOutputFrameCount: UInt64?
+    public let completedOutputFrameRate: Double?
     public let requestedMinimumFrameTime: Double
     public let requestedQueueDepth: Int
     public let requestedShowCursor: Bool
@@ -135,8 +137,12 @@ private final class MDKSkyLightDisplayStreamProcessingRecorder {
         let summaryProcessedFrameCount = processingSummary?.processedFrameCount ?? processedFrameCount
         let summaryProcessingFailureCount = processingSummary?.processingFailureCount ?? processingFailureCount
         let summaryProcessingErrorHistogram = processingSummary?.processingErrorHistogram ?? processingErrorHistogram
+        let summaryCompletedOutputFrameCount = processingSummary?.completedOutputFrameCount
         let processedFrameRate = sampleDuration > 0 ? Double(summaryProcessedFrameCount) / sampleDuration : 0
         let processedFrameRatio = completeFrameCount > 0 ? Double(summaryProcessedFrameCount) / Double(completeFrameCount) : 0
+        let completedOutputFrameRate = summaryCompletedOutputFrameCount.map {
+            sampleDuration > 0 ? Double($0) / sampleDuration : 0
+        }
 
         var notes = [
             "Uses raw SkyLight SLDisplayStreamCreateWithDispatchQueue instead of replayd-backed SCStream.",
@@ -171,6 +177,8 @@ private final class MDKSkyLightDisplayStreamProcessingRecorder {
             processingErrorHistogram: summaryProcessingErrorHistogram,
             processedFrameRate: processedFrameRate,
             processedFrameRatio: processedFrameRatio,
+            completedOutputFrameCount: summaryCompletedOutputFrameCount,
+            completedOutputFrameRate: completedOutputFrameRate,
             requestedMinimumFrameTime: requestedMinimumFrameTime,
             requestedQueueDepth: requestedQueueDepth,
             requestedShowCursor: requestedShowCursor,

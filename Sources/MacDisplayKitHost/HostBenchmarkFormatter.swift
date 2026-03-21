@@ -410,6 +410,11 @@ enum MDKHostBenchmarkFormatter {
         }
         lines.append(String(format: "Processed FPS: %.2f", result.processedFrameRate))
         lines.append(String(format: "Processed ratio: %.3f", result.processedFrameRatio))
+        if let completedOutputFrameCount = result.completedOutputFrameCount,
+           let completedOutputFrameRate = result.completedOutputFrameRate {
+            lines.append("Encoder output frames: \(completedOutputFrameCount)")
+            lines.append(String(format: "Encoder output FPS: %.2f", completedOutputFrameRate))
+        }
         lines.append("Cadence classification: \(result.cadenceClassification)")
         lines.append("Interval count: \(result.intervalCount)")
         if let minIntervalMilliseconds = result.minIntervalMilliseconds,
