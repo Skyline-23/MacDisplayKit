@@ -754,6 +754,12 @@ static BOOL MDKActiveSCKAllowVideoQueueWrapperProbe = NO;
 static std::atomic<uint64_t> MDKVideoQueueWrapperSequenceCounter{0};
 static void *MDKResolvedRQReceiverSetSourceBlockInvokeAddress = nullptr;
 static void *MDKResolvedRQReceiverSetSourceBlockInvokeImageHeader = nullptr;
+static void *MDKResolvedDispatchSourceInvokeAddress = nullptr;
+static void *MDKResolvedDispatchSourceInvokeImageHeader = nullptr;
+static void *MDKResolvedDispatchSourceLatchAndCallAddress = nullptr;
+static void *MDKResolvedDispatchSourceLatchAndCallImageHeader = nullptr;
+static void *MDKResolvedDispatchClientCalloutAddress = nullptr;
+static void *MDKResolvedDispatchClientCalloutImageHeader = nullptr;
 
 namespace {
 constexpr size_t MDKVideoQueueWrapperTLSStackCapacity = 16;
@@ -769,12 +775,18 @@ struct MDKFigRemoteQueueMessage {
 
 using MDKFigRemoteQueueReceiverHandlerBlock = void (^)(int, MDKFigRemoteQueueMessage *, void *);
 using MDKRQReceiverSetSourceBlockInvokeFn = void (*)(void *);
+using MDKDispatchSourceInvokeInternalFn = void (*)(dispatch_source_t, void *, uint32_t);
+using MDKDispatchSourceLatchAndCallInternalFn = void (*)(dispatch_source_t, dispatch_queue_t, uint32_t);
+using MDKDispatchClientCalloutFn = void (*)(void *, dispatch_function_t);
 using MDKDispatchSourceCreateFn = dispatch_source_t (*)(dispatch_source_type_t, uintptr_t, unsigned long, dispatch_queue_t);
 using MDKDispatchSourceSetEventHandlerFn = void (*)(dispatch_source_t, dispatch_block_t);
 using MDKDispatchSourceSetEventHandlerFFn = void (*)(dispatch_source_t, dispatch_function_t);
 using MDKReadFn = ssize_t (*)(int, void *, size_t);
 using MDKDispatchSourceHandlerBlockInvokeFn = void (*)(void *);
 static MDKRQReceiverSetSourceBlockInvokeFn MDKOriginalRQReceiverSetSourceBlockInvoke = nullptr;
+static MDKDispatchSourceInvokeInternalFn MDKOriginalDispatchSourceInvokeInternal = nullptr;
+static MDKDispatchSourceLatchAndCallInternalFn MDKOriginalDispatchSourceLatchAndCallInternal = nullptr;
+static MDKDispatchClientCalloutFn MDKOriginalDispatchClientCallout = nullptr;
 static MDKDispatchSourceCreateFn MDKOriginalDispatchSourceCreate = nullptr;
 static MDKDispatchSourceSetEventHandlerFn MDKOriginalDispatchSourceSetEventHandler = nullptr;
 static MDKDispatchSourceSetEventHandlerFFn MDKOriginalDispatchSourceSetEventHandlerF = nullptr;
@@ -798,6 +810,7 @@ static void MDKObserveVideoRemoteQueueSharedRegion(void);
 static void MDKUpdateSCKSampleBufferDiagnostics(CMSampleBufferRef sampleBuffer);
 static BOOL MDKPrimeSCRemoteQueueWrapperIfPossible(id remoteQueue);
 static BOOL MDKWrapVideoReceiveQueueCallbackIfPossible(id stream);
+static NSDictionary<NSString *, id> * _Nullable MDKCopyDispatchReadSourceMetadata(dispatch_source_t source);
 static NSString *MDKBucketMilliseconds(double milliseconds);
 static void MDKIncrementMutableHistogram(NSMutableDictionary<NSString *, NSNumber *> *histogram, NSString *bucket);
 static NSString *MDKClassifyCadenceHistogram(NSDictionary<NSString *, NSNumber *> *histogram, NSUInteger deltaCount);
@@ -2005,6 +2018,12 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"videoQueueWrapperInvokeExitEventCount": @0,
             @"rqReceiverSetSourceInvokeEntryEventCount": @0,
             @"rqReceiverSetSourceInvokeExitEventCount": @0,
+            @"dispatchSourceInvokeEntryEventCount": @0,
+            @"dispatchSourceInvokeExitEventCount": @0,
+            @"dispatchSourceLatchAndCallEntryEventCount": @0,
+            @"dispatchSourceLatchAndCallExitEventCount": @0,
+            @"dispatchClientCalloutRQReceiverEntryEventCount": @0,
+            @"dispatchClientCalloutRQReceiverExitEventCount": @0,
             @"videoQueueWrapperBlocks": [NSMutableDictionary dictionary],
             @"videoQueueWrapperInvokes": [NSMutableDictionary dictionary],
             @"videoQueueNestedBlockCallbackEventCount": @0,
@@ -3052,6 +3071,9 @@ static void MDKRecordRemoteQueueObjectEvent(NSString *kind, NSDictionary<NSStrin
 }
 
 extern "C" void MDKInterposedRQReceiverSetSourceBlockInvoke(void *blockLiteral);
+extern "C" void MDKInterposedDispatchSourceInvokeInternal(dispatch_source_t source, void *invokeContext, uint32_t flags);
+extern "C" void MDKInterposedDispatchSourceLatchAndCallInternal(dispatch_source_t source, dispatch_queue_t queue, uint32_t flags);
+extern "C" void MDKInterposedDispatchClientCallout(void *context, dispatch_function_t function);
 
 static void MDKInstallRQReceiverSetSourceBlockInterposeIfPossible(
     NSDictionary<NSString *, id> *interestingFrame
@@ -3115,6 +3137,151 @@ static void MDKInstallRQReceiverSetSourceBlockInterposeIfPossible(
     }
 }
 
+static void MDKInstallDispatchSourceInternalInterposeIfPossible(
+    NSDictionary<NSString *, id> *interestingFrame
+) {
+    NSString *symbolName = [interestingFrame[@"symbolName"] isKindOfClass:[NSString class]] ? interestingFrame[@"symbolName"] : nil;
+    NSString *imagePath = [interestingFrame[@"imagePath"] isKindOfClass:[NSString class]] ? interestingFrame[@"imagePath"] : nil;
+    NSString *symbolAddress = [interestingFrame[@"symbolAddress"] isKindOfClass:[NSString class]] ? interestingFrame[@"symbolAddress"] : nil;
+    if (symbolName == nil || imagePath == nil || symbolAddress == nil) {
+        return;
+    }
+
+    const BOOL isDispatchSourceInvoke = [symbolName isEqualToString:@"_dispatch_source_invoke"];
+    const BOOL isDispatchSourceLatchAndCall = [symbolName isEqualToString:@"_dispatch_source_latch_and_call"];
+    if ((!isDispatchSourceInvoke && !isDispatchSourceLatchAndCall) ||
+        ![imagePath containsString:@"/libdispatch.dylib"]) {
+        return;
+    }
+
+    NSString *attemptedKey = isDispatchSourceInvoke ?
+        @"dispatchSourceInvokeInterposeAttempted" :
+        @"dispatchSourceLatchAndCallInterposeAttempted";
+    NSString *installedKey = isDispatchSourceInvoke ?
+        @"dispatchSourceInvokeInterposeInstalled" :
+        @"dispatchSourceLatchAndCallInterposeInstalled";
+    NSString *addressKey = isDispatchSourceInvoke ?
+        @"dispatchSourceInvokeInterposeSymbolAddress" :
+        @"dispatchSourceLatchAndCallInterposeSymbolAddress";
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        if ([MDKActiveSCKTraceState[installedKey] boolValue]) {
+            return;
+        }
+        MDKActiveSCKTraceState[attemptedKey] = @YES;
+    }
+
+    using MDKDyldDynamicInterposeFn = void (*)(const mach_header *, const MDKDyldInterposeTuple[], size_t);
+    auto dynamicInterpose =
+        reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "dyld_dynamic_interpose"));
+    if (dynamicInterpose == nullptr) {
+        dynamicInterpose =
+            reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "_dyld_dynamic_interpose"));
+    }
+    if (dynamicInterpose == nullptr) {
+        @synchronized(MDKActiveSCKTraceLock) {
+            MDKActiveSCKTraceState[installedKey] = @NO;
+        }
+        return;
+    }
+
+    const mach_header *libdispatchHeader = MDKFindLoadedImageHeader("/usr/lib/system/libdispatch.dylib");
+    void *replacee = MDKParsePointerString(symbolAddress);
+    if (libdispatchHeader == nullptr || replacee == nullptr) {
+        @synchronized(MDKActiveSCKTraceLock) {
+            MDKActiveSCKTraceState[installedKey] = @NO;
+        }
+        return;
+    }
+
+    if (isDispatchSourceInvoke) {
+        MDKOriginalDispatchSourceInvokeInternal =
+            reinterpret_cast<MDKDispatchSourceInvokeInternalFn>(replacee);
+        MDKResolvedDispatchSourceInvokeAddress = replacee;
+        MDKResolvedDispatchSourceInvokeImageHeader = const_cast<mach_header *>(libdispatchHeader);
+        const MDKDyldInterposeTuple interposes[] = {
+            { reinterpret_cast<const void *>(&MDKInterposedDispatchSourceInvokeInternal), replacee },
+        };
+        dynamicInterpose(libdispatchHeader, interposes, sizeof(interposes) / sizeof(interposes[0]));
+    } else {
+        MDKOriginalDispatchSourceLatchAndCallInternal =
+            reinterpret_cast<MDKDispatchSourceLatchAndCallInternalFn>(replacee);
+        MDKResolvedDispatchSourceLatchAndCallAddress = replacee;
+        MDKResolvedDispatchSourceLatchAndCallImageHeader = const_cast<mach_header *>(libdispatchHeader);
+        const MDKDyldInterposeTuple interposes[] = {
+            { reinterpret_cast<const void *>(&MDKInterposedDispatchSourceLatchAndCallInternal), replacee },
+        };
+        dynamicInterpose(libdispatchHeader, interposes, sizeof(interposes) / sizeof(interposes[0]));
+    }
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            MDKActiveSCKTraceState[installedKey] = @YES;
+            MDKActiveSCKTraceState[addressKey] = symbolAddress;
+        }
+    }
+}
+
+static void MDKInstallDispatchClientCalloutInterposeIfPossible(
+    NSDictionary<NSString *, id> *interestingFrame
+) {
+    NSString *symbolName = [interestingFrame[@"symbolName"] isKindOfClass:[NSString class]] ? interestingFrame[@"symbolName"] : nil;
+    NSString *imagePath = [interestingFrame[@"imagePath"] isKindOfClass:[NSString class]] ? interestingFrame[@"imagePath"] : nil;
+    NSString *symbolAddress = [interestingFrame[@"symbolAddress"] isKindOfClass:[NSString class]] ? interestingFrame[@"symbolAddress"] : nil;
+    if (symbolName == nil || imagePath == nil || symbolAddress == nil) {
+        return;
+    }
+    if (![symbolName isEqualToString:@"_dispatch_client_callout"] ||
+        ![imagePath containsString:@"/libdispatch.dylib"]) {
+        return;
+    }
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        if ([MDKActiveSCKTraceState[@"dispatchClientCalloutInterposeInstalled"] boolValue]) {
+            return;
+        }
+        MDKActiveSCKTraceState[@"dispatchClientCalloutInterposeAttempted"] = @YES;
+    }
+
+    using MDKDyldDynamicInterposeFn = void (*)(const mach_header *, const MDKDyldInterposeTuple[], size_t);
+    auto dynamicInterpose =
+        reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "dyld_dynamic_interpose"));
+    if (dynamicInterpose == nullptr) {
+        dynamicInterpose =
+            reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "_dyld_dynamic_interpose"));
+    }
+    if (dynamicInterpose == nullptr) {
+        @synchronized(MDKActiveSCKTraceLock) {
+            MDKActiveSCKTraceState[@"dispatchClientCalloutInterposeInstalled"] = @NO;
+        }
+        return;
+    }
+
+    const mach_header *libdispatchHeader = MDKFindLoadedImageHeader("/usr/lib/system/libdispatch.dylib");
+    void *replacee = MDKParsePointerString(symbolAddress);
+    if (libdispatchHeader == nullptr || replacee == nullptr) {
+        @synchronized(MDKActiveSCKTraceLock) {
+            MDKActiveSCKTraceState[@"dispatchClientCalloutInterposeInstalled"] = @NO;
+        }
+        return;
+    }
+
+    MDKOriginalDispatchClientCallout =
+        reinterpret_cast<MDKDispatchClientCalloutFn>(replacee);
+    MDKResolvedDispatchClientCalloutAddress = replacee;
+    MDKResolvedDispatchClientCalloutImageHeader = const_cast<mach_header *>(libdispatchHeader);
+    const MDKDyldInterposeTuple interposes[] = {
+        { reinterpret_cast<const void *>(&MDKInterposedDispatchClientCallout), replacee },
+    };
+    dynamicInterpose(libdispatchHeader, interposes, sizeof(interposes) / sizeof(interposes[0]));
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            MDKActiveSCKTraceState[@"dispatchClientCalloutInterposeInstalled"] = @YES;
+            MDKActiveSCKTraceState[@"dispatchClientCalloutInterposeSymbolAddress"] = symbolAddress;
+        }
+    }
+}
+
 static void MDKRecordRQReceiverSetSourceInvokeBoundaryEvent(
     NSString *kind,
     void *blockLiteral
@@ -3138,6 +3305,83 @@ static void MDKRecordRQReceiverSetSourceInvokeBoundaryEvent(
 
     NSMutableDictionary<NSString *, id> *payload = [@{
         @"blockLiteral": MDKSummarizePointerValue(blockLiteral),
+    } mutableCopy];
+    if (eventCount <= 4) {
+        payload[@"backtrace"] = MDKCopyBacktraceFrames(8, 3);
+    }
+    MDKRecordSCKTraceEvent(kind, payload);
+}
+
+static void MDKRecordDispatchSourceInternalBoundaryEvent(
+    NSString *kind,
+    dispatch_source_t source,
+    const void *secondaryPointer,
+    uint32_t flags
+) {
+    BOOL shouldRecord = NO;
+    NSUInteger eventCount = 0;
+    NSString *counterKey = nil;
+    if ([kind isEqualToString:@"dispatch-source-invoke-entry"]) {
+        counterKey = @"dispatchSourceInvokeEntryEventCount";
+    } else if ([kind isEqualToString:@"dispatch-source-invoke-exit"]) {
+        counterKey = @"dispatchSourceInvokeExitEventCount";
+    } else if ([kind isEqualToString:@"dispatch-source-latch-and-call-entry"]) {
+        counterKey = @"dispatchSourceLatchAndCallEntryEventCount";
+    } else {
+        counterKey = @"dispatchSourceLatchAndCallExitEventCount";
+    }
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            eventCount = [MDKActiveSCKTraceState[counterKey] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[counterKey] = @(eventCount);
+            shouldRecord = eventCount <= 512;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    NSMutableDictionary<NSString *, id> *payload = [@{
+        @"source": MDKSummarizePointerValue((__bridge const void *) source),
+        @"sourceMetadata": MDKCopyDispatchReadSourceMetadata(source) ?: [NSNull null],
+        @"secondaryPointer": MDKSummarizePointerValue(secondaryPointer),
+        @"flags": @(flags),
+        @"wrapperSequenceID": MDKCurrentVideoQueueWrapperSequence() > 0 ? @(MDKCurrentVideoQueueWrapperSequence()) : [NSNull null],
+        @"wrapperDepth": @(MDKCurrentVideoQueueWrapperSequenceDepth()),
+    } mutableCopy];
+    if (eventCount <= 4) {
+        payload[@"backtrace"] = MDKCopyBacktraceFrames(8, 3);
+    }
+    MDKRecordSCKTraceEvent(kind, payload);
+}
+
+static void MDKRecordDispatchClientCalloutBoundaryEvent(
+    NSString *kind,
+    void *context,
+    dispatch_function_t function
+) {
+    BOOL shouldRecord = NO;
+    NSUInteger eventCount = 0;
+    NSString *counterKey = [kind isEqualToString:@"dispatch-client-callout-rq-receiver-exit"] ?
+        @"dispatchClientCalloutRQReceiverExitEventCount" :
+        @"dispatchClientCalloutRQReceiverEntryEventCount";
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            eventCount = [MDKActiveSCKTraceState[counterKey] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[counterKey] = @(eventCount);
+            shouldRecord = eventCount <= 512;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    NSMutableDictionary<NSString *, id> *payload = [@{
+        @"context": MDKSummarizePointerValue(context),
+        @"function": MDKDescribeCodePointer(reinterpret_cast<const void *>(function)),
+        @"wrapperSequenceID": MDKCurrentVideoQueueWrapperSequence() > 0 ? @(MDKCurrentVideoQueueWrapperSequence()) : [NSNull null],
+        @"wrapperDepth": @(MDKCurrentVideoQueueWrapperSequenceDepth()),
     } mutableCopy];
     if (eventCount <= 4) {
         payload[@"backtrace"] = MDKCopyBacktraceFrames(8, 3);
@@ -3363,9 +3607,17 @@ static void MDKRecordVideoQueueWrapperInvokeBoundaryEvent(
         payload[@"backtrace"] = backtrace;
         for (NSDictionary<NSString *, id> *frame in backtrace) {
             NSString *frameSymbolName = [frame[@"symbolName"] isKindOfClass:[NSString class]] ? frame[@"symbolName"] : nil;
+            if ([frameSymbolName isEqualToString:@"_dispatch_client_callout"]) {
+                MDKInstallDispatchClientCalloutInterposeIfPossible(frame);
+                continue;
+            }
+            if ([frameSymbolName isEqualToString:@"_dispatch_source_invoke"] ||
+                [frameSymbolName isEqualToString:@"_dispatch_source_latch_and_call"]) {
+                MDKInstallDispatchSourceInternalInterposeIfPossible(frame);
+                continue;
+            }
             if ([frameSymbolName isEqualToString:@"__rqReceiverSetSource_block_invoke"]) {
                 MDKInstallRQReceiverSetSourceBlockInterposeIfPossible(frame);
-                break;
             }
         }
     }
@@ -3462,6 +3714,78 @@ extern "C" void MDKInterposedRQReceiverSetSourceBlockInvoke(void *blockLiteral) 
         MDKOriginalRQReceiverSetSourceBlockInvoke(blockLiteral);
     }
     MDKRecordRQReceiverSetSourceInvokeBoundaryEvent(@"rq-receiver-set-source-invoke-exit", blockLiteral);
+}
+
+extern "C" void MDKInterposedDispatchClientCallout(
+    void *context,
+    dispatch_function_t function
+) {
+    const void *functionPointer = reinterpret_cast<const void *>(function);
+    const BOOL isRQReceiverSetSourceCallout =
+        functionPointer != nullptr &&
+        (functionPointer == MDKResolvedRQReceiverSetSourceBlockInvokeAddress ||
+         functionPointer == reinterpret_cast<const void *>(MDKOriginalRQReceiverSetSourceBlockInvoke));
+    if (isRQReceiverSetSourceCallout) {
+        MDKRecordDispatchClientCalloutBoundaryEvent(
+            @"dispatch-client-callout-rq-receiver-entry",
+            context,
+            function
+        );
+    }
+    if (MDKOriginalDispatchClientCallout != nullptr) {
+        MDKOriginalDispatchClientCallout(context, function);
+    }
+    if (isRQReceiverSetSourceCallout) {
+        MDKRecordDispatchClientCalloutBoundaryEvent(
+            @"dispatch-client-callout-rq-receiver-exit",
+            context,
+            function
+        );
+    }
+}
+
+extern "C" void MDKInterposedDispatchSourceInvokeInternal(
+    dispatch_source_t source,
+    void *invokeContext,
+    uint32_t flags
+) {
+    MDKRecordDispatchSourceInternalBoundaryEvent(
+        @"dispatch-source-invoke-entry",
+        source,
+        invokeContext,
+        flags
+    );
+    if (MDKOriginalDispatchSourceInvokeInternal != nullptr) {
+        MDKOriginalDispatchSourceInvokeInternal(source, invokeContext, flags);
+    }
+    MDKRecordDispatchSourceInternalBoundaryEvent(
+        @"dispatch-source-invoke-exit",
+        source,
+        invokeContext,
+        flags
+    );
+}
+
+extern "C" void MDKInterposedDispatchSourceLatchAndCallInternal(
+    dispatch_source_t source,
+    dispatch_queue_t queue,
+    uint32_t flags
+) {
+    MDKRecordDispatchSourceInternalBoundaryEvent(
+        @"dispatch-source-latch-and-call-entry",
+        source,
+        (__bridge const void *) queue,
+        flags
+    );
+    if (MDKOriginalDispatchSourceLatchAndCallInternal != nullptr) {
+        MDKOriginalDispatchSourceLatchAndCallInternal(source, queue, flags);
+    }
+    MDKRecordDispatchSourceInternalBoundaryEvent(
+        @"dispatch-source-latch-and-call-exit",
+        source,
+        (__bridge const void *) queue,
+        flags
+    );
 }
 
 static void MDKInterposedVideoQueueNestedBlockInvoke(
@@ -7453,6 +7777,42 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             @"rq-receiver-set-source-invoke-exit",
         ]]
     );
+    NSDictionary<NSString *, id> *dispatchSourceInvokeEntryCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"dispatch-source-invoke-entry",
+        ]]
+    );
+    NSDictionary<NSString *, id> *dispatchSourceInvokeExitCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"dispatch-source-invoke-exit",
+        ]]
+    );
+    NSDictionary<NSString *, id> *dispatchSourceLatchAndCallEntryCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"dispatch-source-latch-and-call-entry",
+        ]]
+    );
+    NSDictionary<NSString *, id> *dispatchSourceLatchAndCallExitCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"dispatch-source-latch-and-call-exit",
+        ]]
+    );
+    NSDictionary<NSString *, id> *dispatchClientCalloutRQReceiverEntryCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"dispatch-client-callout-rq-receiver-entry",
+        ]]
+    );
+    NSDictionary<NSString *, id> *dispatchClientCalloutRQReceiverExitCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"dispatch-client-callout-rq-receiver-exit",
+        ]]
+    );
     NSDictionary<NSString *, id> *videoQueueNestedBlockCadenceSummary = MDKCopyTraceEventCadenceSummary(
         traceEvents,
         [NSSet setWithArray:@[
@@ -7463,6 +7823,12 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     NSArray<NSDictionary<NSString *, id> *> *firstVideoQueueWrapperInvokeExitBacktrace = nil;
     NSArray<NSDictionary<NSString *, id> *> *firstRQReceiverSetSourceInvokeEntryBacktrace = nil;
     NSArray<NSDictionary<NSString *, id> *> *firstRQReceiverSetSourceInvokeExitBacktrace = nil;
+    NSArray<NSDictionary<NSString *, id> *> *firstDispatchSourceInvokeEntryBacktrace = nil;
+    NSArray<NSDictionary<NSString *, id> *> *firstDispatchSourceInvokeExitBacktrace = nil;
+    NSArray<NSDictionary<NSString *, id> *> *firstDispatchSourceLatchAndCallEntryBacktrace = nil;
+    NSArray<NSDictionary<NSString *, id> *> *firstDispatchSourceLatchAndCallExitBacktrace = nil;
+    NSArray<NSDictionary<NSString *, id> *> *firstDispatchClientCalloutRQReceiverEntryBacktrace = nil;
+    NSArray<NSDictionary<NSString *, id> *> *firstDispatchClientCalloutRQReceiverExitBacktrace = nil;
     auto copyFirstInterestingWrapperBacktraceFrame = ^NSDictionary<NSString *, id> * _Nullable(NSArray<NSDictionary<NSString *, id> *> *frames) {
         for (NSDictionary<NSString *, id> *frame in frames) {
             NSString *imagePath = [frame[@"imagePath"] isKindOfClass:[NSString class]] ? frame[@"imagePath"] : nil;
@@ -7473,6 +7839,11 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             if (symbolName != nil &&
                 ([symbolName containsString:@"MDKInterposedVideoQueueBlockInvoke"] ||
                  [symbolName containsString:@"MDKRecordVideoQueueWrapperInvokeBoundaryEvent"] ||
+                 [symbolName containsString:@"MDKInterposedDispatchClientCallout"] ||
+                 [symbolName containsString:@"MDKRecordDispatchClientCalloutBoundaryEvent"] ||
+                 [symbolName containsString:@"MDKInterposedDispatchSourceInvokeInternal"] ||
+                 [symbolName containsString:@"MDKInterposedDispatchSourceLatchAndCallInternal"] ||
+                 [symbolName containsString:@"MDKRecordDispatchSourceInternalBoundaryEvent"] ||
                  [symbolName containsString:@"MDKCopyBacktraceFrames"])) {
                 continue;
             }
@@ -7499,11 +7870,35 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         } else if (firstRQReceiverSetSourceInvokeExitBacktrace == nil &&
                    [kind isEqualToString:@"rq-receiver-set-source-invoke-exit"]) {
             firstRQReceiverSetSourceInvokeExitBacktrace = backtrace;
+        } else if (firstDispatchSourceInvokeEntryBacktrace == nil &&
+                   [kind isEqualToString:@"dispatch-source-invoke-entry"]) {
+            firstDispatchSourceInvokeEntryBacktrace = backtrace;
+        } else if (firstDispatchSourceInvokeExitBacktrace == nil &&
+                   [kind isEqualToString:@"dispatch-source-invoke-exit"]) {
+            firstDispatchSourceInvokeExitBacktrace = backtrace;
+        } else if (firstDispatchSourceLatchAndCallEntryBacktrace == nil &&
+                   [kind isEqualToString:@"dispatch-source-latch-and-call-entry"]) {
+            firstDispatchSourceLatchAndCallEntryBacktrace = backtrace;
+        } else if (firstDispatchSourceLatchAndCallExitBacktrace == nil &&
+                   [kind isEqualToString:@"dispatch-source-latch-and-call-exit"]) {
+            firstDispatchSourceLatchAndCallExitBacktrace = backtrace;
+        } else if (firstDispatchClientCalloutRQReceiverEntryBacktrace == nil &&
+                   [kind isEqualToString:@"dispatch-client-callout-rq-receiver-entry"]) {
+            firstDispatchClientCalloutRQReceiverEntryBacktrace = backtrace;
+        } else if (firstDispatchClientCalloutRQReceiverExitBacktrace == nil &&
+                   [kind isEqualToString:@"dispatch-client-callout-rq-receiver-exit"]) {
+            firstDispatchClientCalloutRQReceiverExitBacktrace = backtrace;
         }
         if (firstVideoQueueWrapperInvokeEntryBacktrace != nil &&
             firstVideoQueueWrapperInvokeExitBacktrace != nil &&
             firstRQReceiverSetSourceInvokeEntryBacktrace != nil &&
-            firstRQReceiverSetSourceInvokeExitBacktrace != nil) {
+            firstRQReceiverSetSourceInvokeExitBacktrace != nil &&
+            firstDispatchSourceInvokeEntryBacktrace != nil &&
+            firstDispatchSourceInvokeExitBacktrace != nil &&
+            firstDispatchSourceLatchAndCallEntryBacktrace != nil &&
+            firstDispatchSourceLatchAndCallExitBacktrace != nil &&
+            firstDispatchClientCalloutRQReceiverEntryBacktrace != nil &&
+            firstDispatchClientCalloutRQReceiverExitBacktrace != nil) {
             break;
         }
     }
@@ -7515,6 +7910,18 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         copyFirstInterestingWrapperBacktraceFrame(firstRQReceiverSetSourceInvokeEntryBacktrace ?: @[]);
     NSDictionary<NSString *, id> *firstRQReceiverSetSourceInvokeExitFirstInterestingFrame =
         copyFirstInterestingWrapperBacktraceFrame(firstRQReceiverSetSourceInvokeExitBacktrace ?: @[]);
+    NSDictionary<NSString *, id> *firstDispatchSourceInvokeEntryFirstInterestingFrame =
+        copyFirstInterestingWrapperBacktraceFrame(firstDispatchSourceInvokeEntryBacktrace ?: @[]);
+    NSDictionary<NSString *, id> *firstDispatchSourceInvokeExitFirstInterestingFrame =
+        copyFirstInterestingWrapperBacktraceFrame(firstDispatchSourceInvokeExitBacktrace ?: @[]);
+    NSDictionary<NSString *, id> *firstDispatchSourceLatchAndCallEntryFirstInterestingFrame =
+        copyFirstInterestingWrapperBacktraceFrame(firstDispatchSourceLatchAndCallEntryBacktrace ?: @[]);
+    NSDictionary<NSString *, id> *firstDispatchSourceLatchAndCallExitFirstInterestingFrame =
+        copyFirstInterestingWrapperBacktraceFrame(firstDispatchSourceLatchAndCallExitBacktrace ?: @[]);
+    NSDictionary<NSString *, id> *firstDispatchClientCalloutRQReceiverEntryFirstInterestingFrame =
+        copyFirstInterestingWrapperBacktraceFrame(firstDispatchClientCalloutRQReceiverEntryBacktrace ?: @[]);
+    NSDictionary<NSString *, id> *firstDispatchClientCalloutRQReceiverExitFirstInterestingFrame =
+        copyFirstInterestingWrapperBacktraceFrame(firstDispatchClientCalloutRQReceiverExitBacktrace ?: @[]);
     NSMutableDictionary<NSString *, NSNumber *> *videoQueueWrapperToNestedLeadHistogramMutable = [NSMutableDictionary dictionary];
     NSUInteger videoQueueWrapperToNestedLeadPairCount = 0;
     double videoQueueWrapperToNestedLeadMinMilliseconds = DBL_MAX;
@@ -8057,6 +8464,51 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"rqReceiverSetSourceInvokeExitCadenceClassification=%@", MDKDescribeTraceValue(rqReceiverSetSourceInvokeExitCadenceSummary[@"cadenceClassification"])]];
     [notes addObject:[NSString stringWithFormat:@"firstRQReceiverSetSourceInvokeExitBacktrace=%@", MDKDescribeTraceValue(firstRQReceiverSetSourceInvokeExitBacktrace)]];
     [notes addObject:[NSString stringWithFormat:@"firstRQReceiverSetSourceInvokeExitFirstInterestingFrame=%@", MDKDescribeTraceValue(firstRQReceiverSetSourceInvokeExitFirstInterestingFrame)]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceInvokeInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"dispatchSourceInvokeInterposeAttempted"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceInvokeInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"dispatchSourceInvokeInterposeInstalled"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceInvokeInterposeSymbolAddress=%@", MDKDescribeTraceValue(snapshot[@"dispatchSourceInvokeInterposeSymbolAddress"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceInvokeEntryEventCount=%@", MDKDescribeTraceValue(dispatchSourceInvokeEntryCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceInvokeEntryDeltaHistogram=%@", MDKDescribeTraceValue(dispatchSourceInvokeEntryCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceInvokeEntry120HzEquivalentCount=%@", MDKDescribeTraceValue(dispatchSourceInvokeEntryCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceInvokeEntryCadenceClassification=%@", MDKDescribeTraceValue(dispatchSourceInvokeEntryCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"firstDispatchSourceInvokeEntryBacktrace=%@", MDKDescribeTraceValue(firstDispatchSourceInvokeEntryBacktrace)]];
+    [notes addObject:[NSString stringWithFormat:@"firstDispatchSourceInvokeEntryFirstInterestingFrame=%@", MDKDescribeTraceValue(firstDispatchSourceInvokeEntryFirstInterestingFrame)]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceInvokeExitEventCount=%@", MDKDescribeTraceValue(dispatchSourceInvokeExitCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceInvokeExitDeltaHistogram=%@", MDKDescribeTraceValue(dispatchSourceInvokeExitCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceInvokeExit120HzEquivalentCount=%@", MDKDescribeTraceValue(dispatchSourceInvokeExitCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceInvokeExitCadenceClassification=%@", MDKDescribeTraceValue(dispatchSourceInvokeExitCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"firstDispatchSourceInvokeExitBacktrace=%@", MDKDescribeTraceValue(firstDispatchSourceInvokeExitBacktrace)]];
+    [notes addObject:[NSString stringWithFormat:@"firstDispatchSourceInvokeExitFirstInterestingFrame=%@", MDKDescribeTraceValue(firstDispatchSourceInvokeExitFirstInterestingFrame)]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceLatchAndCallInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"dispatchSourceLatchAndCallInterposeAttempted"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceLatchAndCallInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"dispatchSourceLatchAndCallInterposeInstalled"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceLatchAndCallInterposeSymbolAddress=%@", MDKDescribeTraceValue(snapshot[@"dispatchSourceLatchAndCallInterposeSymbolAddress"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceLatchAndCallEntryEventCount=%@", MDKDescribeTraceValue(dispatchSourceLatchAndCallEntryCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceLatchAndCallEntryDeltaHistogram=%@", MDKDescribeTraceValue(dispatchSourceLatchAndCallEntryCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceLatchAndCallEntry120HzEquivalentCount=%@", MDKDescribeTraceValue(dispatchSourceLatchAndCallEntryCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceLatchAndCallEntryCadenceClassification=%@", MDKDescribeTraceValue(dispatchSourceLatchAndCallEntryCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"firstDispatchSourceLatchAndCallEntryBacktrace=%@", MDKDescribeTraceValue(firstDispatchSourceLatchAndCallEntryBacktrace)]];
+    [notes addObject:[NSString stringWithFormat:@"firstDispatchSourceLatchAndCallEntryFirstInterestingFrame=%@", MDKDescribeTraceValue(firstDispatchSourceLatchAndCallEntryFirstInterestingFrame)]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceLatchAndCallExitEventCount=%@", MDKDescribeTraceValue(dispatchSourceLatchAndCallExitCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceLatchAndCallExitDeltaHistogram=%@", MDKDescribeTraceValue(dispatchSourceLatchAndCallExitCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceLatchAndCallExit120HzEquivalentCount=%@", MDKDescribeTraceValue(dispatchSourceLatchAndCallExitCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceLatchAndCallExitCadenceClassification=%@", MDKDescribeTraceValue(dispatchSourceLatchAndCallExitCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"firstDispatchSourceLatchAndCallExitBacktrace=%@", MDKDescribeTraceValue(firstDispatchSourceLatchAndCallExitBacktrace)]];
+    [notes addObject:[NSString stringWithFormat:@"firstDispatchSourceLatchAndCallExitFirstInterestingFrame=%@", MDKDescribeTraceValue(firstDispatchSourceLatchAndCallExitFirstInterestingFrame)]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchClientCalloutInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"dispatchClientCalloutInterposeAttempted"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchClientCalloutInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"dispatchClientCalloutInterposeInstalled"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchClientCalloutInterposeSymbolAddress=%@", MDKDescribeTraceValue(snapshot[@"dispatchClientCalloutInterposeSymbolAddress"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchClientCalloutRQReceiverEntryEventCount=%@", MDKDescribeTraceValue(dispatchClientCalloutRQReceiverEntryCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchClientCalloutRQReceiverEntryDeltaHistogram=%@", MDKDescribeTraceValue(dispatchClientCalloutRQReceiverEntryCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchClientCalloutRQReceiverEntry120HzEquivalentCount=%@", MDKDescribeTraceValue(dispatchClientCalloutRQReceiverEntryCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchClientCalloutRQReceiverEntryCadenceClassification=%@", MDKDescribeTraceValue(dispatchClientCalloutRQReceiverEntryCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"firstDispatchClientCalloutRQReceiverEntryBacktrace=%@", MDKDescribeTraceValue(firstDispatchClientCalloutRQReceiverEntryBacktrace)]];
+    [notes addObject:[NSString stringWithFormat:@"firstDispatchClientCalloutRQReceiverEntryFirstInterestingFrame=%@", MDKDescribeTraceValue(firstDispatchClientCalloutRQReceiverEntryFirstInterestingFrame)]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchClientCalloutRQReceiverExitEventCount=%@", MDKDescribeTraceValue(dispatchClientCalloutRQReceiverExitCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchClientCalloutRQReceiverExitDeltaHistogram=%@", MDKDescribeTraceValue(dispatchClientCalloutRQReceiverExitCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchClientCalloutRQReceiverExit120HzEquivalentCount=%@", MDKDescribeTraceValue(dispatchClientCalloutRQReceiverExitCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchClientCalloutRQReceiverExitCadenceClassification=%@", MDKDescribeTraceValue(dispatchClientCalloutRQReceiverExitCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"firstDispatchClientCalloutRQReceiverExitBacktrace=%@", MDKDescribeTraceValue(firstDispatchClientCalloutRQReceiverExitBacktrace)]];
+    [notes addObject:[NSString stringWithFormat:@"firstDispatchClientCalloutRQReceiverExitFirstInterestingFrame=%@", MDKDescribeTraceValue(firstDispatchClientCalloutRQReceiverExitFirstInterestingFrame)]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackEventCount=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackDeltaCount=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"deltaCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackDeltaHistogram=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"deltaHistogram"])]];

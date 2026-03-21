@@ -903,3 +903,26 @@ Interpretation:
   so the next meaningful reverse-engineering hop is now outside the object:
   - libdispatch-internal source invoke/fire machinery, or
   - the producer-side wakeup path that feeds the fifo before libdispatch fires the source
+
+Follow-up passive trace after installing backtrace-derived libdispatch interposes:
+
+- `dispatchSourceInvokeInterposeAttempted=1`
+- `dispatchSourceInvokeInterposeInstalled=1`
+- `dispatchSourceInvokeEntryEventCount=0`
+- `dispatchSourceLatchAndCallInterposeAttempted=1`
+- `dispatchSourceLatchAndCallInterposeInstalled=1`
+- `dispatchSourceLatchAndCallEntryEventCount=0`
+- `dispatchClientCalloutInterposeAttempted=1`
+- `dispatchClientCalloutInterposeInstalled=1`
+- `dispatchClientCalloutRQReceiverEntryEventCount=0`
+
+Interpretation:
+
+- the relevant libdispatch frames are still present in the wrapper invoke backtrace, but ordinary
+  dyld-based address interpose is not receiving live callbacks for `_dispatch_source_invoke`,
+  `_dispatch_source_latch_and_call`, or `_dispatch_client_callout`
+- that strongly suggests the remaining scheduling boundary is no longer reachable through simple
+  same-process symbol interposition, even though the frames remain symbolicated on sampled stacks
+- with the wrapper callback, nested ScreenCaptureKit block, and `__rqReceiverSetSource_block_invoke`
+  already localized, the next practical upstream target is now the producer / wakeup side feeding
+  the fifo-backed dispatch source rather than another userland callback immediately above it
