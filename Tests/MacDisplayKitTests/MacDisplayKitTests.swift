@@ -561,25 +561,28 @@ final class MacDisplayKitTests: XCTestCase {
 
     func testSkyLightConfigurationWrapsTuningAndOptionalOverrides() {
         let configuration = MDKSkyLightDisplayStreamConfiguration.panelNative(
-            tuning: MDKSkyLightDisplayStreamTuningMatrix.baselineQueue2Candidate,
+            queueDepth: 2,
+            showCursor: false,
             pixelFormat: kCVPixelFormatType_32BGRA
         )
 
-        XCTAssertEqual(configuration.tuning.identifier, "baseline-q2")
+        XCTAssertEqual(configuration.queueDepth, 2)
+        XCTAssertFalse(configuration.showCursor)
         XCTAssertNil(configuration.outputWidth)
         XCTAssertNil(configuration.outputHeight)
         XCTAssertEqual(configuration.pixelFormat, kCVPixelFormatType_32BGRA)
-        XCTAssertEqual(configuration.resolvedMinimumFrameTime, 0)
         XCTAssertEqual(configuration.resolvedQueueDepth, 2)
+        XCTAssertFalse(configuration.resolvedShowCursor)
         XCTAssertEqual(configuration.resolvedPixelFormatOverride, kCVPixelFormatType_32BGRA)
     }
 
     func testSkyLightConfigurationPanelNativeDefaultsToBaselineQ2() {
         let configuration = MDKSkyLightDisplayStreamConfiguration.panelNative()
 
-        XCTAssertEqual(configuration.tuning.identifier, "baseline-q2")
-        XCTAssertEqual(configuration.resolvedMinimumFrameTime, 0)
+        XCTAssertEqual(configuration.queueDepth, 2)
+        XCTAssertFalse(configuration.showCursor)
         XCTAssertEqual(configuration.resolvedQueueDepth, 2)
+        XCTAssertFalse(configuration.resolvedShowCursor)
     }
 
     func testProcessingBenchmarkDefaultsEncoderHintTo120EvenFor240HzRawRequests() {

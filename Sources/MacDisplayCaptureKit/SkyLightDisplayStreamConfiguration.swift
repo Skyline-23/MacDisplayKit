@@ -1,41 +1,46 @@
 import Foundation
 
 public struct MDKSkyLightDisplayStreamConfiguration: Codable, Equatable, Sendable {
-    public let tuning: MDKSkyLightDisplayStreamTuningCandidate
+    public let queueDepth: Int
+    public let showCursor: Bool
     public let outputWidth: Int?
     public let outputHeight: Int?
     public let pixelFormat: UInt32?
 
     public init(
-        tuning: MDKSkyLightDisplayStreamTuningCandidate,
+        queueDepth: Int = 2,
+        showCursor: Bool = false,
         outputWidth: Int? = nil,
         outputHeight: Int? = nil,
         pixelFormat: UInt32? = nil
     ) {
-        self.tuning = tuning
+        self.queueDepth = queueDepth
+        self.showCursor = showCursor
         self.outputWidth = outputWidth
         self.outputHeight = outputHeight
         self.pixelFormat = pixelFormat
     }
 
     public static func panelNative(
-        tuning: MDKSkyLightDisplayStreamTuningCandidate = MDKSkyLightDisplayStreamTuningMatrix.baselineQueue2Candidate,
+        queueDepth: Int = 2,
+        showCursor: Bool = false,
         pixelFormat: UInt32? = nil
     ) -> Self {
         Self(
-            tuning: tuning,
+            queueDepth: queueDepth,
+            showCursor: showCursor,
             outputWidth: nil,
             outputHeight: nil,
             pixelFormat: pixelFormat
         )
     }
 
-    public var resolvedMinimumFrameTime: Double {
-        max(tuning.minimumFrameTime, 0)
+    public var resolvedQueueDepth: Int {
+        max(queueDepth, 1)
     }
 
-    public var resolvedQueueDepth: Int {
-        max(tuning.queueDepth, 1)
+    public var resolvedShowCursor: Bool {
+        showCursor
     }
 
     public var resolvedOutputWidth: Int {

@@ -372,9 +372,9 @@ public enum MDKSkyLightDisplayStreamProcessingBenchmark {
         try run(
             displayID: displayID,
             sampleDuration: sampleDuration,
-            minimumFrameTime: configuration.resolvedMinimumFrameTime,
+            minimumFrameTime: 0,
             queueDepth: configuration.resolvedQueueDepth,
-            showCursor: configuration.tuning.showCursor,
+            showCursor: configuration.resolvedShowCursor,
             outputWidth: configuration.resolvedOutputWidth == 0 ? nil : configuration.resolvedOutputWidth,
             outputHeight: configuration.resolvedOutputHeight == 0 ? nil : configuration.resolvedOutputHeight,
             pixelFormat: configuration.resolvedPixelFormatOverride == 0 ? nil : configuration.resolvedPixelFormatOverride,

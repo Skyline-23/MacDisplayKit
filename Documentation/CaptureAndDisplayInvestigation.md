@@ -1775,3 +1775,10 @@ Interpretation:
     - multi-candidate auto-tuning remains useful as a diagnostic tool, but a long sweep can perturb host load enough that the fixed `q2` default is safer for the first production integration
     - encoder frame-rate hints must stay decoupled from raw `minimumFrameTime`; on this host, `q2 + minFrameTime=1/240` dropped both `HEVC` and `ProRes Proxy` to roughly `62 fps` before the fix, and even after restoring the encoder hint to `120` the same raw request still only reached about `78 fps`
     - the practical production default is therefore `baseline-q2` with `minimumFrameTime=0`, while `request-120-like` remains an experimental raw-stream diagnostic, not the framework's first-choice production preset
+- 2026-03-21 the production-facing framework surface no longer exposes the raw `minimumFrameTime` hint
+  - implementation changes:
+    - `MDKSkyLightDisplayStreamConfiguration` now exposes `queueDepth`, `showCursor`, output sizing, and pixel-format overrides only
+    - the `panelNative()` convenience now maps directly to the stable `q2` default without carrying a raw tuning candidate object
+    - `HostCommandLine` no longer accepts public raw `minimumFrameTime` or `request-120-like` overrides on the main raw benchmark command; benchmark internals still retain them for tuning-matrix diagnostics
+  - current interpretation:
+    - Apollo-facing configuration should treat raw `minimumFrameTime` as a private benchmark knob, not a production policy input
