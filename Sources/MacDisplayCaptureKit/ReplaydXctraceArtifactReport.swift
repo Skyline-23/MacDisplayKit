@@ -82,6 +82,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
     public let hotSymbolSyscallSummaries: [MDKReplaydXctraceHotSymbolSyscallSummary]
     public let hotSymbolSyscallCadenceSummaries: [MDKReplaydXctraceHotSymbolSyscallCadenceSummary]
     public let replaydRunningThreadCadenceSummaries: [MDKReplaydXctraceThreadCadenceSummary]
+    public let replaydRunnableSourceSummaries: [MDKReplaydXctraceRunnableSourceSummary]
     public let excerpt: [String]
 
     public init(
@@ -95,6 +96,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
         hotSymbolSyscallSummaries: [MDKReplaydXctraceHotSymbolSyscallSummary],
         hotSymbolSyscallCadenceSummaries: [MDKReplaydXctraceHotSymbolSyscallCadenceSummary],
         replaydRunningThreadCadenceSummaries: [MDKReplaydXctraceThreadCadenceSummary],
+        replaydRunnableSourceSummaries: [MDKReplaydXctraceRunnableSourceSummary],
         excerpt: [String]
     ) {
         self.schema = schema
@@ -107,6 +109,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
         self.hotSymbolSyscallSummaries = hotSymbolSyscallSummaries
         self.hotSymbolSyscallCadenceSummaries = hotSymbolSyscallCadenceSummaries
         self.replaydRunningThreadCadenceSummaries = replaydRunningThreadCadenceSummaries
+        self.replaydRunnableSourceSummaries = replaydRunnableSourceSummaries
         self.excerpt = excerpt
     }
 }
@@ -211,6 +214,25 @@ public struct MDKReplaydXctraceThreadCadenceSummary: Codable, Equatable, Sendabl
     }
 }
 
+public struct MDKReplaydXctraceRunnableSourceSummary: Codable, Equatable, Sendable {
+    public let threadID: String
+    public let threadName: String
+    public let totalRunnableEvents: Int
+    public let runnableSourceHistogram: [String: Int]
+
+    public init(
+        threadID: String,
+        threadName: String,
+        totalRunnableEvents: Int,
+        runnableSourceHistogram: [String: Int]
+    ) {
+        self.threadID = threadID
+        self.threadName = threadName
+        self.totalRunnableEvents = totalRunnableEvents
+        self.runnableSourceHistogram = runnableSourceHistogram
+    }
+}
+
 public struct MDKReplaydUnifiedLogArtifact: Codable, Equatable, Sendable {
     public let outputPath: String
     public let byteCount: Int
@@ -311,6 +333,7 @@ public enum MDKReplaydXctraceArtifactParser {
         let hotSymbolSyscallSummaries = summarizeHotSymbolSyscalls(in: exportText)
         let hotSymbolSyscallCadenceSummaries = summarizeHotSymbolSyscallCadences(in: exportText)
         let replaydRunningThreadCadenceSummaries = summarizeReplaydRunningThreadCadences(in: exportText)
+        let replaydRunnableSourceSummaries = summarizeReplaydRunnableSources(in: exportText)
 
         return MDKReplaydXctraceTableArtifact(
             schema: schema,
@@ -323,6 +346,7 @@ public enum MDKReplaydXctraceArtifactParser {
             hotSymbolSyscallSummaries: hotSymbolSyscallSummaries,
             hotSymbolSyscallCadenceSummaries: hotSymbolSyscallCadenceSummaries,
             replaydRunningThreadCadenceSummaries: replaydRunningThreadCadenceSummaries,
+            replaydRunnableSourceSummaries: replaydRunnableSourceSummaries,
             excerpt: excerpt
         )
     }
@@ -839,6 +863,123 @@ public enum MDKReplaydXctraceArtifactParser {
             }
     }
 
+    private static func summarizeReplaydRunnableSources(
+        in exportText: String
+    ) -> [MDKReplaydXctraceRunnableSourceSummary] {
+        guard let rowExpression else {
+            return []
+        }
+        let exportRange = NSRange(exportText.startIndex..<exportText.endIndex, in: exportText)
+        let rowMatches = rowExpression.matches(in: exportText, range: exportRange)
+        guard !rowMatches.isEmpty else {
+            return []
+        }
+
+        var processPIDByID: [String: String] = [:]
+        var threadByID: [String: (tid: String, fmt: String)] = [:]
+        var threadStateByID: [String: String] = [:]
+
+        for rowMatch in rowMatches {
+            guard let rowRange = Range(rowMatch.range(at: 1), in: exportText) else {
+                continue
+            }
+            let rowText = String(exportText[rowRange])
+
+            if
+                let processID = firstTagAttributeValue(tag: "process", attribute: "id", in: rowText),
+                let processPID = firstTagInnerText(tag: "pid", in: rowText)
+            {
+                processPIDByID[processID] = processPID
+            }
+            if
+                let threadID = firstTagAttributeValue(tag: "thread", attribute: "id", in: rowText),
+                let threadFormat = firstTagAttributeValue(tag: "thread", attribute: "fmt", in: rowText),
+                let tid = firstTagInnerText(tag: "tid", in: rowText)
+            {
+                threadByID[threadID] = (tid, threadFormat)
+            }
+            if
+                let stateID = firstTagAttributeValue(tag: "thread-state", attribute: "id", in: rowText),
+                let stateFormat = firstTagAttributeValue(tag: "thread-state", attribute: "fmt", in: rowText)
+            {
+                threadStateByID[stateID] = stateFormat
+            }
+        }
+
+        var runnableSourceHistogramByThread: [String: [String: Int]] = [:]
+        var threadNames: [String: String] = [:]
+
+        for rowMatch in rowMatches {
+            guard let rowRange = Range(rowMatch.range(at: 1), in: exportText) else {
+                continue
+            }
+            let rowText = String(exportText[rowRange])
+
+            let resolvedThread: (tid: String, fmt: String)?
+            if let threadRef = firstTagAttributeValue(tag: "thread", attribute: "ref", in: rowText) {
+                resolvedThread = threadByID[threadRef]
+            } else if
+                let threadFormat = firstTagAttributeValue(tag: "thread", attribute: "fmt", in: rowText),
+                let tid = firstTagInnerText(tag: "tid", in: rowText)
+            {
+                resolvedThread = (tid, threadFormat)
+            } else {
+                resolvedThread = nil
+            }
+
+            let processPID: String?
+            if let processRef = firstTagAttributeValue(tag: "process", attribute: "ref", in: rowText) {
+                processPID = processPIDByID[processRef]
+            } else {
+                processPID = firstTagInnerText(tag: "pid", in: rowText)
+            }
+
+            let stateName: String?
+            if let stateRef = firstTagAttributeValue(tag: "thread-state", attribute: "ref", in: rowText) {
+                stateName = threadStateByID[stateRef]
+            } else {
+                stateName = firstTagAttributeValue(tag: "thread-state", attribute: "fmt", in: rowText)
+            }
+
+            guard let resolvedThread, stateName == "Runnable" else {
+                continue
+            }
+            let belongsToReplayd = processPID == "740" || resolvedThread.fmt.contains("(replayd, pid: 740)")
+            guard belongsToReplayd else {
+                continue
+            }
+
+            let runnableSources = allTagAttributeValues(tag: "narrative", attribute: "fmt", in: rowText)
+                .filter { $0.hasPrefix("made runnable by ") }
+            guard !runnableSources.isEmpty else {
+                continue
+            }
+
+            threadNames[resolvedThread.tid] = resolvedThread.fmt
+            for source in runnableSources {
+                runnableSourceHistogramByThread[resolvedThread.tid, default: [:]][source, default: 0] += 1
+            }
+        }
+
+        return runnableSourceHistogramByThread
+            .sorted { lhs, rhs in
+                let lhsCount = lhs.value.values.reduce(0, +)
+                let rhsCount = rhs.value.values.reduce(0, +)
+                if lhsCount == rhsCount {
+                    return lhs.key < rhs.key
+                }
+                return lhsCount > rhsCount
+            }
+            .map { threadID, histogram in
+                MDKReplaydXctraceRunnableSourceSummary(
+                    threadID: threadID,
+                    threadName: threadNames[threadID] ?? "replayd (\(threadID))",
+                    totalRunnableEvents: histogram.values.reduce(0, +),
+                    runnableSourceHistogram: histogram
+                )
+            }
+    }
+
     private static func parseRowTimestamp(
         _ rowText: String,
         using expression: NSRegularExpression
@@ -898,5 +1039,20 @@ public enum MDKReplaydXctraceArtifactParser {
             return nil
         }
         return firstCapturedValue(using: expression, in: source)
+    }
+
+    private static func allTagAttributeValues(
+        tag: String,
+        attribute: String,
+        in source: String
+    ) -> [String] {
+        let pattern = #"<\#(tag)\b[^>]*\b\#(attribute)=\"([^\"]+)\""#
+        guard let expression = try? NSRegularExpression(pattern: pattern) else {
+            return []
+        }
+        let range = NSRange(source.startIndex..<source.endIndex, in: source)
+        return expression.matches(in: source, range: range).compactMap {
+            captureGroup(at: 1, from: $0, in: source)
+        }
     }
 }

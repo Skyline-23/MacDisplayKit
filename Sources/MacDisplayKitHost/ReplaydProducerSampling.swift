@@ -29,6 +29,7 @@ struct MDKReplaydXctraceArtifactReport: Codable, Equatable, Sendable {
     let tocPath: String
     let tocByteCount: Int
     let contextSwitchTable: MDKReplaydXctraceTableArtifact
+    let threadStateTable: MDKReplaydXctraceTableArtifact
     let systemCallTable: MDKReplaydXctraceTableArtifact
     let timeSampleTable: MDKReplaydXctraceTableArtifact
     let unifiedLog: MDKReplaydUnifiedLogArtifact
@@ -140,6 +141,7 @@ private actor MDKReplaydXctraceCoordinator {
         let traceURL = traceDirectoryURL.appendingPathComponent("replayd-system.trace")
         let tocURL = traceDirectoryURL.appendingPathComponent("toc.xml")
         let contextSwitchURL = traceDirectoryURL.appendingPathComponent("context-switch.xml")
+        let threadStateURL = traceDirectoryURL.appendingPathComponent("thread-state.xml")
         let syscallURL = traceDirectoryURL.appendingPathComponent("syscall.xml")
         let timeSampleURL = traceDirectoryURL.appendingPathComponent("time-sample.xml")
         let logURL = traceDirectoryURL.appendingPathComponent("replayd-log.ndjson")
@@ -183,6 +185,16 @@ private actor MDKReplaydXctraceCoordinator {
             arguments: [
                 "xctrace", "export",
                 "--input", traceURL.path,
+                "--xpath", "/trace-toc/run[@number=\"1\"]/data/table[@schema=\"thread-state\"]"
+            ],
+            outputURL: threadStateURL
+        )
+
+        try Self.runProcess(
+            executablePath: "/usr/bin/xcrun",
+            arguments: [
+                "xctrace", "export",
+                "--input", traceURL.path,
                 "--xpath", "/trace-toc/run[@number=\"1\"]/data/table[@schema=\"syscall\"]"
             ],
             outputURL: syscallURL
@@ -215,6 +227,7 @@ private actor MDKReplaydXctraceCoordinator {
 
         let tocText = try String(contentsOf: tocURL, encoding: .utf8)
         let contextSwitchText = try String(contentsOf: contextSwitchURL, encoding: .utf8)
+        let threadStateText = try String(contentsOf: threadStateURL, encoding: .utf8)
         let syscallText = try String(contentsOf: syscallURL, encoding: .utf8)
         let timeSampleText = try String(contentsOf: timeSampleURL, encoding: .utf8)
         let logText = try String(contentsOf: logURL, encoding: .utf8)
@@ -223,6 +236,11 @@ private actor MDKReplaydXctraceCoordinator {
             schema: "context-switch",
             outputPath: contextSwitchURL.path,
             exportText: contextSwitchText
+        )
+        let threadStateTable = MDKReplaydXctraceArtifactParser.summarizeTableArtifact(
+            schema: "thread-state",
+            outputPath: threadStateURL.path,
+            exportText: threadStateText
         )
         let systemCallTable = MDKReplaydXctraceArtifactParser.summarizeTableArtifact(
             schema: "syscall",
@@ -243,15 +261,18 @@ private actor MDKReplaydXctraceCoordinator {
         if !contextSwitchTable.containsRows {
             notes.append("xctrace context-switch export returned schema-only XML on this run.")
         }
+        if !threadStateTable.containsRows {
+            notes.append("xctrace thread-state export returned schema-only XML on this run.")
+        }
         if !systemCallTable.containsRows {
             notes.append("xctrace syscall export returned schema-only XML on this run.")
         }
         if !timeSampleTable.containsRows {
             notes.append("xctrace time-sample export returned schema-only XML on this run.")
         }
-        if contextSwitchTable.containsRows || systemCallTable.containsRows || timeSampleTable.containsRows {
+        if contextSwitchTable.containsRows || threadStateTable.containsRows || systemCallTable.containsRows || timeSampleTable.containsRows {
             notes.append(
-                "xctrace exported replayd rows: context-switch=\(contextSwitchTable.rowCount) syscall=\(systemCallTable.rowCount) time-sample=\(timeSampleTable.rowCount)."
+                "xctrace exported replayd rows: context-switch=\(contextSwitchTable.rowCount) thread-state=\(threadStateTable.rowCount) syscall=\(systemCallTable.rowCount) time-sample=\(timeSampleTable.rowCount)."
             )
         }
         if !contextSwitchTable.replaydRunningThreadCadenceSummaries.isEmpty {
@@ -262,6 +283,50 @@ private actor MDKReplaydXctraceCoordinator {
             notes.append(
                 "replayd context-switch running cadences \(dominantSummary)."
             )
+        }
+        if !threadStateTable.replaydRunnableSourceSummaries.isEmpty {
+            let dominantRunnableSources = threadStateTable.replaydRunnableSourceSummaries.prefix(2).map { summary in
+                let topSources = summary.runnableSourceHistogram
+                    .sorted { lhs, rhs in
+                        if lhs.value == rhs.value {
+                            return lhs.key < rhs.key
+                        }
+                        return lhs.value > rhs.value
+                    }
+                    .prefix(2)
+                    .map { "\($0.value)x \($0.key)" }
+                    .joined(separator: ", ")
+                return "\(summary.threadID)=\(topSources)"
+            }
+            let runnableSummary = dominantRunnableSources.joined(separator: " | ")
+            notes.append("replayd thread-state runnable sources \(runnableSummary).")
+        }
+        if !contextSwitchTable.replaydRunningThreadCadenceSummaries.isEmpty,
+           !threadStateTable.replaydRunnableSourceSummaries.isEmpty {
+            let runnableSourcesByThread = Dictionary(
+                uniqueKeysWithValues: threadStateTable.replaydRunnableSourceSummaries.map { ($0.threadID, $0) }
+            )
+            let dominantWindowServerWakeSummaries = contextSwitchTable.replaydRunningThreadCadenceSummaries
+                .prefix(2)
+                .compactMap { summary -> String? in
+                    guard let runnableSummary = runnableSourcesByThread[summary.threadID] else {
+                        return nil
+                    }
+                    let windowServerWakeCount = runnableSummary.runnableSourceHistogram.reduce(into: 0) { partialResult, entry in
+                        if entry.key.contains("WindowServer, pid: 408") {
+                            partialResult += entry.value
+                        }
+                    }
+                    guard windowServerWakeCount > 0 else {
+                        return nil
+                    }
+                    return "\(summary.threadID)=\(windowServerWakeCount)x WindowServer"
+                }
+            if !dominantWindowServerWakeSummaries.isEmpty {
+                notes.append(
+                    "thread-state shows dominant replayd running threads made runnable by WindowServer \(dominantWindowServerWakeSummaries.joined(separator: \", \"))."
+                )
+            }
         }
         if !systemCallTable.hotSymbolHistogram.isEmpty {
             notes.append(
@@ -337,6 +402,7 @@ private actor MDKReplaydXctraceCoordinator {
                 tocPath: tocURL.path,
                 tocByteCount: tocText.lengthOfBytes(using: .utf8),
                 contextSwitchTable: contextSwitchTable,
+                threadStateTable: threadStateTable,
                 systemCallTable: systemCallTable,
                 timeSampleTable: timeSampleTable,
                 unifiedLog: unifiedLog,

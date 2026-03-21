@@ -948,6 +948,63 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(secondThread.cadenceClassification, "60hz-like")
     }
 
+    func testReplaydXctraceArtifactParserSummarizesReplaydRunnableSourcesFromThreadState() throws {
+        let xml = """
+        <?xml version="1.0"?>
+        <trace-query-result>
+          <node xpath='//trace-toc[1]/run[1]/data[1]/table[12]'>
+            <schema name="thread-state"/>
+            <row>
+              <start-time id="1" fmt="00:00.437.268">437268541</start-time>
+              <thread id="11" fmt="replayd (0x22a025) (replayd, pid: 740)">
+                <tid id="12" fmt="0x22a025">2269221</tid>
+                <process id="13" fmt="replayd (740)"><pid id="14" fmt="740">740</pid></process>
+              </thread>
+              <thread-state id="15" fmt="Runnable">Runnable</thread-state>
+              <narrative id="16" fmt="made runnable by  Main Thread (0x10e8) (WindowServer, pid: 408)  running on  CPU 7 (P Core)"/>
+              <narrative id="17" fmt="Runnable  at priority  37"/>
+            </row>
+            <row>
+              <start-time id="2" fmt="00:00.472.859">472859208</start-time>
+              <thread id="21" fmt="replayd (0x22a165) (replayd, pid: 740)">
+                <tid id="22" fmt="0x22a165">2269541</tid>
+                <process ref="13"/>
+              </thread>
+              <thread-state ref="15"/>
+              <process ref="13"/>
+              <narrative id="23" fmt="made runnable by  replayd (0x22a025) (replayd, pid: 740)  running on  CPU 9 (P Core)"/>
+              <narrative ref="17"/>
+            </row>
+            <row>
+              <start-time id="3" fmt="00:00.489.740">489740333</start-time>
+              <thread id="31" fmt="replayd (0x22a165) (replayd, pid: 740)">
+                <tid id="32" fmt="0x22a165">2269541</tid>
+                <process ref="13"/>
+              </thread>
+              <thread-state ref="15"/>
+              <process ref="13"/>
+              <narrative id="24" fmt="made runnable by  replayd (0x22a025) (replayd, pid: 740)  running on  CPU 0 (E Core)"/>
+              <narrative ref="17"/>
+            </row>
+          </node>
+        </trace-query-result>
+        """
+
+        let summary = MDKReplaydXctraceArtifactParser.summarizeTableArtifact(
+            schema: "thread-state",
+            outputPath: "/tmp/thread-state.xml",
+            exportText: xml
+        )
+
+        XCTAssertEqual(summary.schema, "thread-state")
+        XCTAssertEqual(summary.rowCount, 3)
+        XCTAssertFalse(summary.replaydRunnableSourceSummaries.isEmpty)
+        let flattenedSources = summary.replaydRunnableSourceSummaries.flatMap(\.runnableSourceHistogram.keys)
+        XCTAssertTrue(
+            flattenedSources.contains("made runnable by  Main Thread (0x10e8) (WindowServer, pid: 408)  running on  CPU 7 (P Core)")
+        )
+    }
+
     func testReplaydUnifiedLogArtifactParserFiltersInterestingLines() {
         let logText = """
         {"timestamp":"2026-03-21T16:27:18.000+09:00","eventMessage":"noise"}

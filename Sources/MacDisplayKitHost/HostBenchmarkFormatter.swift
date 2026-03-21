@@ -25,6 +25,16 @@ enum MDKHostBenchmarkFormatter {
             }
         }
         lines.append(
+            "  - \(report.threadStateTable.schema): rows=\(report.threadStateTable.rowCount) bytes=\(report.threadStateTable.byteCount) path=\(report.threadStateTable.outputPath)"
+        )
+        if !report.threadStateTable.replaydRunnableSourceSummaries.isEmpty {
+            for summary in report.threadStateTable.replaydRunnableSourceSummaries.prefix(4) {
+                lines.append(
+                    "    replaydRunnableSources[\(summary.threadID)]: events=\(summary.totalRunnableEvents) sources=\(summary.runnableSourceHistogram)"
+                )
+            }
+        }
+        lines.append(
             "  - \(report.systemCallTable.schema): rows=\(report.systemCallTable.rowCount) bytes=\(report.systemCallTable.byteCount) path=\(report.systemCallTable.outputPath)"
         )
         if !report.systemCallTable.hotSymbolHistogram.isEmpty {

@@ -1270,6 +1270,12 @@ Interpretation:
           - `2269221` with `eventCount=376`, `cadenceClassification=60hz-like`
         - those thread histograms are dominated by `16.5ms ... 18.0ms` intervals rather than by `~8.3ms`
         - smaller replayd threads can still show sub-millisecond or tiny `120hz-like` bursts, but not at the event counts that dominate producer work
+      - after exporting the paired `thread-state` table from the same artifact:
+        - the dominant replayd runnable-source summaries now point back to `Main Thread (0x10e8) (WindowServer, pid: 408)`
+        - the raw XML contains repeated runnable narratives for those same replayd producer threads:
+          - thread `2269541` made runnable by `WindowServer` at `00:00.472.859`, `00:00.524.157`, and `00:01.443.494`
+          - thread `2269221` made runnable by `WindowServer` at `00:00.506.274` and `00:01.973.280`
+        - replayd threads also wake each other, but `WindowServer` is now a first-class upstream runnable source in the dominant producer path
     - replayd unified log emitted repeated producer-side enqueue failures:
       - `_SCRemoteQueue_Enqueue:217 ... err=-19641 opType=3 Error occurred when enqueuing data`
       - the new parser can now summarize those failures directly from the host artifact:
@@ -1300,6 +1306,9 @@ Interpretation:
     - the new `context-switch` parser is much stronger than those sparse syscall samples:
       it observes dominant replayd producer-side running threads directly, and those dominant threads
       still classify as `60hz-like`
+    - the new `thread-state` parser closes the next causality gap:
+      the same dominant replayd threads are being made runnable by the `WindowServer` main thread,
+      so the upstream wake source is now observable instead of inferred
     - the new syscall-filtered view makes that limitation sharper:
       even when the broker logs steady `60hz-like` enqueue failures, `xctrace` may miss `write` wakeups entirely
       and only sample unrelated `roEnqueueSampleBuffer` syscalls in the same window
@@ -1320,6 +1329,9 @@ Interpretation:
     - current strongest reading:
       the `120` ceiling is already lost at or before dominant replayd producer-thread scheduling,
       not only in the public `SCStream` callback path
+    - current next upstream split:
+      if `WindowServer` display-stream work also proves `60hz-like`, the ceiling is upstream of `replayd`
+      if `WindowServer` proves `120-like` while replayd producer threads stay `60hz-like`, the broker queue path remains the choke point
   - this does not yet give cadence, but it creates a repeatable artifact that can be inspected with Instruments
     or mined by parsing the `.trace` bundle directly
 - taken together, the brokered producer side now points much more strongly at
