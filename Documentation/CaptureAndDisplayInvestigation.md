@@ -1386,3 +1386,19 @@ Interpretation:
     - the choke point is no longer “somewhere in public `SCStream`”
     - it is between `WindowServer` display-stream production and the replayd/CMCapture remote-queue producer path,
       most likely in broker queue policy, enqueue failure handling, or sender-side buffering/coalescing
+  - static arm64e disassembly of the sender setup path sharpens that broker-policy reading further:
+    - `0x10007e404` calls `FigRemoteQueueSenderCreate`
+    - `0x10007e44c .. 0x10007e454` immediately follows with:
+      - `ldr x0, [x22, #0x18]`
+      - `mov w1, #0x7d0`
+      - `bl _FigRemoteQueueSenderSetMaximumBufferAge`
+    - that means the sender is configured with a fixed maximum buffer age value of `2000`
+    - the exact unit is not proven from disassembly alone, but the value is not dynamic at this callsite
+  - static arm64e disassembly of the enqueue wrapper clarifies the explicit error split:
+    - `0x10007ed30` calls `FigRemoteOperationSenderResetIfFullAndEnqueueOperation`
+    - `err == -16669` (`-0x411d`) takes the dedicated `"Queue is full!"` branch
+    - `err == -16665` (`-0x4119`) takes the dedicated `"Client terminated the queue"` branch
+    - both branches are separately logged before the wrapper returns
+    - the observed runtime log error `-19641` (`0xffffb347`) is neither of those special-case branches
+    - so the repeated `_SCRemoteQueue_Enqueue ... err=-19641 opType=3` lines are currently landing in the
+      generic `"Error occurred when enqueuing data"` path rather than the explicit queue-full/client-terminated paths
