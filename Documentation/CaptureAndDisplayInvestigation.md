@@ -86,6 +86,7 @@ The host now supports two `SCStream` investigation entry points:
   - `MacDisplayKitHost --experimental-screencapturekit-passive-handshake-display <displayID> --sample-duration <seconds> --json`
   - `MacDisplayKitHost --experimental-screencapturekit-replayd-producer-trace-display <displayID> --sample-duration <seconds> [--with-metal-stimulus] --json`
   - `MacDisplayKitHost --experimental-screencapturekit-replayd-producer-compare-display <displayID> --sample-duration <seconds> --json`
+  - `MacDisplayKitHost --experimental-screencapturekit-replayd-producer-series-display <displayID> --sample-duration <seconds> --series-count <count> [--with-metal-stimulus] --json`
   - `MacDisplayKitHost --experimental-screencapturekit-proxy-handshake-display <displayID> --sample-duration <seconds> --json`
 - output includes:
   - sample buffer arrival delta histogram
@@ -382,6 +383,9 @@ Replayd producer trace specifics:
   - persistent indicators
   - baseline-only indicators
   - stimulus-only indicators
+- the series command runs the same producer trace repeatedly and aggregates indicator match counts by window
+- this is still a sampling-density proxy, not a true `Hz` measurement, but it makes it possible to see
+  whether producer-side evidence gets denser or more stable under motion
 - latest verified compare run on display `auto`, `2s` sample:
   - persistent indicators:
     - `skylight-display-stream`
@@ -1185,6 +1189,7 @@ Interpretation:
   - `MacDisplayKitHost --experimental-screencapturekit-replayd-producer-trace-display <displayID> --sample-duration <seconds> --json`
   - `MacDisplayKitHost --experimental-screencapturekit-replayd-producer-trace-display <displayID> --sample-duration <seconds> --with-metal-stimulus --json`
   - `MacDisplayKitHost --experimental-screencapturekit-replayd-producer-compare-display <displayID> --sample-duration <seconds> --json`
+  - `MacDisplayKitHost --experimental-screencapturekit-replayd-producer-series-display <displayID> --sample-duration <seconds> --series-count <count> [--with-metal-stimulus] --json`
 - latest verified baseline run from that command captured:
   - `com.apple.coremedia.remotequeue_sender.readqueue`
   - `rqSenderHandleDequeue`
@@ -1203,6 +1208,20 @@ Interpretation:
   - `slcontentstream`: baseline `1`, stimulus `3`
   - persistent indicators: `skylight-display-stream`, `slcontentstream`
   - baseline-only indicator: `producer-read-queue`
+- the latest `--experimental-screencapturekit-replayd-producer-series-display auto --sample-duration 2 --series-count 2`
+  runs showed:
+  - baseline:
+    - `producer-read-queue`: `[2, 0]`
+    - `skylight-display-stream`: `[3, 2]`
+    - `slcontentstream`: `[2, 1]`
+  - with `--with-metal-stimulus`:
+    - `producer-read-queue`: `[2, 8]`
+    - `skylight-display-stream`: `[2, 4]`
+    - `slcontentstream`: `[3, 4]`
+- interpretation:
+  - this still does not prove `120-like` cadence
+  - but it does show a repeatable increase in producer-side sample density under motion,
+    especially on `producer-read-queue`
 - taken together, the brokered producer side now points much more strongly at
   `CMCapture`'s `FigRemoteQueueSender` path than at an ordinary host-side `libdispatch`
   or `NSXPCConnection` helper

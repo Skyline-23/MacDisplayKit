@@ -2,6 +2,23 @@ import Foundation
 import MacDisplayKit
 
 enum MDKHostBenchmarkFormatter {
+    static func formatReplaydProducerSeriesReport(
+        _ report: MDKReplaydProducerTraceSeriesReport
+    ) -> String {
+        var lines: [String] = []
+        lines.append("replayd producer series")
+        lines.append("Stimulus: \(report.useMetalStimulus ? "yes" : "no")")
+        lines.append("Window count: \(report.traces.count)")
+        lines.append("Indicator density summary:")
+        for summary in report.summary.indicatorSummaries {
+            let windowCounts = summary.windowMatchCounts.map(String.init).joined(separator: ", ")
+            lines.append(
+                "  - \(summary.name): windows=[\(windowCounts)] total=\(summary.totalMatchCount) peak=\(summary.peakMatchCount) activeWindows=\(summary.nonzeroWindowCount)"
+            )
+        }
+        return lines.joined(separator: "\n")
+    }
+
     static func formatReplaydProducerComparisonReport(
         _ report: MDKReplaydProducerComparisonReport
     ) -> String {

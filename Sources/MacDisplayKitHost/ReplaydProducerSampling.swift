@@ -15,6 +15,12 @@ struct MDKReplaydProducerComparisonReport: Codable, Equatable, Sendable {
     let comparison: MDKReplaydProducerSampleComparison
 }
 
+struct MDKReplaydProducerTraceSeriesReport: Codable, Equatable, Sendable {
+    let useMetalStimulus: Bool
+    let traces: [MDKReplaydProducerTraceReport]
+    let summary: MDKReplaydProducerSampleSeriesSummary
+}
+
 enum MDKReplaydProducerSamplerError: Error {
     case replaydNotRunning
     case sampleFailed(status: Int32, output: String)
@@ -147,6 +153,42 @@ enum MDKReplaydProducerSampler {
     }
 
     @MainActor
+    static func capturePassiveTraceSeries(
+        controller: MDKHostBenchmarkController,
+        displayID: UInt32,
+        sampleDuration: TimeInterval,
+        windowCount: Int,
+        useMetalStimulus: Bool
+    ) async throws -> MDKReplaydProducerTraceSeriesReport {
+        let replaydPID = try currentReplaydPID()
+        let coordinator = MDKReplaydProducerSampleCoordinator()
+        let stimulus = useMetalStimulus ? MDKHostMetalStimulus(displayID: displayID) : nil
+        stimulus?.start()
+        defer { stimulus?.stop() }
+
+        var traces: [MDKReplaydProducerTraceReport] = []
+        traces.reserveCapacity(windowCount)
+        for _ in 0..<windowCount {
+            let trace = try await collectPassiveTrace(
+                controller: controller,
+                displayID: displayID,
+                sampleDuration: sampleDuration,
+                replaydPID: replaydPID,
+                coordinator: coordinator
+            )
+            traces.append(trace)
+        }
+
+        return MDKReplaydProducerTraceSeriesReport(
+            useMetalStimulus: useMetalStimulus,
+            traces: traces,
+            summary: MDKReplaydProducerSampleSeriesAnalyzer.summarize(
+                reports: traces.map(\.replaydSample)
+            )
+        )
+    }
+
+    @MainActor
     private static func performPassiveTraceCapture(
         controller: MDKHostBenchmarkController,
         displayID: UInt32,
@@ -158,6 +200,24 @@ enum MDKReplaydProducerSampler {
         let stimulus = useMetalStimulus ? MDKHostMetalStimulus(displayID: displayID) : nil
         stimulus?.start()
         defer { stimulus?.stop() }
+
+        return try await collectPassiveTrace(
+            controller: controller,
+            displayID: displayID,
+            sampleDuration: sampleDuration,
+            replaydPID: replaydPID,
+            coordinator: coordinator
+        )
+    }
+
+    @MainActor
+    private static func collectPassiveTrace(
+        controller: MDKHostBenchmarkController,
+        displayID: UInt32,
+        sampleDuration: TimeInterval,
+        replaydPID: Int32,
+        coordinator: MDKReplaydProducerSampleCoordinator
+    ) async throws -> MDKReplaydProducerTraceReport {
 
         async let sampleExecution = coordinator.capture(
             replaydPID: replaydPID,

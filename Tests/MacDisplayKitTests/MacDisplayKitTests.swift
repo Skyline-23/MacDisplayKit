@@ -745,4 +745,53 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(comparison.indicatorComparisons[0].baselineMatchCount, 3)
         XCTAssertEqual(comparison.indicatorComparisons[0].stimulusMatchCount, 0)
     }
+
+    func testReplaydProducerSampleSeriesAnalyzerSummarizesWindowCounts() {
+        let reports = [
+            MDKReplaydProducerSampleReport(
+                replaydPID: 740,
+                sampleDuration: 1.0,
+                sampleIntervalMilliseconds: 1,
+                totalLineCount: 3,
+                observedProducerReadQueue: true,
+                observedRQSenderHandleDequeue: true,
+                observedFigRemoteQueueSenderSetup: false,
+                observedRPClientProxyCaptureHandler: false,
+                observedRPClientProxyStartRemoteQueue: false,
+                observedSkyLightDisplayStreamFrameAvailable: true,
+                observedSLContentStream: true,
+                indicators: [
+                    MDKReplaydProducerSampleIndicator(name: "producer-read-queue", pattern: "rq", matchCount: 2, matchedLines: ["rqSenderHandleDequeue"]),
+                    MDKReplaydProducerSampleIndicator(name: "skylight-display-stream", pattern: "CGY", matchCount: 1, matchedLines: ["CGYDisplayStreamNotification_server"])
+                ]
+            ),
+            MDKReplaydProducerSampleReport(
+                replaydPID: 740,
+                sampleDuration: 1.0,
+                sampleIntervalMilliseconds: 1,
+                totalLineCount: 2,
+                observedProducerReadQueue: false,
+                observedRQSenderHandleDequeue: false,
+                observedFigRemoteQueueSenderSetup: false,
+                observedRPClientProxyCaptureHandler: false,
+                observedRPClientProxyStartRemoteQueue: false,
+                observedSkyLightDisplayStreamFrameAvailable: true,
+                observedSLContentStream: true,
+                indicators: [
+                    MDKReplaydProducerSampleIndicator(name: "producer-read-queue", pattern: "rq", matchCount: 0, matchedLines: []),
+                    MDKReplaydProducerSampleIndicator(name: "skylight-display-stream", pattern: "CGY", matchCount: 3, matchedLines: ["CGYDisplayStreamNotification_server"])
+                ]
+            )
+        ]
+
+        let summary = MDKReplaydProducerSampleSeriesAnalyzer.summarize(reports: reports)
+
+        XCTAssertEqual(summary.windowCount, 2)
+        XCTAssertEqual(summary.indicatorSummaries.count, 2)
+        XCTAssertEqual(summary.indicatorSummaries[0].name, "producer-read-queue")
+        XCTAssertEqual(summary.indicatorSummaries[0].windowMatchCounts, [2, 0])
+        XCTAssertEqual(summary.indicatorSummaries[0].totalMatchCount, 2)
+        XCTAssertEqual(summary.indicatorSummaries[0].peakMatchCount, 2)
+        XCTAssertEqual(summary.indicatorSummaries[0].nonzeroWindowCount, 1)
+    }
 }

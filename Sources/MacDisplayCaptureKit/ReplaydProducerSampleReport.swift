@@ -103,6 +103,41 @@ public struct MDKReplaydProducerSampleComparison: Codable, Equatable, Sendable {
     }
 }
 
+public struct MDKReplaydProducerIndicatorSeriesSummary: Codable, Equatable, Sendable {
+    public let name: String
+    public let windowMatchCounts: [Int]
+    public let totalMatchCount: Int
+    public let peakMatchCount: Int
+    public let nonzeroWindowCount: Int
+
+    public init(
+        name: String,
+        windowMatchCounts: [Int],
+        totalMatchCount: Int,
+        peakMatchCount: Int,
+        nonzeroWindowCount: Int
+    ) {
+        self.name = name
+        self.windowMatchCounts = windowMatchCounts
+        self.totalMatchCount = totalMatchCount
+        self.peakMatchCount = peakMatchCount
+        self.nonzeroWindowCount = nonzeroWindowCount
+    }
+}
+
+public struct MDKReplaydProducerSampleSeriesSummary: Codable, Equatable, Sendable {
+    public let windowCount: Int
+    public let indicatorSummaries: [MDKReplaydProducerIndicatorSeriesSummary]
+
+    public init(
+        windowCount: Int,
+        indicatorSummaries: [MDKReplaydProducerIndicatorSeriesSummary]
+    ) {
+        self.windowCount = windowCount
+        self.indicatorSummaries = indicatorSummaries
+    }
+}
+
 public enum MDKReplaydProducerSampleParser {
     private struct Pattern {
         let name: String
@@ -252,6 +287,36 @@ public enum MDKReplaydProducerSampleComparator {
             baselineOnlyIndicatorNames: baselineOnly,
             stimulusOnlyIndicatorNames: stimulusOnly,
             indicatorComparisons: comparisons
+        )
+    }
+}
+
+public enum MDKReplaydProducerSampleSeriesAnalyzer {
+    public static func summarize(
+        reports: [MDKReplaydProducerSampleReport]
+    ) -> MDKReplaydProducerSampleSeriesSummary {
+        var orderedNames: [String] = []
+        var seenNames = Set<String>()
+        for name in reports.flatMap({ $0.indicators.map(\.name) }) where seenNames.insert(name).inserted {
+            orderedNames.append(name)
+        }
+
+        let summaries = orderedNames.map { name in
+            let windowCounts = reports.map { report in
+                report.indicators.first(where: { $0.name == name })?.matchCount ?? 0
+            }
+            return MDKReplaydProducerIndicatorSeriesSummary(
+                name: name,
+                windowMatchCounts: windowCounts,
+                totalMatchCount: windowCounts.reduce(0, +),
+                peakMatchCount: windowCounts.max() ?? 0,
+                nonzeroWindowCount: windowCounts.filter { $0 > 0 }.count
+            )
+        }
+
+        return MDKReplaydProducerSampleSeriesSummary(
+            windowCount: reports.count,
+            indicatorSummaries: summaries
         )
     }
 }

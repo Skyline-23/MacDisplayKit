@@ -11,6 +11,7 @@ private enum MDKHostCLICommand {
     case screenCaptureKitPassiveHandshakeTrace(displayID: UInt32?, sampleDuration: TimeInterval, json: Bool, useMetalStimulus: Bool)
     case screenCaptureKitReplaydProducerTrace(displayID: UInt32?, sampleDuration: TimeInterval, json: Bool, useMetalStimulus: Bool)
     case screenCaptureKitReplaydProducerCompare(displayID: UInt32?, sampleDuration: TimeInterval, json: Bool)
+    case screenCaptureKitReplaydProducerSeries(displayID: UInt32?, sampleDuration: TimeInterval, windowCount: Int, json: Bool, useMetalStimulus: Bool)
     case screenCaptureKitTimingTrace(displayID: UInt32?, sampleDuration: TimeInterval, json: Bool, useMetalStimulus: Bool)
     case privateCapturePlan(json: Bool)
     case privateCaptureProbe(displayID: UInt32?, requestExtendedRange: Bool, json: Bool)
@@ -165,6 +166,31 @@ enum MDKHostCommandLine {
                 return 0
             } catch {
                 fputs("Failed to compare replayd producer traces: \(error)\n", stderr)
+                return 1
+            }
+        case .screenCaptureKitReplaydProducerSeries(let displayID, let sampleDuration, let windowCount, let json, let useMetalStimulus):
+            do {
+                let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
+                let report = try await MDKReplaydProducerSampler.capturePassiveTraceSeries(
+                    controller: controller,
+                    displayID: resolvedDisplayID,
+                    sampleDuration: sampleDuration,
+                    windowCount: windowCount,
+                    useMetalStimulus: useMetalStimulus
+                )
+                if json {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    let data = try encoder.encode(report)
+                    if let text = String(data: data, encoding: .utf8) {
+                        print(text)
+                    }
+                } else {
+                    print(MDKHostBenchmarkFormatter.formatReplaydProducerSeriesReport(report))
+                }
+                return 0
+            } catch {
+                fputs("Failed to capture replayd producer trace series: \(error)\n", stderr)
                 return 1
             }
         case .screenCaptureKitTimingTrace(let displayID, let sampleDuration, let json, let useMetalStimulus):
@@ -467,6 +493,19 @@ enum MDKHostCommandLine {
         }
 
         if let displayID = parseOptionalDisplayID(
+            flag: "--experimental-screencapturekit-replayd-producer-series-display",
+            tokens: tokens
+        ) {
+            return .screenCaptureKitReplaydProducerSeries(
+                displayID: displayID,
+                sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
+                windowCount: parseSeriesCount(tokens: tokens) ?? 3,
+                json: tokens.contains("--json"),
+                useMetalStimulus: tokens.contains("--with-metal-stimulus")
+            )
+        }
+
+        if let displayID = parseOptionalDisplayID(
             flag: "--experimental-screencapturekit-timing-display",
             tokens: tokens
         ) {
@@ -606,6 +645,17 @@ enum MDKHostCommandLine {
         }
 
         return duration
+    }
+
+    private static func parseSeriesCount(tokens: [String]) -> Int? {
+        guard let index = tokens.firstIndex(of: "--series-count"),
+              tokens.indices.contains(index + 1),
+              let count = Int(tokens[index + 1]),
+              count > 0 else {
+            return nil
+        }
+
+        return count
     }
 
     private static func parseOptionalDisplayID(flag: String, tokens: [String]) -> UInt32?? {
