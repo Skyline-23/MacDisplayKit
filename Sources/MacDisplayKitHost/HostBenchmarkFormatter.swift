@@ -32,6 +32,15 @@ enum MDKHostBenchmarkFormatter {
             lines.append("  errors: \(enqueueFailures.errorHistogram)")
             lines.append("  opTypes: \(enqueueFailures.operationHistogram)")
             lines.append("  remoteQueues: \(enqueueFailures.remoteQueueHistogram)")
+            if !enqueueFailures.threadHistogram.isEmpty {
+                lines.append("  threads: \(enqueueFailures.threadHistogram)")
+            }
+            if !enqueueFailures.senderProgramCounterHistogram.isEmpty {
+                lines.append("  senderPCs: \(enqueueFailures.senderProgramCounterHistogram)")
+            }
+            if !enqueueFailures.imageOffsetHistogram.isEmpty {
+                lines.append("  imageOffsets: \(enqueueFailures.imageOffsetHistogram)")
+            }
         }
         if !report.unifiedLog.matchedLines.isEmpty {
             lines.append("Unified log matches:")

@@ -27,6 +27,9 @@ public struct MDKReplaydQueueEnqueueFailureSummary: Codable, Equatable, Sendable
     public let remoteQueueHistogram: [String: Int]
     public let errorHistogram: [String: Int]
     public let operationHistogram: [String: Int]
+    public let threadHistogram: [String: Int]
+    public let senderProgramCounterHistogram: [String: Int]
+    public let imageOffsetHistogram: [String: Int]
     public let minIntervalMilliseconds: Double?
     public let maxIntervalMilliseconds: Double?
     public let intervalHistogram: [String: Int]
@@ -38,6 +41,9 @@ public struct MDKReplaydQueueEnqueueFailureSummary: Codable, Equatable, Sendable
         remoteQueueHistogram: [String: Int],
         errorHistogram: [String: Int],
         operationHistogram: [String: Int],
+        threadHistogram: [String: Int],
+        senderProgramCounterHistogram: [String: Int],
+        imageOffsetHistogram: [String: Int],
         minIntervalMilliseconds: Double?,
         maxIntervalMilliseconds: Double?,
         intervalHistogram: [String: Int],
@@ -48,6 +54,9 @@ public struct MDKReplaydQueueEnqueueFailureSummary: Codable, Equatable, Sendable
         self.remoteQueueHistogram = remoteQueueHistogram
         self.errorHistogram = errorHistogram
         self.operationHistogram = operationHistogram
+        self.threadHistogram = threadHistogram
+        self.senderProgramCounterHistogram = senderProgramCounterHistogram
+        self.imageOffsetHistogram = imageOffsetHistogram
         self.minIntervalMilliseconds = minIntervalMilliseconds
         self.maxIntervalMilliseconds = maxIntervalMilliseconds
         self.intervalHistogram = intervalHistogram
@@ -121,6 +130,15 @@ public enum MDKReplaydXctraceArtifactParser {
     private static let timestampExpression = try? NSRegularExpression(
         pattern: #""timestamp":"([^"]+)""#
     )
+    private static let threadIDExpression = try? NSRegularExpression(
+        pattern: #""threadID":(\d+)"#
+    )
+    private static let senderProgramCounterExpression = try? NSRegularExpression(
+        pattern: #""senderProgramCounter":(\d+)"#
+    )
+    private static let imageOffsetExpression = try? NSRegularExpression(
+        pattern: #""imageOffset":(\d+)"#
+    )
 
     public static func summarizeTableArtifact(
         schema: String,
@@ -179,6 +197,9 @@ public enum MDKReplaydXctraceArtifactParser {
         var remoteQueueHistogram: [String: Int] = [:]
         var errorHistogram: [String: Int] = [:]
         var operationHistogram: [String: Int] = [:]
+        var threadHistogram: [String: Int] = [:]
+        var senderProgramCounterHistogram: [String: Int] = [:]
+        var imageOffsetHistogram: [String: Int] = [:]
         var intervals: [Double] = []
 
         for event in events {
@@ -186,6 +207,15 @@ public enum MDKReplaydXctraceArtifactParser {
             remoteQueueHistogram[remoteQueueKey, default: 0] += 1
             errorHistogram[String(event.errorCode), default: 0] += 1
             operationHistogram[String(event.operationType), default: 0] += 1
+            if let threadID = parseMetadataValue(using: threadIDExpression, from: event.eventMessage) {
+                threadHistogram[threadID, default: 0] += 1
+            }
+            if let senderProgramCounter = parseMetadataValue(using: senderProgramCounterExpression, from: event.eventMessage) {
+                senderProgramCounterHistogram[senderProgramCounter, default: 0] += 1
+            }
+            if let imageOffset = parseMetadataValue(using: imageOffsetExpression, from: event.eventMessage) {
+                imageOffsetHistogram[imageOffset, default: 0] += 1
+            }
         }
 
         for pair in zip(events, events.dropFirst()) {
@@ -206,6 +236,9 @@ public enum MDKReplaydXctraceArtifactParser {
             remoteQueueHistogram: remoteQueueHistogram,
             errorHistogram: errorHistogram,
             operationHistogram: operationHistogram,
+            threadHistogram: threadHistogram,
+            senderProgramCounterHistogram: senderProgramCounterHistogram,
+            imageOffsetHistogram: imageOffsetHistogram,
             minIntervalMilliseconds: intervals.min(),
             maxIntervalMilliseconds: intervals.max(),
             intervalHistogram: intervalHistogram,
@@ -270,6 +303,22 @@ public enum MDKReplaydXctraceArtifactParser {
             return nil
         }
         return logTimestampFormatter.date(from: timestamp)
+    }
+
+    private static func parseMetadataValue(
+        using expression: NSRegularExpression?,
+        from line: String
+    ) -> String? {
+        guard
+            let expression,
+            let match = expression.firstMatch(
+                in: line,
+                range: NSRange(line.startIndex..., in: line)
+            )
+        else {
+            return nil
+        }
+        return captureGroup(at: 1, from: match, in: line)
     }
 
     private static func histogram(for values: [Double]) -> [String: Int] {

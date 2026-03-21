@@ -150,6 +150,22 @@ public enum MDKReplaydProducerSampleParser {
             expression: #"rqSenderHandleDequeue|com\.apple\.coremedia\.remotequeue_sender\.readqueue"#
         ),
         Pattern(
+            name: "sc-remote-queue-enqueue",
+            expression: #"_SCRemoteQueue_Enqueue(_block_invoke)?|SCRemoteQueue_EnqueueSampleBuffer"#
+        ),
+        Pattern(
+            name: "fig-remote-queue-sender-enqueue",
+            expression: #"_FigRemoteQueueSenderEnqueue(Sequence)?|FigRemoteQueueSenderEnqueue(Sequence)?"#
+        ),
+        Pattern(
+            name: "fig-remote-queue-sender-reset",
+            expression: #"_FigRemoteQueueSenderReset(IfFullAndEnqueue(Sequence)?)?|FigRemoteQueueSenderReset(IfFullAndEnqueue(Sequence)?)?"#
+        ),
+        Pattern(
+            name: "fig-remote-queue-sender-max-buffer-age",
+            expression: #"_FigRemoteQueueSenderSetMaximumBufferAge|FigRemoteQueueSenderSetMaximumBufferAge"#
+        ),
+        Pattern(
             name: "fig-remote-queue-sender-setup",
             expression: #"FigRemoteQueueSender(Create|CreateXPCObject|SetMaximumBufferAge)|SCRemoteQueue_(CreateSenderQueue|StartSenderQueue|EnqueueSampleBuffer|_Enqueue)"#
         ),

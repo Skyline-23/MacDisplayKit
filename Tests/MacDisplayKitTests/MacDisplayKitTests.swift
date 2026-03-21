@@ -639,6 +639,9 @@ final class MacDisplayKitTests: XCTestCase {
         let sampleText = """
         1 Thread_1838321   DispatchQueue_14903: com.apple.coremedia.remotequeue_sender.readqueue  (serial)
           1 rqSenderHandleDequeue  (in CMCapture) + 64  [0x1a71102c0]
+        _SCRemoteQueue_Enqueue
+        _FigRemoteQueueSenderEnqueue
+        _FigRemoteQueueSenderResetIfFullAndEnqueue
         _FigRemoteQueueSenderCreate
         _FigRemoteQueueSenderCreateXPCObject
         _FigRemoteQueueSenderSetMaximumBufferAge
@@ -665,6 +668,10 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertTrue(report.observedSkyLightDisplayStreamFrameAvailable)
         XCTAssertTrue(report.observedSLContentStream)
         XCTAssertFalse(report.indicators.isEmpty)
+        XCTAssertEqual(report.indicators.first(where: { $0.name == "sc-remote-queue-enqueue" })?.matchCount, 1)
+        XCTAssertEqual(report.indicators.first(where: { $0.name == "fig-remote-queue-sender-enqueue" })?.matchCount, 1)
+        XCTAssertEqual(report.indicators.first(where: { $0.name == "fig-remote-queue-sender-reset" })?.matchCount, 1)
+        XCTAssertEqual(report.indicators.first(where: { $0.name == "fig-remote-queue-sender-max-buffer-age" })?.matchCount, 1)
     }
 
     func testReplaydProducerSampleReportRoundTripsThroughJSON() throws {
@@ -840,9 +847,9 @@ final class MacDisplayKitTests: XCTestCase {
 
     func testReplaydUnifiedLogArtifactParserSummarizesEnqueueFailures() throws {
         let logText = """
-        {"timestamp":"2026-03-21 16:33:24.595233+0900","eventMessage":" [ERROR] _SCRemoteQueue_Enqueue:217 remoteQueue=0xa542ef6c0 err=-19641 opType=3 Error occurred when enqueuing data"}
-        {"timestamp":"2026-03-21 16:33:24.612081+0900","eventMessage":" [ERROR] _SCRemoteQueue_Enqueue:217 remoteQueue=0xa542ef6c0 err=-19641 opType=3 Error occurred when enqueuing data"}
-        {"timestamp":"2026-03-21 16:33:24.632011+0900","eventMessage":" [ERROR] _SCRemoteQueue_Enqueue:217 remoteQueue=0xa542ef6c0 err=-19641 opType=3 Error occurred when enqueuing data"}
+        {"threadID":2068394,"senderProgramCounter":766532,"backtrace":{"frames":[{"imageOffset":766532}]},"timestamp":"2026-03-21 16:33:24.595233+0900","eventMessage":" [ERROR] _SCRemoteQueue_Enqueue:217 remoteQueue=0xa542ef6c0 err=-19641 opType=3 Error occurred when enqueuing data"}
+        {"threadID":2069384,"senderProgramCounter":766532,"backtrace":{"frames":[{"imageOffset":766532}]},"timestamp":"2026-03-21 16:33:24.612081+0900","eventMessage":" [ERROR] _SCRemoteQueue_Enqueue:217 remoteQueue=0xa542ef6c0 err=-19641 opType=3 Error occurred when enqueuing data"}
+        {"threadID":2068394,"senderProgramCounter":766532,"backtrace":{"frames":[{"imageOffset":766532}]},"timestamp":"2026-03-21 16:33:24.632011+0900","eventMessage":" [ERROR] _SCRemoteQueue_Enqueue:217 remoteQueue=0xa542ef6c0 err=-19641 opType=3 Error occurred when enqueuing data"}
         """
 
         let summary = MDKReplaydXctraceArtifactParser.summarizeUnifiedLogArtifact(
@@ -855,6 +862,10 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(enqueueSummary.errorHistogram["-19641"], 3)
         XCTAssertEqual(enqueueSummary.operationHistogram["3"], 3)
         XCTAssertEqual(enqueueSummary.remoteQueueHistogram["0xa542ef6c0"], 3)
+        XCTAssertEqual(enqueueSummary.threadHistogram["2068394"], 2)
+        XCTAssertEqual(enqueueSummary.threadHistogram["2069384"], 1)
+        XCTAssertEqual(enqueueSummary.senderProgramCounterHistogram["766532"], 3)
+        XCTAssertEqual(enqueueSummary.imageOffsetHistogram["766532"], 3)
         XCTAssertEqual(enqueueSummary.cadenceClassification, "60hz-like")
         XCTAssertEqual(enqueueSummary.firstEvents.count, 3)
     }

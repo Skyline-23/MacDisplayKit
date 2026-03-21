@@ -1252,10 +1252,13 @@ Interpretation:
     - replayd unified log emitted repeated producer-side enqueue failures:
       - `_SCRemoteQueue_Enqueue:217 ... err=-19641 opType=3 Error occurred when enqueuing data`
       - the new parser can now summarize those failures directly from the host artifact:
-        - `eventCount=272`
-        - `errorHistogram={"-19641":272}`
-        - `operationHistogram={"3":272}`
-        - `remoteQueueHistogram={"0xa543295c0":272}`
+        - `eventCount=278`
+        - `errorHistogram={"-19641":278}`
+        - `operationHistogram={"3":278}`
+        - `remoteQueueHistogram={"0xa543295c0":278}`
+        - `senderProgramCounterHistogram={"766532":278}`
+        - `imageOffsetHistogram={"766532":278}`
+        - `threadHistogram={"2083387":21,"2087226":109,"2087253":148}`
         - interval histogram dominated by `16.0ms` through `20.0ms`
         - `cadenceClassification=60hz-like`
     - replayd health monitor also reported:
@@ -1263,6 +1266,8 @@ Interpretation:
   - interpretation of that paired run:
     - this is the first artifact-backed signal that the brokered producer path is not merely slow;
       it is hitting `_SCRemoteQueue_Enqueue` failures while the host-side passive trace remains `60hz-like`
+    - all observed failures in the latest run came from a single replayd callsite offset (`senderProgramCounter=766532`)
+      rather than from multiple producer sites
     - that makes the next reverse-engineering target sharper:
       the producer-side queue policy / enqueue failure reason inside `replayd` and `CMCapture`,
       especially around `_SCRemoteQueue_Enqueue` and `FigRemoteQueueSender`
