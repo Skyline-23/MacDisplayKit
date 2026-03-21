@@ -3,6 +3,65 @@ import MacDisplayKit
 import MacDisplayCaptureKit
 
 enum MDKHostBenchmarkFormatter {
+    static func formatEncodedCaptureSessionReport(
+        _ report: MDKHostEncodedCaptureSessionReport
+    ) -> String {
+        var lines: [String] = []
+        lines.append("encoded capture session")
+        lines.append("Display: \(report.displayID)")
+        lines.append(String(format: "Sample duration: %.3fs", report.sampleDuration))
+        lines.append("Consumer mode: \(report.consumerMode.rawValue)")
+        lines.append("Codec: \(report.codec.localizedName) (\(report.codec.rawValue))")
+        lines.append("Preprocess: \(report.preprocessStrategy.localizedName) (\(report.preprocessStrategy.rawValue))")
+        lines.append("Queue profile: \(report.queueProfile?.rawValue ?? "manual")")
+        lines.append("Queue depth: \(report.queueDepth)")
+        lines.append(String(format: "Capture pixel format: 0x%08X", report.capturePixelFormat))
+        lines.append("Target frame rate: \(report.targetFrameRate)")
+        lines.append("HDR mode: \(report.hdrMode ?? "none")")
+        lines.append(String(format: "Observed output frame rate: %.2f", report.observedOutputFrameRate))
+        lines.append("Consumed frames: \(report.consumedFrameCount)")
+        lines.append("Key frames: \(report.keyFrameCount)")
+        lines.append("HDR-signaled frames: \(report.hdrSignaledFrameCount)")
+        lines.append("First frame HDR signaled: \(report.firstFrameHDRSignaled.map { $0 ? "yes" : "no" } ?? "unknown")")
+        if let averageLatency = report.averageOutputCallbackLatencyMilliseconds {
+            lines.append(String(format: "Average callback latency: %.3fms", averageLatency))
+        }
+        if let minimumLatency = report.minimumOutputCallbackLatencyMilliseconds,
+           let maximumLatency = report.maximumOutputCallbackLatencyMilliseconds {
+            lines.append(String(format: "Callback latency range: %.3fms..%.3fms", minimumLatency, maximumLatency))
+        }
+        if !report.firstFrameFormatDescriptionSummary.isEmpty {
+            lines.append("First frame format description:")
+            for key in report.firstFrameFormatDescriptionSummary.keys.sorted() {
+                if let value = report.firstFrameFormatDescriptionSummary[key] {
+                    lines.append("  - \(key): \(value)")
+                }
+            }
+        }
+        if let streamErrorDescription = report.streamErrorDescription {
+            lines.append("Stream error: \(streamErrorDescription)")
+        }
+        lines.append("Session statistics:")
+        lines.append("  - emitted=\(report.statistics.emittedFrameCount)")
+        lines.append("  - dropped=\(report.statistics.droppedFrameCount)")
+        lines.append("  - failures=\(report.statistics.processingFailureCount)")
+        lines.append("  - restarts=\(report.statistics.automaticRestartCount)")
+        lines.append("  - running=\(report.statistics.isRunning)")
+        if let stopStatus = report.statistics.lastStopStatus {
+            lines.append("  - stopStatus=\(stopStatus)")
+        }
+        if let lastErrorDescription = report.statistics.lastErrorDescription {
+            lines.append("  - lastError=\(lastErrorDescription)")
+        }
+        if !report.notes.isEmpty {
+            lines.append("Notes:")
+            for note in report.notes {
+                lines.append("  - \(note)")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
     static func formatWindowServerXctraceArtifactReport(
         _ report: MDKWindowServerXctraceArtifactReport
     ) -> String {
@@ -419,7 +478,7 @@ enum MDKHostBenchmarkFormatter {
         lines.append("Display ID: \(result.displayID)")
         lines.append("Start status: \(result.status)")
         lines.append("Stop status: \(result.stopStatus)")
-        lines.append("Processing mode: \(result.processingMode.rawValue)")
+        lines.append("Processing mode: \(result.processingMode.localizedName) (\(result.processingMode.rawValue))")
         if let videoEncoderCodec = result.videoEncoderCodec {
             lines.append("Video encoder codec: \(videoEncoderCodec.rawValue)")
         }
@@ -533,7 +592,7 @@ enum MDKHostBenchmarkFormatter {
         if let bestEvaluation = report.bestEvaluation,
            let bestResult = bestEvaluation.result {
             lines.append(
-                "Best candidate: mode=\(bestEvaluation.candidate.processingMode.rawValue) candidate=\(bestEvaluation.candidate.tuningCandidate.identifier) fps=\(String(format: "%.2f", bestResult.observedFrameRate)) processed-fps=\(String(format: "%.2f", bestResult.processedFrameRate)) ratio=\(String(format: "%.3f", bestResult.processedFrameRatio)) cadence=\(bestResult.cadenceClassification) meets120LikeTarget=\(bestResult.meets120LikeTarget ? "yes" : "no")"
+                "Best candidate: mode=\(bestEvaluation.candidate.processingMode.localizedName) (\(bestEvaluation.candidate.processingMode.rawValue)) candidate=\(bestEvaluation.candidate.tuningCandidate.identifier) fps=\(String(format: "%.2f", bestResult.observedFrameRate)) processed-fps=\(String(format: "%.2f", bestResult.processedFrameRate)) ratio=\(String(format: "%.3f", bestResult.processedFrameRatio)) cadence=\(bestResult.cadenceClassification) meets120LikeTarget=\(bestResult.meets120LikeTarget ? "yes" : "no")"
             )
         } else {
             lines.append("Best candidate: none")
@@ -543,7 +602,7 @@ enum MDKHostBenchmarkFormatter {
         for evaluation in report.evaluations {
             let candidate = evaluation.candidate
             let tuning = candidate.tuningCandidate
-            var line = "  - mode=\(candidate.processingMode.rawValue) candidate=\(candidate.identifier) minFrameTime=\(String(format: "%.6f", tuning.minimumFrameTime)) queueDepth=\(tuning.queueDepth) showCursor=\(tuning.showCursor ? "yes" : "no")"
+            var line = "  - mode=\(candidate.processingMode.localizedName) (\(candidate.processingMode.rawValue)) candidate=\(candidate.identifier) minFrameTime=\(String(format: "%.6f", tuning.minimumFrameTime)) queueDepth=\(tuning.queueDepth) showCursor=\(tuning.showCursor ? "yes" : "no")"
             if let result = evaluation.result {
                 line += " fps=\(String(format: "%.2f", result.observedFrameRate)) processed-fps=\(String(format: "%.2f", result.processedFrameRate)) effective-output-fps=\(String(format: "%.2f", result.effectiveOutputFrameRate)) ratio=\(String(format: "%.3f", result.processedFrameRatio)) cadence=\(result.cadenceClassification) meets120LikeTarget=\(result.meets120LikeTarget ? "yes" : "no") failures=\(result.processingFailureCount)"
                 if !result.processingErrorHistogram.isEmpty {
@@ -677,7 +736,7 @@ enum MDKHostBenchmarkFormatter {
         lines.append("Target: \(suite.plan.target.name)")
         lines.append("Target ID: \(suite.plan.target.identifier)")
         lines.append("Intent: \(suite.plan.intent == .compareBackends ? "compare-backends" : "validate-default-backend")")
-        lines.append("Processing path: \(suite.processingMode.rawValue)")
+        lines.append("Processing path: \(suite.processingMode.localizedName) (\(suite.processingMode.rawValue))")
         lines.append("Screen capture access: \(suite.plan.screenCaptureAccessAuthorized ? "authorized" : "not authorized")")
         lines.append("Warmup duration: \(String(format: "%.2fs", suite.warmupDuration))")
         lines.append("Sample duration: \(String(format: "%.2fs", suite.sampleDuration))")

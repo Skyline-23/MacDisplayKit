@@ -122,7 +122,7 @@ public enum MDKSkyLightDisplayStreamProcessingMatrix {
             "Evaluates raw SkyLight SLDisplayStream processing modes against a fixed tuning candidate set.",
             "Each candidate runs in a fresh child process to avoid in-process stream state contaminating later measurements.",
             "The none processing mode is kept as a raw control and is not eligible for default winner selection.",
-            "ProRes Proxy remains experimental and is excluded from the default ranking set.",
+            "The ProRes Proxy experimental processing mode remains opt-in and is excluded from the default ranking set.",
             "Ranking order: realtime floor >= 60 fps, meets120LikeTarget, fewer >100ms/>33ms/>16ms stalls, cadence classification, effective output frame rate, processed frame ratio, then complete-frame count."
         ]
         if let bestIndex,

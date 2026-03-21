@@ -135,6 +135,22 @@ func MDKMetalPixelFormat(for pixelFormat: UInt32, plane: Int) throws -> MTLPixel
         default:
             throw MDKCaptureSurfacePlaneError.planeOutOfRange(requestedPlane: plane, planeCount: 2)
         }
+    case kCVPixelFormatType_422YpCbCr8BiPlanarVideoRange,
+         kCVPixelFormatType_422YpCbCr8BiPlanarFullRange:
+        switch plane {
+        case 0: return .r8Unorm
+        case 1: return .rg8Unorm
+        default:
+            throw MDKCaptureSurfacePlaneError.planeOutOfRange(requestedPlane: plane, planeCount: 2)
+        }
+    case kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
+         kCVPixelFormatType_422YpCbCr10BiPlanarFullRange:
+        switch plane {
+        case 0: return .r16Unorm
+        case 1: return .rg16Unorm
+        default:
+            throw MDKCaptureSurfacePlaneError.planeOutOfRange(requestedPlane: plane, planeCount: 2)
+        }
     default:
         throw MDKCaptureSurfacePlaneError.unsupportedPixelFormat(pixelFormat: pixelFormat, plane: plane)
     }

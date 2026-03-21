@@ -6,7 +6,12 @@ public enum MDKVideoPreprocessStrategy: String, CaseIterable, Codable, Sendable 
     case downscale2x = "downscale-2x"
 
     public var localizedName: String {
-        rawValue
+        switch self {
+        case .none:
+            return "None"
+        case .downscale2x:
+            return "Downscale 2x"
+        }
     }
 
     func outputDimensions(
@@ -45,9 +50,9 @@ public enum MDKVideoPreprocessStrategy: String, CaseIterable, Codable, Sendable 
 }
 
 public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
-    case h264
-    case hevc
-    case proResProxy
+    case h264 = "h264"
+    case hevc = "hevc"
+    case proResProxy = "prores-proxy"
 
     var codecType: CMVideoCodecType {
         switch self {
@@ -60,8 +65,26 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         }
     }
 
-    var localizedName: String {
-        rawValue
+    public var localizedName: String {
+        switch self {
+        case .h264:
+            return "H.264"
+        case .hevc:
+            return "HEVC"
+        case .proResProxy:
+            return "ProRes Proxy"
+        }
+    }
+
+    public var preferredCapturePixelFormat: UInt32 {
+        switch self {
+        case .hevc:
+            return kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        case .h264:
+            return kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        case .proResProxy:
+            return kCVPixelFormatType_32BGRA
+        }
     }
 
     func preferredInputPixelFormat(for sourcePixelFormat: UInt32) -> UInt32 {
@@ -85,7 +108,16 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
                 return kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
             }
         case .proResProxy:
-            return sourcePixelFormat
+            switch sourcePixelFormat {
+            case kCVPixelFormatType_32BGRA,
+                 kCVPixelFormatType_422YpCbCr8BiPlanarVideoRange,
+                 kCVPixelFormatType_422YpCbCr8BiPlanarFullRange,
+                 kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
+                 kCVPixelFormatType_422YpCbCr10BiPlanarFullRange:
+                return sourcePixelFormat
+            default:
+                return kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange
+            }
         }
     }
 

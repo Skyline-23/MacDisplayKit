@@ -536,6 +536,56 @@ final class MDKHostBenchmarkController {
     func inspectScreenCaptureKitRuntime() throws -> MDKScreenCaptureKitRuntimeInventory {
         try MDKScreenCaptureKitRuntimeInspector.inspect()
     }
+
+    func runEncodedCaptureSessionDiagnostics(
+        configuration: MDKEncodedCaptureConfiguration,
+        sampleDuration: TimeInterval,
+        consumerMode: MDKHostEncodedCaptureConsumerMode
+    ) async throws -> MDKHostEncodedCaptureSessionReport {
+        let session = MDKEncodedCaptureSession(configuration: configuration)
+        let observer = MDKHostEncodedCaptureSessionObserver()
+        let consumerTask: Task<Void, Never>?
+        switch consumerMode {
+        case .stream:
+            let stream = await session.frames()
+            consumerTask = Task {
+                await observer.consume(stream: stream)
+            }
+            try await session.start()
+        case .callback:
+            consumerTask = nil
+            try await session.start(
+                callbacks: MDKEncodedCaptureCallbacks(
+                    frameHandler: { frame in
+                        Task {
+                            await observer.consume(frame: frame)
+                        }
+                    },
+                    eventHandler: { event in
+                        Task {
+                            await observer.consume(event: event)
+                        }
+                    }
+                )
+            )
+        }
+
+        let sampleNanoseconds = UInt64(max(sampleDuration, 0) * 1_000_000_000)
+        if sampleNanoseconds > 0 {
+            try? await Task.sleep(nanoseconds: sampleNanoseconds)
+        }
+
+        await session.stop()
+        _ = await consumerTask?.value
+        let statistics = await session.statisticsSnapshot()
+        return await observer.makeReport(
+            configuration: configuration,
+            consumerMode: consumerMode,
+            sampleDuration: sampleDuration,
+            statistics: statistics,
+            notes: captureRelevantProcessLoadNotes()
+        )
+    }
 }
 
 private extension MDKHostBenchmarkController {

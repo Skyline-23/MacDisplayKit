@@ -18,6 +18,8 @@ This repository currently contains:
 - a clean host app target for framework-only validation
 - a Swift Package manifest for downstream consumption
 - an imported legacy runtime source tree for incremental porting
+- a production raw `SkyLight` capture session surface
+- a production encoded capture session surface backed by Metal + VideoToolbox
 
 The imported legacy runtime is intentionally not wired into the framework target yet. The first step is to stabilize the boundary: Swift owns framework-facing orchestration and API shape, while Objective-C++ remains the bridge for C++, private frameworks, and Metal-backed interop.
 
@@ -62,6 +64,61 @@ xcodebuild build \
   -scheme MacDisplayKitHost \
   -configuration Debug
 ```
+
+Run the Swift package tests:
+
+```bash
+swift test
+```
+
+## Production Capture Surface
+
+`MacDisplayCaptureKit` now exposes two non-benchmark session layers:
+
+- `MDKSkyLightDisplayStreamSession`
+  - raw `SkyLight` frame delivery backed by `SLDisplayStream`
+  - panel-native sizing by default
+  - intended for apps that want direct `IOSurface` access
+- `MDKEncodedCaptureSession`
+  - raw `SkyLight` capture + Metal preprocessing + VideoToolbox encode
+  - direct callback consumer interface via `MDKEncodedCaptureCallbacks`
+  - `AsyncThrowingStream<MDKEncodedFrame, Error>` stream consumer interface
+  - `AsyncStream<MDKEncodedCaptureSessionEvent>` lifecycle/recovery/backpressure events
+  - `baseline-q2` raw queue profile by default
+  - backpressure via stream buffering policy when the stream consumer path is used
+  - automatic restart policy for capture/processing failures
+
+The encoded session currently supports:
+
+- `HEVC Main10`
+- `H.264`
+- `ProRes Proxy` as a quality-oriented option for desktop/UI capture, biased toward `BGRA` capture surfaces for desktop/UI fidelity
+
+Canonical external codec identifiers are:
+
+- `hevc`
+- `h264`
+- `prores-proxy`
+
+HDR signaling support is wired into the production encode path through:
+
+- `kVTCompressionPropertyKey_ColorPrimaries`
+- `kVTCompressionPropertyKey_TransferFunction`
+- `kVTCompressionPropertyKey_YCbCrMatrix`
+- `kVTCompressionPropertyKey_HDRMetadataInsertionMode`
+- mastering-display and content-light metadata payloads
+
+Validation caveat:
+
+- this repository can now emit HDR-signaled HEVC Main10 samples when given HDR configuration
+- `MDKEncodedFrame.hdrValidationReport` exposes the encoded bitstream signaling that the framework can verify in-process
+- host-side production diagnostics have validated BT.2020/PQ signaling, mastering-display metadata, and content-light metadata on encoded session output
+- a real HDR monitor is still required to validate end-to-end source HDR capture behavior
+
+Throughput note:
+
+- the callback consumer path is the preferred high-throughput integration surface for downstream apps
+- the stream consumer path remains available, but it is not the current throughput winner for 4K120-class workloads
 
 ## Module Boundary
 

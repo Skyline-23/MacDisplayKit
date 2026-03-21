@@ -14,21 +14,21 @@ public enum MDKCaptureBenchmarkProcessingMode: String, CaseIterable, Codable, Se
     public var localizedName: String {
         switch self {
         case .none:
-            return "none"
+            return "No Processing"
         case .metalBind:
-            return "metal-bind"
+            return "Metal Bind"
         case .metalCopy:
-            return "metal-copy"
+            return "Metal Copy"
         case .videoToolboxEncode:
-            return "vt-encode"
+            return "VideoToolbox HEVC"
         case .videoToolboxEncodeDownscale2x:
-            return "vt-encode-downscale-2x"
+            return "VideoToolbox HEVC Downscale 2x"
         case .videoToolboxEncodeH264:
-            return "vt-encode-h264"
+            return "VideoToolbox H.264"
         case .videoToolboxEncodeH264Downscale2x:
-            return "vt-encode-h264-downscale-2x"
+            return "VideoToolbox H.264 Downscale 2x"
         case .videoToolboxEncodeProResProxyExperimental:
-            return "vt-encode-prores-proxy-experimental"
+            return "VideoToolbox ProRes Proxy Experimental"
         }
     }
 
@@ -64,7 +64,7 @@ public enum MDKCaptureBenchmarkProcessingMode: String, CaseIterable, Codable, Se
              .videoToolboxEncodeH264Downscale2x:
             return kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         case .videoToolboxEncodeProResProxyExperimental:
-            return kCVPixelFormatType_32BGRA
+            return MDKVideoEncoderCodec.proResProxy.preferredCapturePixelFormat
         case .none, .metalBind, .metalCopy:
             return nil
         }

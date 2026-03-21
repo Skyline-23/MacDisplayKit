@@ -66,10 +66,19 @@ public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
 private final class MDKVideoToolboxSubmissionToken {
     let slotIdentifier: Int?
     let submittedAt: TimeInterval
+    let sourceSequenceNumber: UInt64
+    let sourceDisplayTime: UInt64
 
-    init(slotIdentifier: Int?, submittedAt: TimeInterval) {
+    init(
+        slotIdentifier: Int?,
+        submittedAt: TimeInterval,
+        sourceSequenceNumber: UInt64,
+        sourceDisplayTime: UInt64
+    ) {
         self.slotIdentifier = slotIdentifier
         self.submittedAt = submittedAt
+        self.sourceSequenceNumber = sourceSequenceNumber
+        self.sourceDisplayTime = sourceDisplayTime
     }
 }
 
@@ -145,6 +154,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let scaler: MDKMetalBilinearScaler?
     private let colorConverter: MDKMetalBGRAToYCbCrConverter?
     private let maxInflightStagingSlots: Int
+    private let outputHandler: (@Sendable (MDKEncodedFrame) -> Void)?
+    private let failureHandler: (@Sendable (String) -> Void)?
+    private let hdrConfiguration: MDKVideoHDRConfiguration?
 
     private var compressionSession: VTCompressionSession?
     private var activeDimensions: SIMD2<Int>?
@@ -188,7 +200,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         preprocessStrategy: MDKVideoPreprocessStrategy = .none,
         targetFrameRate: Int = 120,
         device: (any MTLDevice)? = MTLCreateSystemDefaultDevice(),
-        maxInflightStagingSlots: Int = 128
+        maxInflightStagingSlots: Int = 128,
+        outputHandler: (@Sendable (MDKEncodedFrame) -> Void)? = nil,
+        failureHandler: (@Sendable (String) -> Void)? = nil,
+        hdrConfiguration: MDKVideoHDRConfiguration? = nil
     ) {
         self.codec = codec
         self.preprocessStrategy = preprocessStrategy
@@ -209,6 +224,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             self.colorConverterInitializationErrorDescription = "Metal device unavailable."
         }
         self.maxInflightStagingSlots = max(maxInflightStagingSlots, 1)
+        self.outputHandler = outputHandler
+        self.failureHandler = failureHandler
+        self.hdrConfiguration = hdrConfiguration
         self.encodeQueue.setSpecific(key: encodeQueueSpecificKey, value: encodeQueueSpecificValue)
     }
 
@@ -243,6 +261,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
                 processingFailureCount += 1
                 processingErrorHistogram[errorDescription, default: 0] += 1
+                failureHandler?(errorDescription)
             }
         }
     }
@@ -343,7 +362,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         let imageBuffer = try wrappedPixelBuffer(for: frame, surface: surface)
-        try submitToEncoder(imageBuffer: imageBuffer, slotIdentifier: nil)
+        try submitToEncoder(imageBuffer: imageBuffer, frame: frame, slotIdentifier: nil)
         recordProcessingSuccess(isStaged: false)
     }
 
@@ -453,12 +472,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 guard commandBufferStatus == .completed else {
                     self.recordProcessingFailure("Metal staged copy failed (\(commandBufferStatus.rawValue)).")
                     self.releaseStagingSlot(identifier: slotIdentifier)
+                    self.failureHandler?("Metal staged copy failed (\(commandBufferStatus.rawValue)).")
                     self.stagingSubmissionGroup.leave()
                     return
                 }
                 do {
                     try self.submitToEncoder(
                         imageBuffer: stagedPixelBuffer.pixelBuffer,
+                        frame: frame,
                         slotIdentifier: slotIdentifier,
                         presentationTimeStamp: presentationTimeStamp
                     )
@@ -467,6 +488,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
                     self.recordProcessingFailure(errorDescription)
                     self.releaseStagingSlot(identifier: slotIdentifier)
+                    self.failureHandler?(errorDescription)
                 }
                 self.stagingSubmissionGroup.leave()
             }
@@ -476,12 +498,15 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
     private func submitToEncoder(
         imageBuffer: CVPixelBuffer,
+        frame: MDKCaptureFrame,
         slotIdentifier: Int?,
         presentationTimeStamp: CMTime? = nil
     ) throws {
         guard let compressionSession else {
             throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: OSStatus(unimpErr))
         }
+
+        hdrConfiguration?.apply(to: imageBuffer)
 
         let resolvedPresentationTimeStamp = presentationTimeStamp ?? {
             let timestamp = CMTime(value: frameIndex, timescale: Int32(targetFrameRate))
@@ -491,7 +516,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let submissionToken = Unmanaged.passRetained(
             MDKVideoToolboxSubmissionToken(
                 slotIdentifier: slotIdentifier,
-                submittedAt: ProcessInfo.processInfo.systemUptime
+                submittedAt: ProcessInfo.processInfo.systemUptime,
+                sourceSequenceNumber: frame.sequenceNumber,
+                sourceDisplayTime: frame.displayTime
             )
         )
 
@@ -569,6 +596,15 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: targetFrameRate), label: "ExpectedFrameRate")
         setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: targetFrameRate), label: "MaxKeyFrameInterval")
         setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: NSNumber(value: 1.0), label: "MaxKeyFrameIntervalDuration")
+        if pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
+            pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange {
+            setSessionProperty(
+                session,
+                key: kVTCompressionPropertyKey_OutputBitDepth,
+                value: NSNumber(value: 10),
+                label: "OutputBitDepth"
+            )
+        }
         if codec.supportsAverageBitRate {
             setSessionProperty(
                 session,
@@ -594,6 +630,16 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         if let profileLevel = codec.defaultProfileLevel(for: pixelFormat) {
             setSessionProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: profileLevel, label: "ProfileLevel")
             sessionConfigurationNotes.append("videoToolboxConfiguredProfileLevel=\(profileLevel)")
+        }
+        if let hdrConfiguration {
+            for property in hdrConfiguration.sessionProperties {
+                setSessionProperty(
+                    session,
+                    key: property.0,
+                    value: property.1,
+                    label: property.2
+                )
+            }
         }
         let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(session)
         guard prepareStatus == noErr else {
@@ -929,6 +975,15 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let latencyMilliseconds = submissionToken.map {
             max((callbackReceivedAt - $0.submittedAt) * 1000.0, 0)
         }
+        let encodedFrame = sampleBuffer.map {
+            MDKEncodedFrame(
+                sampleBuffer: $0,
+                codec: codec,
+                sourceSequenceNumber: submissionToken?.sourceSequenceNumber ?? 0,
+                sourceDisplayTime: submissionToken?.sourceDisplayTime ?? 0,
+                outputCallbackLatencyMilliseconds: latencyMilliseconds
+            )
+        }
         if let slotIdentifier = submissionToken?.slotIdentifier {
             encodeQueue.async { [self] in
                 releaseStagingSlot(identifier: slotIdentifier)
@@ -953,6 +1008,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
             if outputCompleted {
                 completedOutputFrameCount += 1
+            }
+            if let encodedFrame, outputCompleted {
+                outputHandler?(encodedFrame)
+            } else if status != noErr {
+                failureHandler?("VT output callback failed (\(describe(status: status))).")
             }
             outputDrainGroup.leave()
         }

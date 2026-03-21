@@ -13,6 +13,58 @@ It focuses on two threads:
 - host app: `MacDisplayKitHost`
 - goal: understand what limits high-frequency HDR display capture on macOS and separate policy from mechanism
 
+## Production session status
+
+The benchmark-only raw `SkyLight` path has now been lifted into production-facing Swift
+API surface:
+
+- `MDKSkyLightDisplayStreamSession`
+  - raw `SLDisplayStream` frame delivery
+  - panel-native sizing by default
+- `MDKEncodedCaptureSession`
+  - `SLDisplayStream` source
+  - optional Metal preprocessing
+  - VideoToolbox encoded output via `AsyncThrowingStream<MDKEncodedFrame, Error>`
+  - lifecycle/recovery/backpressure surfaced through `AsyncStream<MDKEncodedCaptureSessionEvent>`
+  - backpressure through stream buffering policy
+  - restart policy for runtime failures
+
+This means the repository no longer depends on benchmark harness code to validate the
+core capture + encode mechanism.
+
+### Encoded output path
+
+The encoded production path now:
+
+- emits real encoded `CMSampleBuffer` output through `MDKEncodedFrame`
+- carries source display-time / sequence metadata into the output callback
+- supports:
+  - `HEVC Main10`
+  - `H.264`
+  - `ProRes Proxy`
+    - default production preference now leans toward `x422` 10-bit 4:2:2 capture surfaces instead of `BGRA`
+    - this keeps the ProRes path closer to desktop/UI text fidelity goals while avoiding replayd
+
+### HDR signaling status
+
+HDR signaling is now wired into the production `VideoToolbox` path through:
+
+- VT session properties:
+  - color primaries
+  - transfer function
+  - YCbCr matrix
+  - HDR metadata insertion mode
+  - mastering display color volume
+  - content light level info
+- propagated `CVPixelBuffer` attachments with matching HDR metadata
+- in-process HDR inspection via `MDKEncodedFrame.hdrValidationReport`
+
+Important caveat:
+
+- this validates the encode-path signaling plumbing
+- it does not yet prove that the source display content is truly HDR in the current host environment
+- a real HDR-capable display is still needed for end-to-end HDR validation
+
 ## Virtual display findings
 
 ### HiDPI and Settings UI are separate problems
@@ -1611,7 +1663,7 @@ Interpretation:
       - `vt-encode-prores-proxy-experimental`
     - encoder target dimensions are now derived from the preprocess strategy instead of always matching the source `IOSurface`
     - unsupported hardware-only codecs have been removed from the runtime processing matrix
-    - `ProRes Proxy` is now exposed as an experimental, non-default processing mode
+    - the `ProRes Proxy` experimental processing mode is now exposed as a non-default processing option
     - `H.264` now requests `kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel`
     - the staged encoder pool now starts from `kVTCompressionPropertyKey_VideoEncoderPixelBufferAttributes` when available, instead of using only generic `CVPixelBuffer` attributes
     - the session now also tries:
@@ -1782,3 +1834,36 @@ Interpretation:
     - `HostCommandLine` no longer accepts public raw `minimumFrameTime` or `request-120-like` overrides on the main raw benchmark command; benchmark internals still retain them for tuning-matrix diagnostics
   - current interpretation:
     - Apollo-facing configuration should treat raw `minimumFrameTime` as a private benchmark knob, not a production policy input
+- 2026-03-22 the production encoded session now exposes a direct callback consumer path and defaults its production presets to the output-oriented winners
+  - implementation changes:
+    - `MDKEncodedCaptureConfiguration.panelNative(...)` now defaults to `queueProfile = .q2`
+    - `ProRes Proxy` production capture now defaults to `BGRA`, matching the current text/UI-oriented winner
+    - `MDKEncodedCaptureSession` now supports `start(callbacks:)` and `installCallbacks(_:)` in addition to the existing `AsyncThrowingStream<MDKEncodedFrame, Error>` path
+    - host-side encoded-session diagnostics now accept `--consumer-mode stream|callback`
+    - `stop()` now yields to drain deferred callback deliveries before returning, so `statistics.emittedFrameCount` stays aligned with direct callback consumption instead of under-reporting the final frames
+  - current direct measurements on the host:
+    - `HEVC q2 + callback consumer`:
+      - `observedOutputFrameRate≈90.0`
+      - `capturePixelFormat=0x78343230` (`x420`)
+      - `statistics.emittedFrameCount` now matches the callback-consumed frame count at stop
+    - `HEVC q2 + stream consumer`:
+      - `observedOutputFrameRate≈45.0`
+      - same source/codec settings as the callback run
+      - this isolates the remaining production overhead to the stream delivery path rather than the raw encoder path
+    - `HEVC q2 + HDR10 + callback consumer`:
+      - `observedOutputFrameRate≈66.0`
+      - encoded sample summary included `CVImageBufferColorPrimaries=ITU_R_2020`, `CVImageBufferTransferFunction=SMPTE_ST_2084_PQ`, `CVImageBufferYCbCrMatrix=ITU_R_2020`, `MasteringDisplayColorVolume`, and `ContentLightLevelInfo`
+    - `ProRes Proxy q2 + callback consumer`:
+      - `observedOutputFrameRate≈61.0`
+      - `capturePixelFormat=0x42475241` (`BGRA`)
+    - `HEVC q2 + callback consumer + Metal stimulus`:
+      - `observedOutputFrameRate≈75.0`
+    - `ProRes Proxy q2 + callback consumer + Metal stimulus`:
+      - `observedOutputFrameRate≈85.0`
+  - current interpretation:
+    - `Apollo` can consume encoded frames directly through callbacks without routing every frame through the stream consumer path
+    - the stream consumer path remains useful for integration tests, diagnostics, and simpler downstream apps
+    - under current host load, the callback consumer path is materially better than the stream path for `HEVC`
+    - host-side production diagnostics now verify encoded-session HDR signaling on the callback path without relying on the benchmark harness
+    - `HEVC Main10 q2 + x420` and `ProRes Proxy q2 + BGRA` remain the production baseline candidates, but both are still sensitive to current `WindowServer/ColorSync` load and should be rechecked under cleaner host conditions before treating the latest numbers as stable ceilings
+    - the current production gap to the benchmark harness is now concentrated in consumer-delivery overhead and host compositor load, not in missing callback drain or broken stop semantics

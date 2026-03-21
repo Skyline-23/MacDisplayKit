@@ -47,6 +47,21 @@ private enum MDKHostCLICommand {
         json: Bool,
         useMetalStimulus: Bool
     )
+    case encodedCaptureSession(
+        displayID: UInt32?,
+        sampleDuration: TimeInterval,
+        consumerMode: MDKHostEncodedCaptureConsumerMode,
+        codec: MDKVideoEncoderCodec,
+        preprocessStrategy: MDKVideoPreprocessStrategy,
+        queueProfile: MDKSkyLightDisplayStreamQueueProfile?,
+        queueDepth: Int?,
+        showCursor: Bool,
+        hdrConfiguration: MDKVideoHDRConfiguration?,
+        backpressurePolicy: MDKEncodedCaptureBackpressurePolicy,
+        recoveryPolicy: MDKEncodedCaptureRecoveryPolicy,
+        json: Bool,
+        useMetalStimulus: Bool
+    )
     case benchmark(
         displayID: UInt32?,
         targetIdentifier: String,
@@ -98,6 +113,59 @@ enum MDKHostCommandLine {
                 return 0
             } catch {
                 fputs("Failed to inspect ScreenCaptureKit runtime: \(error)\n", stderr)
+                return 1
+            }
+        case .encodedCaptureSession(
+            let displayID,
+            let sampleDuration,
+            let consumerMode,
+            let codec,
+            let preprocessStrategy,
+            let queueProfile,
+            let queueDepth,
+            let showCursor,
+            let hdrConfiguration,
+            let backpressurePolicy,
+            let recoveryPolicy,
+            let json,
+            let useMetalStimulus
+        ):
+            do {
+                let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
+                let stimulus = useMetalStimulus ? MDKHostMetalStimulus(displayID: resolvedDisplayID) : nil
+                let configuration = MDKEncodedCaptureConfiguration.panelNative(
+                    displayID: resolvedDisplayID,
+                    queueDepth: queueDepth ?? 2,
+                    queueProfile: queueProfile,
+                    showCursor: showCursor,
+                    codec: codec,
+                    preprocessStrategy: preprocessStrategy,
+                    targetFrameRate: 120,
+                    hdrConfiguration: hdrConfiguration,
+                    backpressurePolicy: backpressurePolicy,
+                    recoveryPolicy: recoveryPolicy
+                )
+                stimulus?.start()
+                defer { stimulus?.stop() }
+
+                let report = try await controller.runEncodedCaptureSessionDiagnostics(
+                    configuration: configuration,
+                    sampleDuration: sampleDuration,
+                    consumerMode: consumerMode
+                )
+                if json {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    let data = try encoder.encode(report)
+                    if let text = String(data: data, encoding: .utf8) {
+                        print(text)
+                    }
+                } else {
+                    print(MDKHostBenchmarkFormatter.formatEncodedCaptureSessionReport(report))
+                }
+                return report.observedOutputFrameRate >= 60 ? 0 : 2
+            } catch {
+                fputs("Failed to run encoded capture session: \(error)\n", stderr)
                 return 1
             }
         case .screenCaptureKitProxyHandshakeTrace(let displayID, let sampleDuration, let json):
@@ -701,6 +769,27 @@ enum MDKHostCommandLine {
         }
 
         if let displayID = parseOptionalDisplayID(
+            flag: "--experimental-encoded-capture-session-display",
+            tokens: tokens
+        ) {
+            return .encodedCaptureSession(
+                displayID: displayID,
+                sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
+                consumerMode: parseEncodedCaptureConsumerMode(tokens: tokens) ?? .callback,
+                codec: parseCodec(tokens: tokens) ?? .hevc,
+                preprocessStrategy: parsePreprocessStrategy(tokens: tokens) ?? .none,
+                queueProfile: parseQueueProfile(tokens: tokens),
+                queueDepth: parseQueueDepth(tokens: tokens),
+                showCursor: tokens.contains("--show-cursor"),
+                hdrConfiguration: parseHDRConfiguration(tokens: tokens),
+                backpressurePolicy: parseBackpressurePolicy(tokens: tokens),
+                recoveryPolicy: parseRecoveryPolicy(tokens: tokens),
+                json: tokens.contains("--json"),
+                useMetalStimulus: tokens.contains("--with-metal-stimulus")
+            )
+        }
+
+        if let displayID = parseOptionalDisplayID(
             flag: "--experimental-screencapturekit-proxy-handshake-display",
             tokens: tokens
         ) {
@@ -956,6 +1045,116 @@ enum MDKHostCommandLine {
         }
 
         return MDKCaptureBenchmarkProcessingMode(rawValue: tokens[index + 1])
+    }
+
+    private static func parseCodec(tokens: [String]) -> MDKVideoEncoderCodec? {
+        guard let index = tokens.firstIndex(of: "--codec"),
+              tokens.indices.contains(index + 1) else {
+            return nil
+        }
+
+        switch tokens[index + 1].lowercased() {
+        case MDKVideoEncoderCodec.hevc.rawValue:
+            return .hevc
+        case MDKVideoEncoderCodec.h264.rawValue:
+            return .h264
+        case MDKVideoEncoderCodec.proResProxy.rawValue.lowercased():
+            return .proResProxy
+        default:
+            return nil
+        }
+    }
+
+    private static func parsePreprocessStrategy(tokens: [String]) -> MDKVideoPreprocessStrategy? {
+        guard let index = tokens.firstIndex(of: "--preprocess-strategy"),
+              tokens.indices.contains(index + 1) else {
+            return nil
+        }
+
+        return MDKVideoPreprocessStrategy(rawValue: tokens[index + 1])
+    }
+
+    private static func parseQueueProfile(tokens: [String]) -> MDKSkyLightDisplayStreamQueueProfile? {
+        guard let index = tokens.firstIndex(of: "--queue-profile"),
+              tokens.indices.contains(index + 1) else {
+            return nil
+        }
+
+        return MDKSkyLightDisplayStreamQueueProfile(rawValue: tokens[index + 1])
+    }
+
+    private static func parseEncodedCaptureConsumerMode(tokens: [String]) -> MDKHostEncodedCaptureConsumerMode? {
+        guard let index = tokens.firstIndex(of: "--consumer-mode"),
+              tokens.indices.contains(index + 1) else {
+            return nil
+        }
+
+        return MDKHostEncodedCaptureConsumerMode(rawValue: tokens[index + 1].lowercased())
+    }
+
+    private static func parseHDRConfiguration(tokens: [String]) -> MDKVideoHDRConfiguration? {
+        guard let index = tokens.firstIndex(of: "--hdr-mode"),
+              tokens.indices.contains(index + 1) else {
+            return nil
+        }
+
+        switch tokens[index + 1] {
+        case "hdr10":
+            return .hdr10()
+        case "hlg":
+            return .hlg()
+        case "none":
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    private static func parseBackpressurePolicy(tokens: [String]) -> MDKEncodedCaptureBackpressurePolicy {
+        if tokens.contains("--unbounded-backpressure") {
+            return .unbounded
+        }
+        if let index = tokens.firstIndex(of: "--drop-newest-limit"),
+           tokens.indices.contains(index + 1),
+           let limit = Int(tokens[index + 1]) {
+            return .dropNewest(limit: limit)
+        }
+        if let index = tokens.firstIndex(of: "--drop-oldest-limit"),
+           tokens.indices.contains(index + 1),
+           let limit = Int(tokens[index + 1]) {
+            return .dropOldest(limit: limit)
+        }
+        return .dropOldest(limit: 8)
+    }
+
+    private static func parseRecoveryPolicy(tokens: [String]) -> MDKEncodedCaptureRecoveryPolicy {
+        if tokens.contains("--disable-recovery") {
+            return .disabled
+        }
+
+        let restartLimit: Int
+        if let index = tokens.firstIndex(of: "--restart-limit"),
+           tokens.indices.contains(index + 1),
+           let value = Int(tokens[index + 1]) {
+            restartLimit = value
+        } else {
+            restartLimit = 2
+        }
+
+        let restartDelay: TimeInterval
+        if let index = tokens.firstIndex(of: "--restart-delay"),
+           tokens.indices.contains(index + 1),
+           let value = TimeInterval(tokens[index + 1]) {
+            restartDelay = value
+        } else {
+            restartDelay = 0.15
+        }
+
+        return MDKEncodedCaptureRecoveryPolicy(
+            automaticallyRestartOnFailure: true,
+            maximumAutomaticRestartCount: restartLimit,
+            restartDelay: restartDelay
+        )
     }
 
     private static func parseSampleDuration(tokens: [String]) -> TimeInterval? {

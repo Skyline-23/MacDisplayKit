@@ -34,6 +34,7 @@ enum MDKMetalColorConversionError: Error, LocalizedError, Equatable {
 private struct MDKMetalYCbCrConversionParameters {
     var sourceSize: SIMD2<UInt32>
     var destinationLumaSize: SIMD2<UInt32>
+    var chromaSubsampling: SIMD2<UInt32>
     var yCoefficients: SIMD4<Float>
     var cbCoefficients: SIMD4<Float>
     var crCoefficients: SIMD4<Float>
@@ -45,6 +46,7 @@ private struct MDKMetalYCbCrConversionParameters {
 
 private struct MDKMetalYCbCrTargetDescription {
     let pixelFormat: UInt32
+    let chromaSubsampling: SIMD2<UInt32>
     let yCoefficients: SIMD4<Float>
     let cbCoefficients: SIMD4<Float>
     let crCoefficients: SIMD4<Float>
@@ -100,6 +102,7 @@ final class MDKMetalBGRAToYCbCrConverter {
         var parameters = MDKMetalYCbCrConversionParameters(
             sourceSize: SIMD2(UInt32(sourceTextures[0].width), UInt32(sourceTextures[0].height)),
             destinationLumaSize: SIMD2(UInt32(destinationTextures[0].width), UInt32(destinationTextures[0].height)),
+            chromaSubsampling: target.chromaSubsampling,
             yCoefficients: target.yCoefficients,
             cbCoefficients: target.cbCoefficients,
             crCoefficients: target.crCoefficients,
@@ -161,6 +164,7 @@ final class MDKMetalBGRAToYCbCrConverter {
         case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
             return MDKMetalYCbCrTargetDescription(
                 pixelFormat: pixelFormat,
+                chromaSubsampling: SIMD2(2, 2),
                 yCoefficients: SIMD4(0.2126, 0.7152, 0.0722, 0),
                 cbCoefficients: SIMD4(-0.114572, -0.385428, 0.5, 0.5),
                 crCoefficients: SIMD4(0.5, -0.454153, -0.045847, 0.5),
@@ -172,6 +176,7 @@ final class MDKMetalBGRAToYCbCrConverter {
         case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
             return MDKMetalYCbCrTargetDescription(
                 pixelFormat: pixelFormat,
+                chromaSubsampling: SIMD2(2, 2),
                 yCoefficients: SIMD4(0.2126, 0.7152, 0.0722, 0),
                 cbCoefficients: SIMD4(-0.114572, -0.385428, 0.5, 0.5),
                 crCoefficients: SIMD4(0.5, -0.454153, -0.045847, 0.5),
@@ -183,6 +188,7 @@ final class MDKMetalBGRAToYCbCrConverter {
         case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange:
             return MDKMetalYCbCrTargetDescription(
                 pixelFormat: pixelFormat,
+                chromaSubsampling: SIMD2(2, 2),
                 yCoefficients: SIMD4(0.2627, 0.6780, 0.0593, 0),
                 cbCoefficients: SIMD4(-0.13963, -0.36037, 0.5, 0.5),
                 crCoefficients: SIMD4(0.5, -0.459786, -0.040214, 0.5),
@@ -194,6 +200,55 @@ final class MDKMetalBGRAToYCbCrConverter {
         case kCVPixelFormatType_420YpCbCr10BiPlanarFullRange:
             return MDKMetalYCbCrTargetDescription(
                 pixelFormat: pixelFormat,
+                chromaSubsampling: SIMD2(2, 2),
+                yCoefficients: SIMD4(0.2627, 0.6780, 0.0593, 0),
+                cbCoefficients: SIMD4(-0.13963, -0.36037, 0.5, 0.5),
+                crCoefficients: SIMD4(0.5, -0.459786, -0.040214, 0.5),
+                lumaScale: 1,
+                lumaOffset: 0,
+                chromaScale: 1,
+                chromaOffset: 0
+            )
+        case kCVPixelFormatType_422YpCbCr8BiPlanarVideoRange:
+            return MDKMetalYCbCrTargetDescription(
+                pixelFormat: pixelFormat,
+                chromaSubsampling: SIMD2(2, 1),
+                yCoefficients: SIMD4(0.2126, 0.7152, 0.0722, 0),
+                cbCoefficients: SIMD4(-0.114572, -0.385428, 0.5, 0.5),
+                crCoefficients: SIMD4(0.5, -0.454153, -0.045847, 0.5),
+                lumaScale: 219.0 / 255.0,
+                lumaOffset: 16.0 / 255.0,
+                chromaScale: 224.0 / 255.0,
+                chromaOffset: 16.0 / 255.0
+            )
+        case kCVPixelFormatType_422YpCbCr8BiPlanarFullRange:
+            return MDKMetalYCbCrTargetDescription(
+                pixelFormat: pixelFormat,
+                chromaSubsampling: SIMD2(2, 1),
+                yCoefficients: SIMD4(0.2126, 0.7152, 0.0722, 0),
+                cbCoefficients: SIMD4(-0.114572, -0.385428, 0.5, 0.5),
+                crCoefficients: SIMD4(0.5, -0.454153, -0.045847, 0.5),
+                lumaScale: 1,
+                lumaOffset: 0,
+                chromaScale: 1,
+                chromaOffset: 0
+            )
+        case kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange:
+            return MDKMetalYCbCrTargetDescription(
+                pixelFormat: pixelFormat,
+                chromaSubsampling: SIMD2(2, 1),
+                yCoefficients: SIMD4(0.2627, 0.6780, 0.0593, 0),
+                cbCoefficients: SIMD4(-0.13963, -0.36037, 0.5, 0.5),
+                crCoefficients: SIMD4(0.5, -0.459786, -0.040214, 0.5),
+                lumaScale: 219.0 / 1023.0,
+                lumaOffset: 64.0 / 1023.0,
+                chromaScale: 224.0 / 1023.0,
+                chromaOffset: 64.0 / 1023.0
+            )
+        case kCVPixelFormatType_422YpCbCr10BiPlanarFullRange:
+            return MDKMetalYCbCrTargetDescription(
+                pixelFormat: pixelFormat,
+                chromaSubsampling: SIMD2(2, 1),
                 yCoefficients: SIMD4(0.2627, 0.6780, 0.0593, 0),
                 cbCoefficients: SIMD4(-0.13963, -0.36037, 0.5, 0.5),
                 crCoefficients: SIMD4(0.5, -0.459786, -0.040214, 0.5),
@@ -214,6 +269,7 @@ final class MDKMetalBGRAToYCbCrConverter {
     struct ConversionParameters {
         uint2 sourceSize;
         uint2 destinationLumaSize;
+        uint2 chromaSubsampling;
         float4 yCoefficients;
         float4 cbCoefficients;
         float4 crCoefficients;
@@ -262,19 +318,21 @@ final class MDKMetalBGRAToYCbCrConverter {
 
         constexpr sampler linearSampler(coord::normalized, address::clamp_to_edge, filter::linear);
         float2 lumaSize = float2(parameters.destinationLumaSize);
-        float2 basePixel = float2(gid) * 2.0;
-        float2 sampleCoordinates[4] = {
-            (basePixel + float2(0.5, 0.5)) / lumaSize,
-            (basePixel + float2(1.5, 0.5)) / lumaSize,
-            (basePixel + float2(0.5, 1.5)) / lumaSize,
-            (basePixel + float2(1.5, 1.5)) / lumaSize
-        };
+        float2 chromaSubsampling = float2(parameters.chromaSubsampling);
+        float2 basePixel = float2(gid) * chromaSubsampling;
 
         float3 rgb = float3(0.0);
-        for (uint index = 0; index < 4; ++index) {
-            rgb += sampleRGB(sourceTexture, linearSampler, sampleCoordinates[index]);
+        uint sampleCount = 0;
+        for (uint offsetY = 0; offsetY < parameters.chromaSubsampling.y; ++offsetY) {
+            for (uint offsetX = 0; offsetX < parameters.chromaSubsampling.x; ++offsetX) {
+                float2 sampleCoordinate = (
+                    basePixel + float2(float(offsetX) + 0.5, float(offsetY) + 0.5)
+                ) / lumaSize;
+                rgb += sampleRGB(sourceTexture, linearSampler, sampleCoordinate);
+                sampleCount += 1;
+            }
         }
-        rgb *= 0.25;
+        rgb *= 1.0 / max(float(sampleCount), 1.0);
 
         float cb = dot(float4(rgb, 1.0), parameters.cbCoefficients);
         float cr = dot(float4(rgb, 1.0), parameters.crCoefficients);

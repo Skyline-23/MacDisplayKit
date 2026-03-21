@@ -8,6 +8,8 @@ public enum MDKSkyLightDisplayStreamPixelFormat: String, CaseIterable, Codable, 
     case biPlanar420FullRange = "420f"
     case biPlanar42010VideoRange = "x420"
     case biPlanar42010FullRange = "xf20"
+    case biPlanar42210VideoRange = "x422"
+    case biPlanar42210FullRange = "xf22"
 
     public var pixelFormat: UInt32 {
         switch self {
@@ -21,6 +23,10 @@ public enum MDKSkyLightDisplayStreamPixelFormat: String, CaseIterable, Codable, 
             return kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
         case .biPlanar42010FullRange:
             return kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+        case .biPlanar42210VideoRange:
+            return kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange
+        case .biPlanar42210FullRange:
+            return kCVPixelFormatType_422YpCbCr10BiPlanarFullRange
         }
     }
 }
