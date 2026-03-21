@@ -2,6 +2,25 @@ import Foundation
 import MacDisplayKit
 
 enum MDKHostBenchmarkFormatter {
+    static func formatReplaydProducerComparisonReport(
+        _ report: MDKReplaydProducerComparisonReport
+    ) -> String {
+        var lines: [String] = []
+        lines.append("replayd producer comparison")
+        lines.append("")
+        lines.append("baseline")
+        lines.append(contentsOf: formatReplaydProducerTraceReport(report.baseline).components(separatedBy: "\n"))
+        lines.append("")
+        lines.append("stimulus")
+        lines.append(contentsOf: formatReplaydProducerTraceReport(report.stimulus).components(separatedBy: "\n"))
+        lines.append("")
+        lines.append("comparison")
+        lines.append("Persistent indicators: \(report.comparison.persistentIndicatorNames.isEmpty ? "none" : report.comparison.persistentIndicatorNames.joined(separator: ", "))")
+        lines.append("Baseline-only indicators: \(report.comparison.baselineOnlyIndicatorNames.isEmpty ? "none" : report.comparison.baselineOnlyIndicatorNames.joined(separator: ", "))")
+        lines.append("Stimulus-only indicators: \(report.comparison.stimulusOnlyIndicatorNames.isEmpty ? "none" : report.comparison.stimulusOnlyIndicatorNames.joined(separator: ", "))")
+        return lines.joined(separator: "\n")
+    }
+
     static func formatReplaydProducerTraceReport(
         _ report: MDKReplaydProducerTraceReport
     ) -> String {

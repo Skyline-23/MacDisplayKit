@@ -59,6 +59,41 @@ public struct MDKReplaydProducerSampleReport: Codable, Equatable, Sendable {
     }
 }
 
+public struct MDKReplaydProducerIndicatorComparison: Codable, Equatable, Sendable {
+    public let name: String
+    public let baselineObserved: Bool
+    public let stimulusObserved: Bool
+
+    public init(
+        name: String,
+        baselineObserved: Bool,
+        stimulusObserved: Bool
+    ) {
+        self.name = name
+        self.baselineObserved = baselineObserved
+        self.stimulusObserved = stimulusObserved
+    }
+}
+
+public struct MDKReplaydProducerSampleComparison: Codable, Equatable, Sendable {
+    public let persistentIndicatorNames: [String]
+    public let baselineOnlyIndicatorNames: [String]
+    public let stimulusOnlyIndicatorNames: [String]
+    public let indicatorComparisons: [MDKReplaydProducerIndicatorComparison]
+
+    public init(
+        persistentIndicatorNames: [String],
+        baselineOnlyIndicatorNames: [String],
+        stimulusOnlyIndicatorNames: [String],
+        indicatorComparisons: [MDKReplaydProducerIndicatorComparison]
+    ) {
+        self.persistentIndicatorNames = persistentIndicatorNames
+        self.baselineOnlyIndicatorNames = baselineOnlyIndicatorNames
+        self.stimulusOnlyIndicatorNames = stimulusOnlyIndicatorNames
+        self.indicatorComparisons = indicatorComparisons
+    }
+}
+
 public enum MDKReplaydProducerSampleParser {
     private struct Pattern {
         let name: String
@@ -153,5 +188,50 @@ public enum MDKReplaydProducerSampleParser {
         }
 
         return matchedLines
+    }
+}
+
+public enum MDKReplaydProducerSampleComparator {
+    public static func compare(
+        baseline: MDKReplaydProducerSampleReport,
+        stimulus: MDKReplaydProducerSampleReport
+    ) -> MDKReplaydProducerSampleComparison {
+        let baselineMatches = Dictionary(
+            uniqueKeysWithValues: baseline.indicators.map { ($0.name, !$0.matchedLines.isEmpty) }
+        )
+        let stimulusMatches = Dictionary(
+            uniqueKeysWithValues: stimulus.indicators.map { ($0.name, !$0.matchedLines.isEmpty) }
+        )
+
+        var orderedNames: [String] = []
+        var seenNames = Set<String>()
+        for name in baseline.indicators.map(\.name) + stimulus.indicators.map(\.name) where seenNames.insert(name).inserted {
+            orderedNames.append(name)
+        }
+
+        let comparisons = orderedNames.map { name in
+            MDKReplaydProducerIndicatorComparison(
+                name: name,
+                baselineObserved: baselineMatches[name] ?? false,
+                stimulusObserved: stimulusMatches[name] ?? false
+            )
+        }
+
+        let persistent = comparisons
+            .filter { $0.baselineObserved && $0.stimulusObserved }
+            .map(\.name)
+        let baselineOnly = comparisons
+            .filter { $0.baselineObserved && !$0.stimulusObserved }
+            .map(\.name)
+        let stimulusOnly = comparisons
+            .filter { !$0.baselineObserved && $0.stimulusObserved }
+            .map(\.name)
+
+        return MDKReplaydProducerSampleComparison(
+            persistentIndicatorNames: persistent,
+            baselineOnlyIndicatorNames: baselineOnly,
+            stimulusOnlyIndicatorNames: stimulusOnly,
+            indicatorComparisons: comparisons
+        )
     }
 }

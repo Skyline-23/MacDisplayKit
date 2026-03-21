@@ -9,6 +9,12 @@ struct MDKReplaydProducerTraceReport: Codable, Equatable, Sendable {
     let replaydSampleDelay: TimeInterval
 }
 
+struct MDKReplaydProducerComparisonReport: Codable, Equatable, Sendable {
+    let baseline: MDKReplaydProducerTraceReport
+    let stimulus: MDKReplaydProducerTraceReport
+    let comparison: MDKReplaydProducerSampleComparison
+}
+
 enum MDKReplaydProducerSamplerError: Error {
     case replaydNotRunning
     case sampleFailed(status: Int32, output: String)
@@ -100,10 +106,59 @@ enum MDKReplaydProducerSampler {
     static func capturePassiveTrace(
         controller: MDKHostBenchmarkController,
         displayID: UInt32,
+        sampleDuration: TimeInterval,
+        useMetalStimulus: Bool = false
+    ) async throws -> MDKReplaydProducerTraceReport {
+        try await performPassiveTraceCapture(
+            controller: controller,
+            displayID: displayID,
+            sampleDuration: sampleDuration,
+            useMetalStimulus: useMetalStimulus
+        )
+    }
+
+    @MainActor
+    static func capturePassiveTraceComparison(
+        controller: MDKHostBenchmarkController,
+        displayID: UInt32,
         sampleDuration: TimeInterval
+    ) async throws -> MDKReplaydProducerComparisonReport {
+        let baseline = try await capturePassiveTrace(
+            controller: controller,
+            displayID: displayID,
+            sampleDuration: sampleDuration,
+            useMetalStimulus: false
+        )
+        let stimulus = try await capturePassiveTrace(
+            controller: controller,
+            displayID: displayID,
+            sampleDuration: sampleDuration,
+            useMetalStimulus: true
+        )
+
+        return MDKReplaydProducerComparisonReport(
+            baseline: baseline,
+            stimulus: stimulus,
+            comparison: MDKReplaydProducerSampleComparator.compare(
+                baseline: baseline.replaydSample,
+                stimulus: stimulus.replaydSample
+            )
+        )
+    }
+
+    @MainActor
+    private static func performPassiveTraceCapture(
+        controller: MDKHostBenchmarkController,
+        displayID: UInt32,
+        sampleDuration: TimeInterval,
+        useMetalStimulus: Bool
     ) async throws -> MDKReplaydProducerTraceReport {
         let replaydPID = try currentReplaydPID()
         let coordinator = MDKReplaydProducerSampleCoordinator()
+        let stimulus = useMetalStimulus ? MDKHostMetalStimulus(displayID: displayID) : nil
+        stimulus?.start()
+        defer { stimulus?.stop() }
+
         async let sampleExecution = coordinator.capture(
             replaydPID: replaydPID,
             requestedSampleDuration: sampleDuration

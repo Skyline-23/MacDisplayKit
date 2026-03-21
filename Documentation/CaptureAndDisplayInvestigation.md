@@ -85,6 +85,7 @@ The host now supports two `SCStream` investigation entry points:
   - `MacDisplayKitHost --experimental-screencapturekit-timing-display <displayID> --sample-duration <seconds> --with-metal-stimulus --json`
   - `MacDisplayKitHost --experimental-screencapturekit-passive-handshake-display <displayID> --sample-duration <seconds> --json`
   - `MacDisplayKitHost --experimental-screencapturekit-replayd-producer-trace-display <displayID> --sample-duration <seconds> [--with-metal-stimulus] --json`
+  - `MacDisplayKitHost --experimental-screencapturekit-replayd-producer-compare-display <displayID> --sample-duration <seconds> --json`
   - `MacDisplayKitHost --experimental-screencapturekit-proxy-handshake-display <displayID> --sample-duration <seconds> --json`
 - output includes:
   - sample buffer arrival delta histogram
@@ -374,6 +375,20 @@ Replayd producer trace specifics:
   - sample interval stays at `1ms`
 - the command exits `0` when it successfully produces the combined report, even if the older
   `passiveTrace.succeeded` field remains `false`
+- the compare command runs two back-to-back captures:
+  - baseline passive trace
+  - passive trace with `MDKHostMetalStimulus`
+- the compare report then computes:
+  - persistent indicators
+  - baseline-only indicators
+  - stimulus-only indicators
+- latest verified compare run on display `auto`, `2s` sample:
+  - persistent indicators:
+    - `producer-read-queue`
+    - `skylight-display-stream`
+    - `slcontentstream`
+  - baseline-only indicators: none
+  - stimulus-only indicators: none
 
 Recent passive-handshake sample on display `2`:
 
@@ -1160,6 +1175,7 @@ Interpretation:
 - the host now exposes a combined command for this same comparison:
   - `MacDisplayKitHost --experimental-screencapturekit-replayd-producer-trace-display <displayID> --sample-duration <seconds> --json`
   - `MacDisplayKitHost --experimental-screencapturekit-replayd-producer-trace-display <displayID> --sample-duration <seconds> --with-metal-stimulus --json`
+  - `MacDisplayKitHost --experimental-screencapturekit-replayd-producer-compare-display <displayID> --sample-duration <seconds> --json`
 - latest verified baseline run from that command captured:
   - `com.apple.coremedia.remotequeue_sender.readqueue`
   - `rqSenderHandleDequeue`
@@ -1171,6 +1187,9 @@ Interpretation:
   but did not capture `rqSenderHandleDequeue` in that specific sample window
 - that makes the new host command the stable way to compare daemon-side producer evidence across
   idle and stimulus conditions without manually invoking `sample replayd`
+- the latest `--experimental-screencapturekit-replayd-producer-compare-display auto --sample-duration 2 --json`
+  run captured `rqSenderHandleDequeue` and the producer read queue in both baseline and stimulus,
+  with no divergent indicators in that shorter paired sample
 - taken together, the brokered producer side now points much more strongly at
   `CMCapture`'s `FigRemoteQueueSender` path than at an ordinary host-side `libdispatch`
   or `NSXPCConnection` helper

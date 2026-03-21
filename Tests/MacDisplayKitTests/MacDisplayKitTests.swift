@@ -693,4 +693,53 @@ final class MacDisplayKitTests: XCTestCase {
         let decoded = try JSONDecoder().decode(MDKReplaydProducerSampleReport.self, from: data)
         XCTAssertEqual(decoded, report)
     }
+
+    func testReplaydProducerSampleComparatorSeparatesPersistentAndDivergentIndicators() {
+        let baseline = MDKReplaydProducerSampleReport(
+            replaydPID: 740,
+            sampleDuration: 1.0,
+            sampleIntervalMilliseconds: 1,
+            totalLineCount: 4,
+            observedProducerReadQueue: true,
+            observedRQSenderHandleDequeue: true,
+            observedFigRemoteQueueSenderSetup: false,
+            observedRPClientProxyCaptureHandler: false,
+            observedRPClientProxyStartRemoteQueue: false,
+            observedSkyLightDisplayStreamFrameAvailable: true,
+            observedSLContentStream: true,
+            indicators: [
+                MDKReplaydProducerSampleIndicator(name: "producer-read-queue", pattern: "rq", matchedLines: ["rqSenderHandleDequeue"]),
+                MDKReplaydProducerSampleIndicator(name: "skylight-display-stream", pattern: "CGY", matchedLines: ["CGYDisplayStreamNotification_server"]),
+                MDKReplaydProducerSampleIndicator(name: "slcontentstream", pattern: "SLContentStream", matchedLines: ["SLContentStream"])
+            ]
+        )
+        let stimulus = MDKReplaydProducerSampleReport(
+            replaydPID: 740,
+            sampleDuration: 1.0,
+            sampleIntervalMilliseconds: 1,
+            totalLineCount: 3,
+            observedProducerReadQueue: false,
+            observedRQSenderHandleDequeue: false,
+            observedFigRemoteQueueSenderSetup: false,
+            observedRPClientProxyCaptureHandler: false,
+            observedRPClientProxyStartRemoteQueue: false,
+            observedSkyLightDisplayStreamFrameAvailable: true,
+            observedSLContentStream: true,
+            indicators: [
+                MDKReplaydProducerSampleIndicator(name: "producer-read-queue", pattern: "rq", matchedLines: []),
+                MDKReplaydProducerSampleIndicator(name: "skylight-display-stream", pattern: "CGY", matchedLines: ["CGYDisplayStreamNotification_server"]),
+                MDKReplaydProducerSampleIndicator(name: "slcontentstream", pattern: "SLContentStream", matchedLines: ["SLContentStream"])
+            ]
+        )
+
+        let comparison = MDKReplaydProducerSampleComparator.compare(
+            baseline: baseline,
+            stimulus: stimulus
+        )
+
+        XCTAssertEqual(comparison.persistentIndicatorNames, ["skylight-display-stream", "slcontentstream"])
+        XCTAssertEqual(comparison.baselineOnlyIndicatorNames, ["producer-read-queue"])
+        XCTAssertEqual(comparison.stimulusOnlyIndicatorNames, [])
+        XCTAssertEqual(comparison.indicatorComparisons.count, 3)
+    }
 }

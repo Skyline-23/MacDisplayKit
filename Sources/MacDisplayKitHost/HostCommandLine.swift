@@ -10,6 +10,7 @@ private enum MDKHostCLICommand {
     case screenCaptureKitProxyHandshakeTrace(displayID: UInt32?, sampleDuration: TimeInterval, json: Bool)
     case screenCaptureKitPassiveHandshakeTrace(displayID: UInt32?, sampleDuration: TimeInterval, json: Bool, useMetalStimulus: Bool)
     case screenCaptureKitReplaydProducerTrace(displayID: UInt32?, sampleDuration: TimeInterval, json: Bool, useMetalStimulus: Bool)
+    case screenCaptureKitReplaydProducerCompare(displayID: UInt32?, sampleDuration: TimeInterval, json: Bool)
     case screenCaptureKitTimingTrace(displayID: UInt32?, sampleDuration: TimeInterval, json: Bool, useMetalStimulus: Bool)
     case privateCapturePlan(json: Bool)
     case privateCaptureProbe(displayID: UInt32?, requestExtendedRange: Bool, json: Bool)
@@ -122,14 +123,11 @@ enum MDKHostCommandLine {
         case .screenCaptureKitReplaydProducerTrace(let displayID, let sampleDuration, let json, let useMetalStimulus):
             do {
                 let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
-                let stimulus = useMetalStimulus ? MDKHostMetalStimulus(displayID: resolvedDisplayID) : nil
-                stimulus?.start()
-                defer { stimulus?.stop() }
-
                 let report = try await MDKReplaydProducerSampler.capturePassiveTrace(
                     controller: controller,
                     displayID: resolvedDisplayID,
-                    sampleDuration: sampleDuration
+                    sampleDuration: sampleDuration,
+                    useMetalStimulus: useMetalStimulus
                 )
                 if json {
                     let encoder = JSONEncoder()
@@ -144,6 +142,29 @@ enum MDKHostCommandLine {
                 return 0
             } catch {
                 fputs("Failed to capture replayd producer trace: \(error)\n", stderr)
+                return 1
+            }
+        case .screenCaptureKitReplaydProducerCompare(let displayID, let sampleDuration, let json):
+            do {
+                let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
+                let report = try await MDKReplaydProducerSampler.capturePassiveTraceComparison(
+                    controller: controller,
+                    displayID: resolvedDisplayID,
+                    sampleDuration: sampleDuration
+                )
+                if json {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    let data = try encoder.encode(report)
+                    if let text = String(data: data, encoding: .utf8) {
+                        print(text)
+                    }
+                } else {
+                    print(MDKHostBenchmarkFormatter.formatReplaydProducerComparisonReport(report))
+                }
+                return 0
+            } catch {
+                fputs("Failed to compare replayd producer traces: \(error)\n", stderr)
                 return 1
             }
         case .screenCaptureKitTimingTrace(let displayID, let sampleDuration, let json, let useMetalStimulus):
@@ -431,6 +452,17 @@ enum MDKHostCommandLine {
                 sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
                 json: tokens.contains("--json"),
                 useMetalStimulus: tokens.contains("--with-metal-stimulus")
+            )
+        }
+
+        if let displayID = parseOptionalDisplayID(
+            flag: "--experimental-screencapturekit-replayd-producer-compare-display",
+            tokens: tokens
+        ) {
+            return .screenCaptureKitReplaydProducerCompare(
+                displayID: displayID,
+                sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
+                json: tokens.contains("--json")
             )
         }
 
