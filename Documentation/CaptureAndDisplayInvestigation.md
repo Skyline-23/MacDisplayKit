@@ -1355,3 +1355,34 @@ Interpretation:
   - the next producer-side transition below `rqSenderHandleDequeue`
   - the `FigRemoteQueueSenderCreate*` / `SetMaximumBufferAge` setup path inside `replayd`
   - `replayd` itself, especially `SCContentSharingSessionService` and the session creation / reply path
+- 2026-03-21 explicit `WindowServer` `xctrace` attach now completes cleanly through the host command after
+  removing PID-specific parsing and replacing the shared `Process` pipe capture with file-backed capture
+  to avoid `waitUntilExit()` pipe deadlocks on noisy `xcrun xctrace record` runs
+  - paired command:
+    - `MacDisplayKitHost --experimental-screencapturekit-windowserver-xctrace-display auto --sample-duration 2`
+  - latest artifact summary:
+    - `context-switch rows=6102`
+    - `syscall rows=9712`
+    - `time-sample rows=192`
+  - the host formatter now prints the same rich syscall/time-sample summaries for the explicit `WindowServer`
+    artifact that the replayd artifact already exposed
+  - the context-switch parser no longer assumes `WindowServer pid: 408` or `replayd pid: 740`;
+    it now matches by process name so explicit artifacts remain valid across PID churn
+  - important interpretation change:
+    - the current `120hz-like` bucket is intentionally a `sub-10ms / 120+ candidate` bucket, not an
+      exact `120.00 Hz` claim
+  - explicit `WindowServer` artifact result:
+    - main thread `4328` classified as `120hz-like` with `eventCount=1299`
+    - several `coreanimation` and `root_queue` threads also classified as `120hz-like`
+  - more importantly, the `WindowServer` syscall backtraces finally expose live upstream display-stream symbols:
+    - `hotSymbols={"CGXRunOneServicesPass":6,"CGYDisplayStreamFrameAvailable":1,"displaystream_update":11}`
+    - `cadence[displaystream_update]` classified as `120hz-like`
+    - `cadence[CGXRunOneServicesPass]` classified as `120hz-like`
+    - the `_cgy_DisplayStreamFrameAvailable` hit count is still too sparse to classify by itself
+  - this is the strongest current split:
+    - upstream `WindowServer` display-stream work shows `sub-10ms / 120+ candidate` behavior
+    - dominant replayd producer threads and `_SCRemoteQueue_Enqueue` failures still show `60hz-like`
+  - current strongest reading:
+    - the choke point is no longer “somewhere in public `SCStream`”
+    - it is between `WindowServer` display-stream production and the replayd/CMCapture remote-queue producer path,
+      most likely in broker queue policy, enqueue failure handling, or sender-side buffering/coalescing

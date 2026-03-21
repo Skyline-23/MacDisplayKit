@@ -277,8 +277,13 @@ public enum MDKReplaydXctraceArtifactParser {
         HotSymbolPattern(name: "roEnqueue", expression: #"name=\"roEnqueue\""#),
         HotSymbolPattern(
             name: "CGYDisplayStreamFrameAvailable",
-            expression: #"CGYDisplayStreamNotification_server|_CGYDisplayStreamFrameAvailable"#
+            expression: #"CGYDisplayStreamNotification_server|_CGYDisplayStreamFrameAvailable|_cgy_DisplayStreamFrameAvailable"#
         ),
+        HotSymbolPattern(
+            name: "displaystream_update",
+            expression: #"displaystream_send_flags|displaystream_update\(|displaystream_update_timer_callback"#
+        ),
+        HotSymbolPattern(name: "CGXRunOneServicesPass", expression: #"CGXRunOneServicesPass"#),
         HotSymbolPattern(name: "SLContentStream", expression: #"SLContentStream"#)
     ]
 
@@ -754,8 +759,7 @@ public enum MDKReplaydXctraceArtifactParser {
     ) -> [MDKReplaydXctraceThreadCadenceSummary] {
         summarizeRunningThreadCadences(
             in: exportText,
-            processPID: "740",
-            threadFormatMarker: "(replayd, pid: 740)"
+            targetProcessNames: ["replayd"]
         )
     }
 
@@ -764,15 +768,13 @@ public enum MDKReplaydXctraceArtifactParser {
     ) -> [MDKReplaydXctraceThreadCadenceSummary] {
         summarizeRunningThreadCadences(
             in: exportText,
-            processPID: "408",
-            threadFormatMarker: "(WindowServer, pid: 408)"
+            targetProcessNames: ["WindowServer"]
         )
     }
 
     private static func summarizeRunningThreadCadences(
         in exportText: String,
-        processPID targetProcessPID: String,
-        threadFormatMarker: String
+        targetProcessNames: Set<String>
     ) -> [MDKReplaydXctraceThreadCadenceSummary] {
         guard let rowExpression else {
             return []
@@ -784,7 +786,7 @@ public enum MDKReplaydXctraceArtifactParser {
         }
 
         var schedEventByID: [String: String] = [:]
-        var processPIDByID: [String: String] = [:]
+        var processNameByID: [String: String] = [:]
         var threadByID: [String: (tid: String, fmt: String)] = [:]
         var threadRunningTimestamps: [String: [Double]] = [:]
         var threadNames: [String: String] = [:]
@@ -803,9 +805,12 @@ public enum MDKReplaydXctraceArtifactParser {
             }
             if
                 let processID = firstTagAttributeValue(tag: "process", attribute: "id", in: rowText),
-                let processPID = firstTagInnerText(tag: "pid", in: rowText)
+                let _ = firstTagInnerText(tag: "pid", in: rowText)
             {
-                processPIDByID[processID] = processPID
+                if let processFormat = firstTagAttributeValue(tag: "process", attribute: "fmt", in: rowText),
+                   let processName = canonicalProcessName(fromProcessFormat: processFormat) {
+                    processNameByID[processID] = processName
+                }
             }
             if
                 let threadID = firstTagAttributeValue(tag: "thread", attribute: "id", in: rowText),
@@ -847,18 +852,21 @@ public enum MDKReplaydXctraceArtifactParser {
                 resolvedThread = nil
             }
 
-            let processPID: String?
+            let processName: String?
             if let processRef = firstTagAttributeValue(tag: "process", attribute: "ref", in: rowText) {
-                processPID = processPIDByID[processRef]
+                processName = processNameByID[processRef]
             } else {
-                processPID = firstTagInnerText(tag: "pid", in: rowText)
+                processName = firstTagAttributeValue(tag: "process", attribute: "fmt", in: rowText)
+                    .flatMap(canonicalProcessName(fromProcessFormat:))
             }
 
             guard let resolvedThread, eventName == "Running" else {
                 continue
             }
 
-            let belongsToProcess = processPID == targetProcessPID || resolvedThread.fmt.contains(threadFormatMarker)
+            let belongsToProcess =
+                processName.map(targetProcessNames.contains) == true ||
+                targetProcessNames.contains(where: { threadFormat(resolvedThread.fmt, matchesProcessName: $0) })
             guard belongsToProcess else {
                 continue
             }
@@ -902,7 +910,7 @@ public enum MDKReplaydXctraceArtifactParser {
             return []
         }
 
-        var processPIDByID: [String: String] = [:]
+        var processNameByID: [String: String] = [:]
         var threadByID: [String: (tid: String, fmt: String)] = [:]
         var threadStateByID: [String: String] = [:]
 
@@ -914,9 +922,12 @@ public enum MDKReplaydXctraceArtifactParser {
 
             if
                 let processID = firstTagAttributeValue(tag: "process", attribute: "id", in: rowText),
-                let processPID = firstTagInnerText(tag: "pid", in: rowText)
+                let _ = firstTagInnerText(tag: "pid", in: rowText)
             {
-                processPIDByID[processID] = processPID
+                if let processFormat = firstTagAttributeValue(tag: "process", attribute: "fmt", in: rowText),
+                   let processName = canonicalProcessName(fromProcessFormat: processFormat) {
+                    processNameByID[processID] = processName
+                }
             }
             if
                 let threadID = firstTagAttributeValue(tag: "thread", attribute: "id", in: rowText),
@@ -954,11 +965,12 @@ public enum MDKReplaydXctraceArtifactParser {
                 resolvedThread = nil
             }
 
-            let processPID: String?
+            let processName: String?
             if let processRef = firstTagAttributeValue(tag: "process", attribute: "ref", in: rowText) {
-                processPID = processPIDByID[processRef]
+                processName = processNameByID[processRef]
             } else {
-                processPID = firstTagInnerText(tag: "pid", in: rowText)
+                processName = firstTagAttributeValue(tag: "process", attribute: "fmt", in: rowText)
+                    .flatMap(canonicalProcessName(fromProcessFormat:))
             }
 
             let stateName: String?
@@ -971,7 +983,9 @@ public enum MDKReplaydXctraceArtifactParser {
             guard let resolvedThread, stateName == "Runnable" else {
                 continue
             }
-            let belongsToReplayd = processPID == "740" || resolvedThread.fmt.contains("(replayd, pid: 740)")
+            let belongsToReplayd =
+                processName == "replayd" ||
+                threadFormat(resolvedThread.fmt, matchesProcessName: "replayd")
             guard belongsToReplayd else {
                 continue
             }
@@ -1081,5 +1095,25 @@ public enum MDKReplaydXctraceArtifactParser {
         return expression.matches(in: source, range: range).compactMap {
             captureGroup(at: 1, from: $0, in: source)
         }
+    }
+
+    private static func canonicalProcessName(fromProcessFormat processFormat: String) -> String? {
+        guard !processFormat.isEmpty else {
+            return nil
+        }
+        return processFormat
+            .split(separator: "(", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    private static func threadFormat(
+        _ threadFormat: String,
+        matchesProcessName processName: String
+    ) -> Bool {
+        threadFormat.contains("(\(processName), pid:") ||
+            threadFormat.hasPrefix("\(processName) (") ||
+            threadFormat.contains("(\(processName) (")
     }
 }

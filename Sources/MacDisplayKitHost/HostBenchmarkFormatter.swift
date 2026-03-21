@@ -30,11 +30,39 @@ enum MDKHostBenchmarkFormatter {
         if !report.systemCallTable.hotSymbolHistogram.isEmpty {
             lines.append("    hotSymbols: \(report.systemCallTable.hotSymbolHistogram)")
         }
+        if !report.systemCallTable.hotSymbolCadenceSummaries.isEmpty {
+            for summary in report.systemCallTable.hotSymbolCadenceSummaries {
+                lines.append(
+                    "    cadence[\(summary.symbolName)]: count=\(summary.eventCount) class=\(summary.cadenceClassification) histogram=\(summary.intervalHistogram)"
+                )
+            }
+        }
+        if !report.systemCallTable.hotSymbolSyscallSummaries.isEmpty {
+            for summary in report.systemCallTable.hotSymbolSyscallSummaries {
+                lines.append(
+                    "    syscalls[\(summary.symbolName)]: histogram=\(summary.syscallHistogram) signatures=\(summary.signatureExamples)"
+                )
+            }
+        }
+        if !report.systemCallTable.hotSymbolSyscallCadenceSummaries.isEmpty {
+            for summary in report.systemCallTable.hotSymbolSyscallCadenceSummaries {
+                lines.append(
+                    "    syscallCadence[\(summary.symbolName)/\(summary.syscallName)]: count=\(summary.eventCount) class=\(summary.cadenceClassification) histogram=\(summary.intervalHistogram)"
+                )
+            }
+        }
         lines.append(
             "  - \(report.timeSampleTable.schema): rows=\(report.timeSampleTable.rowCount) bytes=\(report.timeSampleTable.byteCount) path=\(report.timeSampleTable.outputPath)"
         )
         if !report.timeSampleTable.hotSymbolHistogram.isEmpty {
             lines.append("    hotSymbols: \(report.timeSampleTable.hotSymbolHistogram)")
+        }
+        if !report.timeSampleTable.hotSymbolCadenceSummaries.isEmpty {
+            for summary in report.timeSampleTable.hotSymbolCadenceSummaries {
+                lines.append(
+                    "    cadence[\(summary.symbolName)]: count=\(summary.eventCount) class=\(summary.cadenceClassification) histogram=\(summary.intervalHistogram)"
+                )
+            }
         }
         if !report.notes.isEmpty {
             lines.append("Notes:")

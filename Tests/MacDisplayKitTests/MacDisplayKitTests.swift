@@ -888,7 +888,7 @@ final class MacDisplayKitTests: XCTestCase {
             <schema name="context-switch"/>
             <row>
               <event-time id="1" fmt="00:00.000.000">0</event-time>
-              <thread id="11" fmt="replayd (0x21d1e0) (replayd, pid: 740)"><tid id="12" fmt="0x21d1e0">2216416</tid><process id="13" fmt="replayd (740)"><pid id="14" fmt="740">740</pid></process></thread>
+              <thread id="11" fmt="replayd (0x21d1e0) (replayd, pid: 1740)"><tid id="12" fmt="0x21d1e0">2216416</tid><process id="13" fmt="replayd (1740)"><pid id="14" fmt="1740">1740</pid></process></thread>
               <sched-event id="16" fmt="Running">Running</sched-event>
               <process ref="13"/>
             </row>
@@ -906,7 +906,7 @@ final class MacDisplayKitTests: XCTestCase {
             </row>
             <row>
               <event-time id="4" fmt="00:00.000.000">0</event-time>
-              <thread id="21" fmt="replayd (0x21d3bd) (replayd, pid: 740)"><tid id="22" fmt="0x21d3bd">2216893</tid><process ref="13"/></thread>
+              <thread id="21" fmt="replayd (0x21d3bd) (replayd, pid: 1740)"><tid id="22" fmt="0x21d3bd">2216893</tid><process ref="13"/></thread>
               <sched-event ref="16"/>
               <process ref="13"/>
             </row>
@@ -924,9 +924,9 @@ final class MacDisplayKitTests: XCTestCase {
             </row>
             <row>
               <event-time id="7" fmt="00:00.000.000">0</event-time>
-              <thread id="31" fmt="Main Thread (0x10e8) (WindowServer, pid: 408)">
+              <thread id="31" fmt="Main Thread (0x10e8) (WindowServer, pid: 5408)">
                 <tid id="32" fmt="0x10e8">4328</tid>
-                <process id="33" fmt="WindowServer (408)"><pid id="34" fmt="408">408</pid></process>
+                <process id="33" fmt="WindowServer (5408)"><pid id="34" fmt="5408">5408</pid></process>
               </thread>
               <sched-event ref="16"/>
               <process ref="33"/>
@@ -974,6 +974,45 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(windowServerMainThread.cadenceClassification, "60hz-like")
     }
 
+    func testReplaydXctraceArtifactParserMatchesWindowServerDisplayStreamHotSymbolsFromSyscallRows() throws {
+        let xml = """
+        <?xml version="1.0"?>
+        <trace-query-result>
+          <node xpath='//trace-toc[1]/run[1]/data[1]/table[2]'>
+            <schema name="syscall"/>
+            <row>
+              <start-time id="1" fmt="00:00.555.134">555134333</start-time>
+              <thread id="2" fmt="Main Thread (0x10e8) (WindowServer, pid: 5408)">
+                <tid id="3" fmt="0x10e8">4328</tid>
+                <process id="4" fmt="WindowServer (5408)"><pid id="5" fmt="5408">5408</pid></process>
+              </thread>
+              <syscall id="6" fmt="mach_msg2_trap">MSC_mach_msg2_trap</syscall>
+              <formatted-label id="7" fmt="mach_msg2_trap"/>
+              <tagged-backtrace id="8" fmt="mach_msg2_trap ← (13 other frames)">
+                <backtrace id="9">
+                  <frame id="10" name="_cgy_DisplayStreamFrameAvailable" addr="0x189ef819c"/>
+                  <frame id="11" name="displaystream_send_flags(CGXDisplayStream*, unsigned long long, unsigned int)" addr="0x189bd2430"/>
+                  <frame id="12" name="displaystream_update(CGXDisplayStream*, std::__1::shared_ptr&lt;WS::Displays::Display&gt;, double)" addr="0x189bd11c0"/>
+                  <frame id="13" name="displaystream_update_timer_callback(void*, double)" addr="0x189bd2570"/>
+                  <frame id="14" name="CGXRunOneServicesPass" addr="0x189b65c54"/>
+                </backtrace>
+              </tagged-backtrace>
+            </row>
+          </node>
+        </trace-query-result>
+        """
+
+        let summary = MDKReplaydXctraceArtifactParser.summarizeTableArtifact(
+            schema: "syscall",
+            outputPath: "/tmp/windowserver-syscall.xml",
+            exportText: xml
+        )
+
+        XCTAssertEqual(summary.hotSymbolHistogram["CGYDisplayStreamFrameAvailable"], 1)
+        XCTAssertEqual(summary.hotSymbolHistogram["displaystream_update"], 3)
+        XCTAssertEqual(summary.hotSymbolHistogram["CGXRunOneServicesPass"], 1)
+    }
+
     func testReplaydXctraceArtifactParserSummarizesReplaydRunnableSourcesFromThreadState() throws {
         let xml = """
         <?xml version="1.0"?>
@@ -982,34 +1021,34 @@ final class MacDisplayKitTests: XCTestCase {
             <schema name="thread-state"/>
             <row>
               <start-time id="1" fmt="00:00.437.268">437268541</start-time>
-              <thread id="11" fmt="replayd (0x22a025) (replayd, pid: 740)">
+              <thread id="11" fmt="replayd (0x22a025) (replayd, pid: 1740)">
                 <tid id="12" fmt="0x22a025">2269221</tid>
-                <process id="13" fmt="replayd (740)"><pid id="14" fmt="740">740</pid></process>
+                <process id="13" fmt="replayd (1740)"><pid id="14" fmt="1740">1740</pid></process>
               </thread>
               <thread-state id="15" fmt="Runnable">Runnable</thread-state>
-              <narrative id="16" fmt="made runnable by  Main Thread (0x10e8) (WindowServer, pid: 408)  running on  CPU 7 (P Core)"/>
+              <narrative id="16" fmt="made runnable by  Main Thread (0x10e8) (WindowServer, pid: 5408)  running on  CPU 7 (P Core)"/>
               <narrative id="17" fmt="Runnable  at priority  37"/>
             </row>
             <row>
               <start-time id="2" fmt="00:00.472.859">472859208</start-time>
-              <thread id="21" fmt="replayd (0x22a165) (replayd, pid: 740)">
+              <thread id="21" fmt="replayd (0x22a165) (replayd, pid: 1740)">
                 <tid id="22" fmt="0x22a165">2269541</tid>
                 <process ref="13"/>
               </thread>
               <thread-state ref="15"/>
               <process ref="13"/>
-              <narrative id="23" fmt="made runnable by  replayd (0x22a025) (replayd, pid: 740)  running on  CPU 9 (P Core)"/>
+              <narrative id="23" fmt="made runnable by  replayd (0x22a025) (replayd, pid: 1740)  running on  CPU 9 (P Core)"/>
               <narrative ref="17"/>
             </row>
             <row>
               <start-time id="3" fmt="00:00.489.740">489740333</start-time>
-              <thread id="31" fmt="replayd (0x22a165) (replayd, pid: 740)">
+              <thread id="31" fmt="replayd (0x22a165) (replayd, pid: 1740)">
                 <tid id="32" fmt="0x22a165">2269541</tid>
                 <process ref="13"/>
               </thread>
               <thread-state ref="15"/>
               <process ref="13"/>
-              <narrative id="24" fmt="made runnable by  replayd (0x22a025) (replayd, pid: 740)  running on  CPU 0 (E Core)"/>
+              <narrative id="24" fmt="made runnable by  replayd (0x22a025) (replayd, pid: 1740)  running on  CPU 0 (E Core)"/>
               <narrative ref="17"/>
             </row>
           </node>
@@ -1027,7 +1066,7 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertFalse(summary.replaydRunnableSourceSummaries.isEmpty)
         let flattenedSources = summary.replaydRunnableSourceSummaries.flatMap(\.runnableSourceHistogram.keys)
         XCTAssertTrue(
-            flattenedSources.contains("made runnable by  Main Thread (0x10e8) (WindowServer, pid: 408)  running on  CPU 7 (P Core)")
+            flattenedSources.contains("made runnable by  Main Thread (0x10e8) (WindowServer, pid: 5408)  running on  CPU 7 (P Core)")
         )
     }
 

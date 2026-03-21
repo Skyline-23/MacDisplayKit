@@ -317,7 +317,7 @@ private actor MDKReplaydXctraceCoordinator {
                 )
             }
         } else if threadStateTable.replaydRunnableSourceSummaries.contains(where: { summary in
-            summary.runnableSourceHistogram.keys.contains(where: { $0.contains("WindowServer, pid: 408") })
+            summary.runnableSourceHistogram.keys.contains(where: { $0.contains("WindowServer, pid:") })
         }) {
             notes.append(
                 "thread-state surfaced WindowServer wake sources, but this replayd-attached context-switch export did not include WindowServer running rows."
@@ -352,7 +352,7 @@ private actor MDKReplaydXctraceCoordinator {
                         return nil
                     }
                     let windowServerWakeCount = runnableSummary.runnableSourceHistogram.reduce(into: 0) { partialResult, entry in
-                        if entry.key.contains("WindowServer, pid: 408") {
+                        if entry.key.contains("WindowServer, pid:") {
                             partialResult += entry.value
                         }
                     }
@@ -459,32 +459,21 @@ private actor MDKReplaydXctraceCoordinator {
         process.executableURL = URL(fileURLWithPath: executablePath)
         process.arguments = arguments
 
-        if let outputURL {
-            FileManager.default.createFile(atPath: outputURL.path, contents: nil)
-            let handle = try FileHandle(forWritingTo: outputURL)
-            defer { try? handle.close() }
-            process.standardOutput = handle
-            process.standardError = handle
-            try process.run()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                throw MDKReplaydProducerSamplerError.sampleFailed(
-                    status: process.terminationStatus,
-                    output: (try? String(contentsOf: outputURL, encoding: .utf8)) ?? ""
-                )
+        let captureURL = outputURL ?? FileManager.default.temporaryDirectory
+            .appendingPathComponent("mdk-process-output-\(UUID().uuidString).log")
+        FileManager.default.createFile(atPath: captureURL.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: captureURL)
+        defer {
+            try? handle.close()
+            if outputURL == nil {
+                try? FileManager.default.removeItem(at: captureURL)
             }
-            return
         }
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
+        process.standardOutput = handle
+        process.standardError = handle
         try process.run()
         process.waitUntilExit()
-        let outputText = String(
-            decoding: pipe.fileHandleForReading.readDataToEndOfFile(),
-            as: UTF8.self
-        )
+        let outputText = (try? String(contentsOf: captureURL, encoding: .utf8)) ?? ""
         guard process.terminationStatus == 0 else {
             throw MDKReplaydProducerSamplerError.sampleFailed(
                 status: process.terminationStatus,
@@ -655,32 +644,21 @@ private actor MDKWindowServerXctraceCoordinator {
         process.executableURL = URL(fileURLWithPath: executablePath)
         process.arguments = arguments
 
-        if let outputURL {
-            FileManager.default.createFile(atPath: outputURL.path, contents: nil)
-            let handle = try FileHandle(forWritingTo: outputURL)
-            defer { try? handle.close() }
-            process.standardOutput = handle
-            process.standardError = handle
-            try process.run()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                throw MDKReplaydProducerSamplerError.sampleFailed(
-                    status: process.terminationStatus,
-                    output: (try? String(contentsOf: outputURL, encoding: .utf8)) ?? ""
-                )
+        let captureURL = outputURL ?? FileManager.default.temporaryDirectory
+            .appendingPathComponent("mdk-process-output-\(UUID().uuidString).log")
+        FileManager.default.createFile(atPath: captureURL.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: captureURL)
+        defer {
+            try? handle.close()
+            if outputURL == nil {
+                try? FileManager.default.removeItem(at: captureURL)
             }
-            return
         }
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
+        process.standardOutput = handle
+        process.standardError = handle
         try process.run()
         process.waitUntilExit()
-        let outputText = String(
-            decoding: pipe.fileHandleForReading.readDataToEndOfFile(),
-            as: UTF8.self
-        )
+        let outputText = (try? String(contentsOf: captureURL, encoding: .utf8)) ?? ""
         guard process.terminationStatus == 0 else {
             throw MDKReplaydProducerSamplerError.sampleFailed(
                 status: process.terminationStatus,
