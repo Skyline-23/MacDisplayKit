@@ -1042,6 +1042,8 @@ using MDKNSXPCInterfaceWithProtocolFn = id (*)(id, SEL, Protocol *);
 using MDKNSXPCInterfaceSetClassesFn = void (*)(id, SEL, NSSet *, SEL, NSUInteger, BOOL);
 using MDKNSXPCInterfaceSetNestedInterfaceFn = void (*)(id, SEL, NSXPCInterface *, SEL, NSUInteger, BOOL);
 using MDKNSXPCInterfaceSetReplyBlockSignatureFn = void (*)(id, SEL, id, SEL);
+using MDKRPDaemonProxySetConnectionFn = void (*)(id, SEL, id);
+using MDKRPDaemonProxyHandleInvocationFn = void (*)(id, SEL, id, id, BOOL);
 using MDKVideoReceiveQueueCallbackBlock = void (^)(int, MDKFigRemoteQueueMessage *, void *);
 using MDKVideoReceiveQueueBlockInvokeFn = void (*)(void *, int, MDKFigRemoteQueueMessage *, void *);
 using MDKVideoQueueNestedBlockInvokeFn = void (*)(void *, int, void *, void *);
@@ -1080,6 +1082,8 @@ static MDKNSXPCInterfaceWithProtocolFn MDKOriginalNSXPCInterfaceWithProtocol = n
 static MDKNSXPCInterfaceSetClassesFn MDKOriginalNSXPCInterfaceSetClasses = nullptr;
 static MDKNSXPCInterfaceSetNestedInterfaceFn MDKOriginalNSXPCInterfaceSetNestedInterface = nullptr;
 static MDKNSXPCInterfaceSetReplyBlockSignatureFn MDKOriginalNSXPCInterfaceSetReplyBlockSignature = nullptr;
+static MDKRPDaemonProxySetConnectionFn MDKOriginalRPDaemonProxySetConnection = nullptr;
+static MDKRPDaemonProxyHandleInvocationFn MDKOriginalRPDaemonProxyHandleInvocation = nullptr;
 static MDKRPIOSurfaceSetFn MDKOriginalRPIOSurfaceSet = nullptr;
 static MDKRPIOSurfaceGetFn MDKOriginalRPIOSurfaceGet = nullptr;
 static MDKCaptureHandlerWithSampleFn MDKOriginalDaemonCaptureHandlerWithSample = nullptr;
@@ -1099,6 +1103,7 @@ static void MDKRecordNSXPCInterfaceEvent(
     NSUInteger argumentIndex,
     BOOL ofReply
 );
+static void MDKRecordRPDaemonProxyEvent(NSString *kind, id proxy, id connection, NSInvocation *invocation, BOOL isReply);
 static MDKCAContentStreamReleaseSurfaceWithIDFn MDKOriginalCAContentStreamReleaseSurfaceWithID = nullptr;
 static MDKIOSurfaceRemoteAddSurfaceFn MDKOriginalIOSurfaceRemoteAddSurface = nullptr;
 static MDKIOSurfaceRemoteSetSurfaceStatesFn MDKOriginalIOSurfaceRemoteSetSurfaceStates = nullptr;
@@ -2210,6 +2215,10 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"nsxpcInterfaceEventCount": @0,
             @"nsxpcInterfaceProtocolHistogram": [NSMutableDictionary dictionary],
             @"nsxpcInterfaceSelectorHistogram": [NSMutableDictionary dictionary],
+            @"rpDaemonProxySetConnectionEventCount": @0,
+            @"rpDaemonProxyHandleInvocationEventCount": @0,
+            @"rpDaemonProxyEventCount": @0,
+            @"rpDaemonProxySelectorHistogram": [NSMutableDictionary dictionary],
             @"xpcPipeCreateEventCount": @0,
             @"xpcPipeSimpleRoutineEventCount": @0,
             @"xpcPipeInterposeEventCount": @0,
@@ -2957,6 +2966,24 @@ static void MDKSwizzledNSXPCInterfaceSetReplyBlockSignature(id self, SEL _cmd, i
     MDKOriginalNSXPCInterfaceSetReplyBlockSignature(self, _cmd, signature, selector);
 }
 
+static void MDKSwizzledRPDaemonProxySetConnection(id self, SEL _cmd, id connection) {
+    if (MDKOriginalRPDaemonProxySetConnection == nullptr) {
+        return;
+    }
+
+    MDKRecordRPDaemonProxyEvent(@"rp-daemon-proxy-set-connection", self, connection, nil, NO);
+    MDKOriginalRPDaemonProxySetConnection(self, _cmd, connection);
+}
+
+static void MDKSwizzledRPDaemonProxyHandleInvocation(id self, SEL _cmd, id connection, id invocation, BOOL isReply) {
+    if (MDKOriginalRPDaemonProxyHandleInvocation == nullptr) {
+        return;
+    }
+
+    MDKRecordRPDaemonProxyEvent(@"rp-daemon-proxy-handle-invocation", self, connection, invocation, isReply);
+    MDKOriginalRPDaemonProxyHandleInvocation(self, _cmd, connection, invocation, isReply);
+}
+
 static void MDKSwizzledProxyCoreGraphics(
     id self,
     SEL _cmd,
@@ -3293,6 +3320,54 @@ static void MDKRecordIOSurfaceMachPortEvent(NSString *kind, mach_port_t port, IO
         @"wrapperDepth": @(MDKCurrentVideoQueueWrapperSequenceDepth()),
     } mutableCopy];
     if (overallEventCount <= 8) {
+        payload[@"backtrace"] = MDKCopyBacktraceFrames(10, 3);
+    }
+    MDKRecordSCKTraceEvent(kind, payload);
+}
+
+static void MDKRecordRPDaemonProxyEvent(NSString *kind, id proxy, id connection, NSInvocation *invocation, BOOL isReply) {
+    NSString *selectorName = nil;
+    if (invocation != nil) {
+        SEL selector = invocation.selector;
+        if (selector != nullptr) {
+            selectorName = NSStringFromSelector(selector);
+        }
+    }
+
+    BOOL shouldRecord = NO;
+    NSUInteger overallEventCount = 0;
+    NSString *counterKey = @"rpDaemonProxySetConnectionEventCount";
+    if ([kind isEqualToString:@"rp-daemon-proxy-handle-invocation"]) {
+        counterKey = @"rpDaemonProxyHandleInvocationEventCount";
+    }
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            MDKActiveSCKTraceState[counterKey] =
+                @([MDKActiveSCKTraceState[counterKey] unsignedIntegerValue] + 1);
+            overallEventCount = [MDKActiveSCKTraceState[@"rpDaemonProxyEventCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"rpDaemonProxyEventCount"] = @(overallEventCount);
+            if (selectorName.length > 0) {
+                NSMutableDictionary<NSString *, NSNumber *> *histogram = MDKActiveSCKTraceState[@"rpDaemonProxySelectorHistogram"];
+                histogram[selectorName] = @([histogram[selectorName] unsignedIntegerValue] + 1);
+            }
+            shouldRecord = overallEventCount <= 64;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    NSMutableDictionary<NSString *, id> *payload = [@{
+        @"proxy": MDKSummarizeObject(proxy),
+        @"connection": connection != nil ? MDKSummarizeObject(connection) : @{},
+        @"selectorName": selectorName ?: [NSNull null],
+        @"isReply": @(isReply),
+        @"interesting": @YES,
+        @"wrapperSequenceID": MDKCurrentVideoQueueWrapperSequence() > 0 ? @(MDKCurrentVideoQueueWrapperSequence()) : [NSNull null],
+        @"wrapperDepth": @(MDKCurrentVideoQueueWrapperSequenceDepth()),
+    } mutableCopy];
+    if (overallEventCount <= 12) {
         payload[@"backtrace"] = MDKCopyBacktraceFrames(10, 3);
     }
     MDKRecordSCKTraceEvent(kind, payload);
@@ -7151,6 +7226,32 @@ static void MDKInstallSCKProxyTraceHooks(void) {
             return;
         }
 
+        Method daemonProxySetConnectionMethod = class_getInstanceMethod(
+            daemonProxyClass,
+            sel_registerName("setConnection:")
+        );
+        if (daemonProxySetConnectionMethod != nullptr) {
+            MDKOriginalRPDaemonProxySetConnection =
+                reinterpret_cast<MDKRPDaemonProxySetConnectionFn>(method_getImplementation(daemonProxySetConnectionMethod));
+            method_setImplementation(
+                daemonProxySetConnectionMethod,
+                reinterpret_cast<IMP>(MDKSwizzledRPDaemonProxySetConnection)
+            );
+        }
+
+        Method daemonProxyHandleInvocationMethod = class_getInstanceMethod(
+            daemonProxyClass,
+            sel_registerName("connection:handleInvocation:isReply:")
+        );
+        if (daemonProxyHandleInvocationMethod != nullptr) {
+            MDKOriginalRPDaemonProxyHandleInvocation =
+                reinterpret_cast<MDKRPDaemonProxyHandleInvocationFn>(method_getImplementation(daemonProxyHandleInvocationMethod));
+            method_setImplementation(
+                daemonProxyHandleInvocationMethod,
+                reinterpret_cast<IMP>(MDKSwizzledRPDaemonProxyHandleInvocation)
+            );
+        }
+
         Method proxyMethod = class_getInstanceMethod(
             daemonProxyClass,
             sel_registerName("proxyCoreGraphicsWithMethodType:config:machPort:completionHandler:")
@@ -10922,6 +11023,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"nsxpcInterfaceSetReplyBlockSignatureEventCount=%@", MDKDescribeTraceValue(snapshot[@"nsxpcInterfaceSetReplyBlockSignatureEventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"nsxpcInterfaceProtocolHistogram=%@", MDKDescribeTraceValue(snapshot[@"nsxpcInterfaceProtocolHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"nsxpcInterfaceSelectorHistogram=%@", MDKDescribeTraceValue(snapshot[@"nsxpcInterfaceSelectorHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"rpDaemonProxySetConnectionEventCount=%@", MDKDescribeTraceValue(snapshot[@"rpDaemonProxySetConnectionEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"rpDaemonProxyHandleInvocationEventCount=%@", MDKDescribeTraceValue(snapshot[@"rpDaemonProxyHandleInvocationEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"rpDaemonProxySelectorHistogram=%@", MDKDescribeTraceValue(snapshot[@"rpDaemonProxySelectorHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeAttempted"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalled"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalledImageCount=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalledImageCount"])]];

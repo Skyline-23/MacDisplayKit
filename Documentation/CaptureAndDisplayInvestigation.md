@@ -1102,6 +1102,9 @@ Follow-up passive trace after swizzling `NSXPCConnection` setup in the host proc
 - `nsxpcInterfaceSetReplyBlockSignatureEventCount=0`
 - `nsxpcInterfaceProtocolHistogram={"RPClientProtocol":1,"RPDaemonProtocol":1}`
 - `nsxpcInterfaceSelectorHistogram={}`
+- `rpDaemonProxySetConnectionEventCount=1`
+- `rpDaemonProxyHandleInvocationEventCount=5`
+- `rpDaemonProxySelectorHistogram={"startRemoteQueue:streamID:":3}`
 
 Interpretation:
 
@@ -1117,9 +1120,12 @@ Interpretation:
   `RPDaemonProtocol` and one for `RPClientProtocol`
 - there are no observed `setClasses:...`, `setInterface:...`, or `setReplyBlockSignature:...`
   calls, so the passive path is not building a richer selector/class map through public `NSXPCInterface`
+- the host *does* bind one `RPDaemonProxy` connection and then funnels at least five
+  `connection:handleInvocation:isReply:` calls through it during the same healthy passive trace
+- the first selector that clearly surfaces in that invocation histogram is `startRemoteQueue:streamID:`
 - that is the first direct host-side confirmation that the passive `SCStream` capture path is brokered through
   `replayd`, even though the lower imported C shims stay dark
 - this shifts the next reverse-engineering target from generic host-side imported stubs to two sharper paths:
-  - `__NSXPCInterfaceProxy_RPDaemonProtocol` invocation flow
-  - `RPDaemonProtocol` selector dispatch below the proxy boundary
+  - the arguments and ordering of `startRemoteQueue:streamID:` inside `RPDaemonProxy`
+  - the next selector below that start-queue dispatch boundary
   - `replayd` itself, especially `SCContentSharingSessionService` and the session creation / reply path
