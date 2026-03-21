@@ -150,6 +150,7 @@ final class MDKHostBenchmarkController {
             sampleDuration: sampleDuration,
             request120LikeProperties: request120LikeProperties
         )
+        .appendingNotes(captureRelevantProcessLoadNotes())
     }
 
     func benchmarkSkyLightDisplayStream(
@@ -170,6 +171,7 @@ final class MDKHostBenchmarkController {
             outputWidth: outputWidth,
             outputHeight: outputHeight
         )
+        .appendingNotes(captureRelevantProcessLoadNotes())
     }
 
     func benchmarkSkyLightDisplayStreamProcessing(
@@ -422,5 +424,66 @@ final class MDKHostBenchmarkController {
 
     func inspectScreenCaptureKitRuntime() throws -> MDKScreenCaptureKitRuntimeInventory {
         try MDKScreenCaptureKitRuntimeInspector.inspect()
+    }
+}
+
+private extension MDKHostBenchmarkController {
+    func captureRelevantProcessLoadNotes() -> [String] {
+        guard let output = try? captureProcessListSnapshot() else {
+            return []
+        }
+
+        let interestingProcesses = [
+            "WindowServer",
+            "colorsync.useragent",
+            "colorsyncd",
+            "colorsync.displayservices",
+            "replayd"
+        ]
+
+        let matches = output
+            .split(separator: "\n")
+            .compactMap { line -> String? in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else {
+                    return nil
+                }
+
+                let tokens = trimmed.split(maxSplits: 2, omittingEmptySubsequences: true, whereSeparator: \.isWhitespace)
+                guard tokens.count == 3 else {
+                    return nil
+                }
+
+                let processPath = String(tokens[2])
+                guard let interesting = interestingProcesses.first(where: {
+                    processPath == $0 || processPath.hasSuffix("/\($0)")
+                }) else {
+                    return nil
+                }
+
+                return "hostLoad/\(interesting) pcpu=\(tokens[0]) pmem=\(tokens[1])"
+            }
+
+        return matches
+    }
+
+    func captureProcessListSnapshot() throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-Ao", "pcpu,pmem,comm"]
+
+        let outputPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = Pipe()
+
+        try process.run()
+        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            return ""
+        }
+
+        return String(decoding: data, as: UTF8.self)
     }
 }

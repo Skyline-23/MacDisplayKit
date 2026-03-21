@@ -22,6 +22,12 @@ public struct MDKSkyLightDisplayStreamBenchmarkResult: Codable, Equatable, Senda
     public let intervalCount: Int
     public let minIntervalMilliseconds: Double?
     public let maxIntervalMilliseconds: Double?
+    public let stallCountOver16Milliseconds: Int
+    public let stallCountOver33Milliseconds: Int
+    public let stallCountOver100Milliseconds: Int
+    public let longGapRatioOver16Milliseconds: Double
+    public let longGapRatioOver33Milliseconds: Double
+    public let longGapRatioOver100Milliseconds: Double
     public let intervalHistogram: [String: Int]
     public let cadenceClassification: String
     public let frameStatusHistogram: [String: Int]
@@ -50,6 +56,12 @@ public struct MDKSkyLightDisplayStreamBenchmarkResult: Codable, Equatable, Senda
         intervalCount: Int,
         minIntervalMilliseconds: Double?,
         maxIntervalMilliseconds: Double?,
+        stallCountOver16Milliseconds: Int = 0,
+        stallCountOver33Milliseconds: Int = 0,
+        stallCountOver100Milliseconds: Int = 0,
+        longGapRatioOver16Milliseconds: Double = 0.0,
+        longGapRatioOver33Milliseconds: Double = 0.0,
+        longGapRatioOver100Milliseconds: Double = 0.0,
         intervalHistogram: [String: Int],
         cadenceClassification: String,
         frameStatusHistogram: [String: Int],
@@ -73,6 +85,12 @@ public struct MDKSkyLightDisplayStreamBenchmarkResult: Codable, Equatable, Senda
         self.intervalCount = intervalCount
         self.minIntervalMilliseconds = minIntervalMilliseconds
         self.maxIntervalMilliseconds = maxIntervalMilliseconds
+        self.stallCountOver16Milliseconds = stallCountOver16Milliseconds
+        self.stallCountOver33Milliseconds = stallCountOver33Milliseconds
+        self.stallCountOver100Milliseconds = stallCountOver100Milliseconds
+        self.longGapRatioOver16Milliseconds = longGapRatioOver16Milliseconds
+        self.longGapRatioOver33Milliseconds = longGapRatioOver33Milliseconds
+        self.longGapRatioOver100Milliseconds = longGapRatioOver100Milliseconds
         self.intervalHistogram = intervalHistogram
         self.cadenceClassification = cadenceClassification
         self.frameStatusHistogram = frameStatusHistogram
@@ -124,10 +142,53 @@ public struct MDKSkyLightDisplayStreamBenchmarkResult: Codable, Equatable, Senda
             intervalCount: intervalCountNumber.intValue,
             minIntervalMilliseconds: (shimDictionary["minIntervalMilliseconds"] as? NSNumber)?.doubleValue,
             maxIntervalMilliseconds: (shimDictionary["maxIntervalMilliseconds"] as? NSNumber)?.doubleValue,
+            stallCountOver16Milliseconds: (shimDictionary["stallCountOver16Milliseconds"] as? NSNumber)?.intValue ?? 0,
+            stallCountOver33Milliseconds: (shimDictionary["stallCountOver33Milliseconds"] as? NSNumber)?.intValue ?? 0,
+            stallCountOver100Milliseconds: (shimDictionary["stallCountOver100Milliseconds"] as? NSNumber)?.intValue ?? 0,
+            longGapRatioOver16Milliseconds: (shimDictionary["longGapRatioOver16Milliseconds"] as? NSNumber)?.doubleValue ?? 0.0,
+            longGapRatioOver33Milliseconds: (shimDictionary["longGapRatioOver33Milliseconds"] as? NSNumber)?.doubleValue ?? 0.0,
+            longGapRatioOver100Milliseconds: (shimDictionary["longGapRatioOver100Milliseconds"] as? NSNumber)?.doubleValue ?? 0.0,
             intervalHistogram: intervalHistogram.mapValues(\.intValue),
             cadenceClassification: cadenceClassification,
             frameStatusHistogram: frameStatusHistogram.mapValues(\.intValue),
             notes: notes
+        )
+    }
+
+    public func appendingNotes(_ additionalNotes: [String]) -> Self {
+        guard !additionalNotes.isEmpty else {
+            return self
+        }
+
+        return Self(
+            displayID: displayID,
+            status: status,
+            stopStatus: stopStatus,
+            sampleDuration: sampleDuration,
+            callbackCount: callbackCount,
+            completeFrameCount: completeFrameCount,
+            observedFrameRate: observedFrameRate,
+            requested120LikeProperties: requested120LikeProperties,
+            requestedMinimumFrameTime: requestedMinimumFrameTime,
+            requestedQueueDepth: requestedQueueDepth,
+            requestedShowCursor: requestedShowCursor,
+            appliedPropertyCount: appliedPropertyCount,
+            surfaceWidth: surfaceWidth,
+            surfaceHeight: surfaceHeight,
+            pixelFormat: pixelFormat,
+            intervalCount: intervalCount,
+            minIntervalMilliseconds: minIntervalMilliseconds,
+            maxIntervalMilliseconds: maxIntervalMilliseconds,
+            stallCountOver16Milliseconds: stallCountOver16Milliseconds,
+            stallCountOver33Milliseconds: stallCountOver33Milliseconds,
+            stallCountOver100Milliseconds: stallCountOver100Milliseconds,
+            longGapRatioOver16Milliseconds: longGapRatioOver16Milliseconds,
+            longGapRatioOver33Milliseconds: longGapRatioOver33Milliseconds,
+            longGapRatioOver100Milliseconds: longGapRatioOver100Milliseconds,
+            intervalHistogram: intervalHistogram,
+            cadenceClassification: cadenceClassification,
+            frameStatusHistogram: frameStatusHistogram,
+            notes: notes + additionalNotes
         )
     }
 }

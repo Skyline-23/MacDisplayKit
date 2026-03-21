@@ -399,6 +399,12 @@ final class MacDisplayKitTests: XCTestCase {
             intervalCount: 192,
             minIntervalMilliseconds: 4.167,
             maxIntervalMilliseconds: 62.499,
+            stallCountOver16Milliseconds: 40,
+            stallCountOver33Milliseconds: 2,
+            stallCountOver100Milliseconds: 0,
+            longGapRatioOver16Milliseconds: 40.0 / 192.0,
+            longGapRatioOver33Milliseconds: 2.0 / 192.0,
+            longGapRatioOver100Milliseconds: 0.0,
             intervalHistogram: ["8.3ms": 101],
             cadenceClassification: "120hz-like",
             frameStatusHistogram: ["frame-complete": 193],
@@ -430,6 +436,12 @@ final class MacDisplayKitTests: XCTestCase {
             "intervalCount": NSNumber(value: 192),
             "minIntervalMilliseconds": NSNumber(value: 4.167),
             "maxIntervalMilliseconds": NSNumber(value: 62.499),
+            "stallCountOver16Milliseconds": NSNumber(value: 40),
+            "stallCountOver33Milliseconds": NSNumber(value: 2),
+            "stallCountOver100Milliseconds": NSNumber(value: 0),
+            "longGapRatioOver16Milliseconds": NSNumber(value: 40.0 / 192.0),
+            "longGapRatioOver33Milliseconds": NSNumber(value: 2.0 / 192.0),
+            "longGapRatioOver100Milliseconds": NSNumber(value: 0.0),
             "intervalHistogram": ["8.3ms": NSNumber(value: 101), "12.5ms": NSNumber(value: 40)],
             "cadenceClassification": "120hz-like",
             "frameStatusHistogram": ["frame-complete": NSNumber(value: 193), "frame-idle": NSNumber(value: 7)],
@@ -447,9 +459,51 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(result.appliedPropertyCount, 3)
         XCTAssertEqual(result.surfaceWidth, 5120)
         XCTAssertEqual(result.surfaceHeight, 2880)
+        XCTAssertEqual(result.stallCountOver16Milliseconds, 40)
+        XCTAssertEqual(result.stallCountOver33Milliseconds, 2)
+        XCTAssertEqual(result.stallCountOver100Milliseconds, 0)
+        XCTAssertEqual(result.longGapRatioOver16Milliseconds, 40.0 / 192.0, accuracy: 0.000_001)
         XCTAssertEqual(result.intervalHistogram["8.3ms"], 101)
         XCTAssertEqual(result.frameStatusHistogram["frame-idle"], 7)
         XCTAssertEqual(result.cadenceClassification, "120hz-like")
+    }
+
+    func testSkyLightDisplayStreamBenchmarkResultCanAppendNotes() {
+        let result = MDKSkyLightDisplayStreamBenchmarkResult(
+            displayID: 2,
+            status: 0,
+            stopStatus: 0,
+            sampleDuration: 1.0,
+            callbackCount: 10,
+            completeFrameCount: 9,
+            observedFrameRate: 9.0,
+            requested120LikeProperties: false,
+            requestedMinimumFrameTime: 0.0,
+            requestedQueueDepth: 3,
+            requestedShowCursor: false,
+            appliedPropertyCount: 3,
+            surfaceWidth: 3840,
+            surfaceHeight: 2160,
+            pixelFormat: kCVPixelFormatType_32BGRA,
+            intervalCount: 8,
+            minIntervalMilliseconds: 8.333,
+            maxIntervalMilliseconds: 33.333,
+            stallCountOver16Milliseconds: 1,
+            stallCountOver33Milliseconds: 0,
+            stallCountOver100Milliseconds: 0,
+            longGapRatioOver16Milliseconds: 0.125,
+            longGapRatioOver33Milliseconds: 0.0,
+            longGapRatioOver100Milliseconds: 0.0,
+            intervalHistogram: [:],
+            cadenceClassification: "coalesced-or-mixed",
+            frameStatusHistogram: [:],
+            notes: ["base"]
+        )
+
+        let appended = result.appendingNotes(["hostLoad/WindowServer pcpu=40.0 pmem=0.7"])
+
+        XCTAssertEqual(appended.notes, ["base", "hostLoad/WindowServer pcpu=40.0 pmem=0.7"])
+        XCTAssertEqual(appended.stallCountOver16Milliseconds, result.stallCountOver16Milliseconds)
     }
 
     func testRequest120LikeCandidateUsesRetunedQ3Configuration() {

@@ -12928,16 +12928,36 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
     NSString *cadenceClassification = MDKClassifyCadenceForMillisecondIntervals(intervals);
     NSNumber *minIntervalMilliseconds = nil;
     NSNumber *maxIntervalMilliseconds = nil;
+    NSUInteger stallCountOver16Milliseconds = 0;
+    NSUInteger stallCountOver33Milliseconds = 0;
+    NSUInteger stallCountOver100Milliseconds = 0;
     if (intervals.count > 0) {
         double minValue = intervals.firstObject.doubleValue;
         double maxValue = intervals.firstObject.doubleValue;
         for (NSNumber *value in intervals) {
-            minValue = std::min(minValue, value.doubleValue);
-            maxValue = std::max(maxValue, value.doubleValue);
+            const double intervalMilliseconds = value.doubleValue;
+            minValue = std::min(minValue, intervalMilliseconds);
+            maxValue = std::max(maxValue, intervalMilliseconds);
+            if (intervalMilliseconds > 16.666) {
+                stallCountOver16Milliseconds += 1;
+            }
+            if (intervalMilliseconds > 33.333) {
+                stallCountOver33Milliseconds += 1;
+            }
+            if (intervalMilliseconds > 100.0) {
+                stallCountOver100Milliseconds += 1;
+            }
         }
         minIntervalMilliseconds = @(minValue);
         maxIntervalMilliseconds = @(maxValue);
     }
+    const double intervalCountDouble = static_cast<double>(intervals.count);
+    const double longGapRatioOver16Milliseconds =
+        intervalCountDouble > 0.0 ? static_cast<double>(stallCountOver16Milliseconds) / intervalCountDouble : 0.0;
+    const double longGapRatioOver33Milliseconds =
+        intervalCountDouble > 0.0 ? static_cast<double>(stallCountOver33Milliseconds) / intervalCountDouble : 0.0;
+    const double longGapRatioOver100Milliseconds =
+        intervalCountDouble > 0.0 ? static_cast<double>(stallCountOver100Milliseconds) / intervalCountDouble : 0.0;
 
     NSMutableArray<NSString *> *notes = [NSMutableArray array];
     [notes addObject:@"Uses raw SkyLight SLDisplayStreamCreateWithDispatchQueue instead of replayd-backed SCStream."];
@@ -12979,6 +12999,12 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
         @"surfaceHeight": @(surfaceHeight > 0 ? surfaceHeight : height),
         @"pixelFormat": @(static_cast<std::uint32_t>(surfacePixelFormat != 0 ? surfacePixelFormat : kCVPixelFormatType_32BGRA)),
         @"intervalCount": @(intervals.count),
+        @"stallCountOver16Milliseconds": @(stallCountOver16Milliseconds),
+        @"stallCountOver33Milliseconds": @(stallCountOver33Milliseconds),
+        @"stallCountOver100Milliseconds": @(stallCountOver100Milliseconds),
+        @"longGapRatioOver16Milliseconds": @(longGapRatioOver16Milliseconds),
+        @"longGapRatioOver33Milliseconds": @(longGapRatioOver33Milliseconds),
+        @"longGapRatioOver100Milliseconds": @(longGapRatioOver100Milliseconds),
         @"intervalHistogram": intervalHistogram,
         @"cadenceClassification": cadenceClassification,
         @"frameStatusHistogram": frameStatusHistogram,

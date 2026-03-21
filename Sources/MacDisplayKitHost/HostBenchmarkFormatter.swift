@@ -373,6 +373,27 @@ enum MDKHostBenchmarkFormatter {
                 )
             )
         }
+        lines.append(
+            String(
+                format: "Long gaps >16.7ms: %d (%.3f)",
+                result.stallCountOver16Milliseconds,
+                result.longGapRatioOver16Milliseconds
+            )
+        )
+        lines.append(
+            String(
+                format: "Long gaps >33.3ms: %d (%.3f)",
+                result.stallCountOver33Milliseconds,
+                result.longGapRatioOver33Milliseconds
+            )
+        )
+        lines.append(
+            String(
+                format: "Long gaps >100ms: %d (%.3f)",
+                result.stallCountOver100Milliseconds,
+                result.longGapRatioOver100Milliseconds
+            )
+        )
         lines.append("Interval histogram: \(result.intervalHistogram)")
         lines.append("Frame status histogram: \(result.frameStatusHistogram)")
         lines.append("Requested 120-like properties: \(result.requested120LikeProperties ? "yes" : "no")")
