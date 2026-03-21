@@ -837,4 +837,25 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(summary.matchedLineCount, 2)
         XCTAssertEqual(summary.matchedLines.count, 2)
     }
+
+    func testReplaydUnifiedLogArtifactParserSummarizesEnqueueFailures() throws {
+        let logText = """
+        {"timestamp":"2026-03-21 16:33:24.595233+0900","eventMessage":" [ERROR] _SCRemoteQueue_Enqueue:217 remoteQueue=0xa542ef6c0 err=-19641 opType=3 Error occurred when enqueuing data"}
+        {"timestamp":"2026-03-21 16:33:24.612081+0900","eventMessage":" [ERROR] _SCRemoteQueue_Enqueue:217 remoteQueue=0xa542ef6c0 err=-19641 opType=3 Error occurred when enqueuing data"}
+        {"timestamp":"2026-03-21 16:33:24.632011+0900","eventMessage":" [ERROR] _SCRemoteQueue_Enqueue:217 remoteQueue=0xa542ef6c0 err=-19641 opType=3 Error occurred when enqueuing data"}
+        """
+
+        let summary = MDKReplaydXctraceArtifactParser.summarizeUnifiedLogArtifact(
+            outputPath: "/tmp/replayd-log.ndjson",
+            logText: logText
+        )
+
+        let enqueueSummary = try XCTUnwrap(summary.enqueueFailureSummary)
+        XCTAssertEqual(enqueueSummary.eventCount, 3)
+        XCTAssertEqual(enqueueSummary.errorHistogram["-19641"], 3)
+        XCTAssertEqual(enqueueSummary.operationHistogram["3"], 3)
+        XCTAssertEqual(enqueueSummary.remoteQueueHistogram["0xa542ef6c0"], 3)
+        XCTAssertEqual(enqueueSummary.cadenceClassification, "60hz-like")
+        XCTAssertEqual(enqueueSummary.firstEvents.count, 3)
+    }
 }

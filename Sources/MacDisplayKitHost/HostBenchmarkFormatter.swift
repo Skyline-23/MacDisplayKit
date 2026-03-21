@@ -21,6 +21,18 @@ enum MDKHostBenchmarkFormatter {
             "  - \(report.timeSampleTable.schema): rows=\(report.timeSampleTable.rowCount) bytes=\(report.timeSampleTable.byteCount) path=\(report.timeSampleTable.outputPath)"
         )
         lines.append("Unified log: lines=\(report.unifiedLog.lineCount) matched=\(report.unifiedLog.matchedLineCount) path=\(report.unifiedLog.outputPath)")
+        if let enqueueFailures = report.unifiedLog.enqueueFailureSummary {
+            lines.append(
+                "Enqueue failures: count=\(enqueueFailures.eventCount) cadence=\(enqueueFailures.cadenceClassification)"
+            )
+            if let min = enqueueFailures.minIntervalMilliseconds,
+               let max = enqueueFailures.maxIntervalMilliseconds {
+                lines.append(String(format: "  interval range: %.3fms..%.3fms", min, max))
+            }
+            lines.append("  errors: \(enqueueFailures.errorHistogram)")
+            lines.append("  opTypes: \(enqueueFailures.operationHistogram)")
+            lines.append("  remoteQueues: \(enqueueFailures.remoteQueueHistogram)")
+        }
         if !report.unifiedLog.matchedLines.isEmpty {
             lines.append("Unified log matches:")
             for line in report.unifiedLog.matchedLines {

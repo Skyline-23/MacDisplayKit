@@ -1251,6 +1251,13 @@ Interpretation:
       - `time-sample rowCount=66`
     - replayd unified log emitted repeated producer-side enqueue failures:
       - `_SCRemoteQueue_Enqueue:217 ... err=-19641 opType=3 Error occurred when enqueuing data`
+      - the new parser can now summarize those failures directly from the host artifact:
+        - `eventCount=272`
+        - `errorHistogram={"-19641":272}`
+        - `operationHistogram={"3":272}`
+        - `remoteQueueHistogram={"0xa543295c0":272}`
+        - interval histogram dominated by `16.0ms` through `20.0ms`
+        - `cadenceClassification=60hz-like`
     - replayd health monitor also reported:
       - `screenframeCount=0`
   - interpretation of that paired run:

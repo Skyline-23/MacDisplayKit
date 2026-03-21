@@ -236,8 +236,10 @@ private actor MDKReplaydXctraceCoordinator {
         if unifiedLog.matchedLineCount == 0 {
             notes.append("replayd unified log did not emit matching capture markers in the requested window.")
         }
-        if unifiedLog.matchedLines.contains(where: { $0.localizedCaseInsensitiveContains("_SCRemoteQueue_Enqueue") }) {
-            notes.append("replayd unified log captured _SCRemoteQueue_Enqueue failures during the paired trace.")
+        if let enqueueFailures = unifiedLog.enqueueFailureSummary {
+            notes.append(
+                "replayd unified log captured \(enqueueFailures.eventCount) _SCRemoteQueue_Enqueue failures with \(enqueueFailures.cadenceClassification) spacing."
+            )
         }
         if unifiedLog.matchedLines.contains(where: { $0.localizedCaseInsensitiveContains("screenframeCount=0") }) {
             notes.append("replayd health-monitor log reported screenframeCount=0 during the paired trace window.")
