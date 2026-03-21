@@ -82,6 +82,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
     public let hotSymbolSyscallSummaries: [MDKReplaydXctraceHotSymbolSyscallSummary]
     public let hotSymbolSyscallCadenceSummaries: [MDKReplaydXctraceHotSymbolSyscallCadenceSummary]
     public let replaydRunningThreadCadenceSummaries: [MDKReplaydXctraceThreadCadenceSummary]
+    public let windowServerRunningThreadCadenceSummaries: [MDKReplaydXctraceThreadCadenceSummary]
     public let replaydRunnableSourceSummaries: [MDKReplaydXctraceRunnableSourceSummary]
     public let excerpt: [String]
 
@@ -96,6 +97,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
         hotSymbolSyscallSummaries: [MDKReplaydXctraceHotSymbolSyscallSummary],
         hotSymbolSyscallCadenceSummaries: [MDKReplaydXctraceHotSymbolSyscallCadenceSummary],
         replaydRunningThreadCadenceSummaries: [MDKReplaydXctraceThreadCadenceSummary],
+        windowServerRunningThreadCadenceSummaries: [MDKReplaydXctraceThreadCadenceSummary],
         replaydRunnableSourceSummaries: [MDKReplaydXctraceRunnableSourceSummary],
         excerpt: [String]
     ) {
@@ -109,6 +111,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
         self.hotSymbolSyscallSummaries = hotSymbolSyscallSummaries
         self.hotSymbolSyscallCadenceSummaries = hotSymbolSyscallCadenceSummaries
         self.replaydRunningThreadCadenceSummaries = replaydRunningThreadCadenceSummaries
+        self.windowServerRunningThreadCadenceSummaries = windowServerRunningThreadCadenceSummaries
         self.replaydRunnableSourceSummaries = replaydRunnableSourceSummaries
         self.excerpt = excerpt
     }
@@ -333,6 +336,7 @@ public enum MDKReplaydXctraceArtifactParser {
         let hotSymbolSyscallSummaries = summarizeHotSymbolSyscalls(in: exportText)
         let hotSymbolSyscallCadenceSummaries = summarizeHotSymbolSyscallCadences(in: exportText)
         let replaydRunningThreadCadenceSummaries = summarizeReplaydRunningThreadCadences(in: exportText)
+        let windowServerRunningThreadCadenceSummaries = summarizeWindowServerRunningThreadCadences(in: exportText)
         let replaydRunnableSourceSummaries = summarizeReplaydRunnableSources(in: exportText)
 
         return MDKReplaydXctraceTableArtifact(
@@ -346,6 +350,7 @@ public enum MDKReplaydXctraceArtifactParser {
             hotSymbolSyscallSummaries: hotSymbolSyscallSummaries,
             hotSymbolSyscallCadenceSummaries: hotSymbolSyscallCadenceSummaries,
             replaydRunningThreadCadenceSummaries: replaydRunningThreadCadenceSummaries,
+            windowServerRunningThreadCadenceSummaries: windowServerRunningThreadCadenceSummaries,
             replaydRunnableSourceSummaries: replaydRunnableSourceSummaries,
             excerpt: excerpt
         )
@@ -747,6 +752,28 @@ public enum MDKReplaydXctraceArtifactParser {
     private static func summarizeReplaydRunningThreadCadences(
         in exportText: String
     ) -> [MDKReplaydXctraceThreadCadenceSummary] {
+        summarizeRunningThreadCadences(
+            in: exportText,
+            processPID: "740",
+            threadFormatMarker: "(replayd, pid: 740)"
+        )
+    }
+
+    private static func summarizeWindowServerRunningThreadCadences(
+        in exportText: String
+    ) -> [MDKReplaydXctraceThreadCadenceSummary] {
+        summarizeRunningThreadCadences(
+            in: exportText,
+            processPID: "408",
+            threadFormatMarker: "(WindowServer, pid: 408)"
+        )
+    }
+
+    private static func summarizeRunningThreadCadences(
+        in exportText: String,
+        processPID targetProcessPID: String,
+        threadFormatMarker: String
+    ) -> [MDKReplaydXctraceThreadCadenceSummary] {
         guard let rowExpression else {
             return []
         }
@@ -831,8 +858,8 @@ public enum MDKReplaydXctraceArtifactParser {
                 continue
             }
 
-            let belongsToReplayd = processPID == "740" || resolvedThread.fmt.contains("(replayd, pid: 740)")
-            guard belongsToReplayd else {
+            let belongsToProcess = processPID == targetProcessPID || resolvedThread.fmt.contains(threadFormatMarker)
+            guard belongsToProcess else {
                 continue
             }
 

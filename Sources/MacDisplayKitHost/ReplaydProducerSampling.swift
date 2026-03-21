@@ -284,6 +284,27 @@ private actor MDKReplaydXctraceCoordinator {
                 "replayd context-switch running cadences \(dominantSummary)."
             )
         }
+        if !contextSwitchTable.windowServerRunningThreadCadenceSummaries.isEmpty {
+            let dominantWindowServerThreads = contextSwitchTable.windowServerRunningThreadCadenceSummaries
+                .prefix(2)
+                .map { "\($0.threadID)=\($0.cadenceClassification) count=\($0.eventCount)" }
+            notes.append(
+                "WindowServer context-switch running cadences \(dominantWindowServerThreads.joined(separator: ", "))."
+            )
+            if let mainThreadSummary = contextSwitchTable.windowServerRunningThreadCadenceSummaries.first(where: {
+                $0.threadName.contains("Main Thread")
+            }) {
+                notes.append(
+                    "WindowServer main thread cadence classified as \(mainThreadSummary.cadenceClassification) over \(mainThreadSummary.eventCount) running events."
+                )
+            }
+        } else if threadStateTable.replaydRunnableSourceSummaries.contains(where: { summary in
+            summary.runnableSourceHistogram.keys.contains(where: { $0.contains("WindowServer, pid: 408") })
+        }) {
+            notes.append(
+                "thread-state surfaced WindowServer wake sources, but this replayd-attached context-switch export did not include WindowServer running rows."
+            )
+        }
         if !threadStateTable.replaydRunnableSourceSummaries.isEmpty {
             let dominantRunnableSources = threadStateTable.replaydRunnableSourceSummaries.prefix(2).map { summary in
                 let topSources = summary.runnableSourceHistogram
@@ -324,7 +345,7 @@ private actor MDKReplaydXctraceCoordinator {
                 }
             if !dominantWindowServerWakeSummaries.isEmpty {
                 notes.append(
-                    "thread-state shows dominant replayd running threads made runnable by WindowServer \(dominantWindowServerWakeSummaries.joined(separator: \", \"))."
+                    "thread-state shows dominant replayd running threads made runnable by WindowServer \(dominantWindowServerWakeSummaries.joined(separator: ", "))."
                 )
             }
         }

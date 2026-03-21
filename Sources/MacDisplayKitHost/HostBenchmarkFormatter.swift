@@ -24,6 +24,13 @@ enum MDKHostBenchmarkFormatter {
                 )
             }
         }
+        if !report.contextSwitchTable.windowServerRunningThreadCadenceSummaries.isEmpty {
+            for summary in report.contextSwitchTable.windowServerRunningThreadCadenceSummaries.prefix(4) {
+                lines.append(
+                    "    windowServerThreadCadence[\(summary.threadID)]: event=\(summary.eventName) count=\(summary.eventCount) class=\(summary.cadenceClassification) histogram=\(summary.intervalHistogram)"
+                )
+            }
+        }
         lines.append(
             "  - \(report.threadStateTable.schema): rows=\(report.threadStateTable.rowCount) bytes=\(report.threadStateTable.byteCount) path=\(report.threadStateTable.outputPath)"
         )

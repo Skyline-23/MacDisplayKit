@@ -922,6 +922,27 @@ final class MacDisplayKitTests: XCTestCase {
               <sched-event ref="16"/>
               <process ref="13"/>
             </row>
+            <row>
+              <event-time id="7" fmt="00:00.000.000">0</event-time>
+              <thread id="31" fmt="Main Thread (0x10e8) (WindowServer, pid: 408)">
+                <tid id="32" fmt="0x10e8">4328</tid>
+                <process id="33" fmt="WindowServer (408)"><pid id="34" fmt="408">408</pid></process>
+              </thread>
+              <sched-event ref="16"/>
+              <process ref="33"/>
+            </row>
+            <row>
+              <event-time id="8" fmt="00:00.016.750">16750000</event-time>
+              <thread ref="31"/>
+              <sched-event ref="16"/>
+              <process ref="33"/>
+            </row>
+            <row>
+              <event-time id="9" fmt="00:00.033.500">33500000</event-time>
+              <thread ref="31"/>
+              <sched-event ref="16"/>
+              <process ref="33"/>
+            </row>
           </node>
         </trace-query-result>
         """
@@ -933,7 +954,7 @@ final class MacDisplayKitTests: XCTestCase {
         )
 
         XCTAssertEqual(summary.schema, "context-switch")
-        XCTAssertEqual(summary.rowCount, 6)
+        XCTAssertEqual(summary.rowCount, 9)
         XCTAssertEqual(summary.replaydRunningThreadCadenceSummaries.count, 2)
         let firstThread = try XCTUnwrap(
             summary.replaydRunningThreadCadenceSummaries.first(where: { $0.threadID == "2216416" })
@@ -946,6 +967,11 @@ final class MacDisplayKitTests: XCTestCase {
         )
         XCTAssertEqual(secondThread.eventCount, 3)
         XCTAssertEqual(secondThread.cadenceClassification, "60hz-like")
+        let windowServerMainThread = try XCTUnwrap(
+            summary.windowServerRunningThreadCadenceSummaries.first(where: { $0.threadID == "4328" })
+        )
+        XCTAssertEqual(windowServerMainThread.eventCount, 3)
+        XCTAssertEqual(windowServerMainThread.cadenceClassification, "60hz-like")
     }
 
     func testReplaydXctraceArtifactParserSummarizesReplaydRunnableSourcesFromThreadState() throws {

@@ -1276,6 +1276,7 @@ Interpretation:
           - thread `2269541` made runnable by `WindowServer` at `00:00.472.859`, `00:00.524.157`, and `00:01.443.494`
           - thread `2269221` made runnable by `WindowServer` at `00:00.506.274` and `00:01.973.280`
         - replayd threads also wake each other, but `WindowServer` is now a first-class upstream runnable source in the dominant producer path
+        - the current replayd-attached `context-switch` export does not carry matching `WindowServer` running rows, so the next artifact needs an explicit `WindowServer` capture rather than more replayd-only parsing
     - replayd unified log emitted repeated producer-side enqueue failures:
       - `_SCRemoteQueue_Enqueue:217 ... err=-19641 opType=3 Error occurred when enqueuing data`
       - the new parser can now summarize those failures directly from the host artifact:
