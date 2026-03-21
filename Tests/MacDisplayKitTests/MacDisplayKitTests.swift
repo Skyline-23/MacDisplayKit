@@ -861,6 +861,7 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(enqueueSummary.eventCount, 3)
         XCTAssertEqual(enqueueSummary.errorHistogram["-19641"], 3)
         XCTAssertEqual(enqueueSummary.operationHistogram["3"], 3)
+        XCTAssertEqual(enqueueSummary.messageKindHistogram["generic-enqueue-error"], 3)
         XCTAssertEqual(enqueueSummary.remoteQueueHistogram["0xa542ef6c0"], 3)
         XCTAssertEqual(enqueueSummary.threadHistogram["2068394"], 2)
         XCTAssertEqual(enqueueSummary.threadHistogram["2069384"], 1)

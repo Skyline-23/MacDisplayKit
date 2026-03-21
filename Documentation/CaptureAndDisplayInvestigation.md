@@ -1255,12 +1255,17 @@ Interpretation:
         - `eventCount=278`
         - `errorHistogram={"-19641":278}`
         - `operationHistogram={"3":278}`
+        - `messageKindHistogram={"generic-enqueue-error":278}`
         - `remoteQueueHistogram={"0xa543295c0":278}`
         - `senderProgramCounterHistogram={"766532":278}`
         - `imageOffsetHistogram={"766532":278}`
         - `threadHistogram={"2083387":21,"2087226":109,"2087253":148}`
         - interval histogram dominated by `16.0ms` through `20.0ms`
         - `cadenceClassification=60hz-like`
+      - a follow-up `3`-second host run with the broadened parser showed the same branch shape:
+        - `eventCount=274`
+        - `messageKindHistogram={"generic-enqueue-error":274}`
+        - no `queue-full` or `client-terminated` events appeared in that window
     - replayd health monitor also reported:
       - `screenframeCount=0`
   - interpretation of that paired run:

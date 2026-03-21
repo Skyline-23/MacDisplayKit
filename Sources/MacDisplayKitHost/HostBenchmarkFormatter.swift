@@ -31,6 +31,7 @@ enum MDKHostBenchmarkFormatter {
             }
             lines.append("  errors: \(enqueueFailures.errorHistogram)")
             lines.append("  opTypes: \(enqueueFailures.operationHistogram)")
+            lines.append("  messageKinds: \(enqueueFailures.messageKindHistogram)")
             lines.append("  remoteQueues: \(enqueueFailures.remoteQueueHistogram)")
             if !enqueueFailures.threadHistogram.isEmpty {
                 lines.append("  threads: \(enqueueFailures.threadHistogram)")

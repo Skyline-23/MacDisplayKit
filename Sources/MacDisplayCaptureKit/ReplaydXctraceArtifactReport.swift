@@ -5,6 +5,7 @@ public struct MDKReplaydQueueEnqueueFailureEvent: Codable, Equatable, Sendable {
     public let remoteQueue: String?
     public let errorCode: Int
     public let operationType: Int
+    public let messageKind: String
     public let eventMessage: String
 
     public init(
@@ -12,12 +13,14 @@ public struct MDKReplaydQueueEnqueueFailureEvent: Codable, Equatable, Sendable {
         remoteQueue: String?,
         errorCode: Int,
         operationType: Int,
+        messageKind: String,
         eventMessage: String
     ) {
         self.timestamp = timestamp
         self.remoteQueue = remoteQueue
         self.errorCode = errorCode
         self.operationType = operationType
+        self.messageKind = messageKind
         self.eventMessage = eventMessage
     }
 }
@@ -27,6 +30,7 @@ public struct MDKReplaydQueueEnqueueFailureSummary: Codable, Equatable, Sendable
     public let remoteQueueHistogram: [String: Int]
     public let errorHistogram: [String: Int]
     public let operationHistogram: [String: Int]
+    public let messageKindHistogram: [String: Int]
     public let threadHistogram: [String: Int]
     public let senderProgramCounterHistogram: [String: Int]
     public let imageOffsetHistogram: [String: Int]
@@ -41,6 +45,7 @@ public struct MDKReplaydQueueEnqueueFailureSummary: Codable, Equatable, Sendable
         remoteQueueHistogram: [String: Int],
         errorHistogram: [String: Int],
         operationHistogram: [String: Int],
+        messageKindHistogram: [String: Int],
         threadHistogram: [String: Int],
         senderProgramCounterHistogram: [String: Int],
         imageOffsetHistogram: [String: Int],
@@ -54,6 +59,7 @@ public struct MDKReplaydQueueEnqueueFailureSummary: Codable, Equatable, Sendable
         self.remoteQueueHistogram = remoteQueueHistogram
         self.errorHistogram = errorHistogram
         self.operationHistogram = operationHistogram
+        self.messageKindHistogram = messageKindHistogram
         self.threadHistogram = threadHistogram
         self.senderProgramCounterHistogram = senderProgramCounterHistogram
         self.imageOffsetHistogram = imageOffsetHistogram
@@ -125,7 +131,7 @@ public enum MDKReplaydXctraceArtifactParser {
     }()
 
     private static let enqueueFailureExpression = try? NSRegularExpression(
-        pattern: #"_SCRemoteQueue_Enqueue:\d+\s+remoteQueue=(0x[0-9a-fA-F]+)\s+err=(-?\d+)\s+opType=(\d+)"#
+        pattern: #"_SCRemoteQueue_Enqueue:\d+\s+remoteQueue=(0x[0-9a-fA-F]+)\s+err=(-?\d+)\s+opType=(\d+)\s+(Client terminated the queue|Queue is full!|Error occurred when enqueuing data)"#
     )
     private static let timestampExpression = try? NSRegularExpression(
         pattern: #""timestamp":"([^"]+)""#
@@ -197,6 +203,7 @@ public enum MDKReplaydXctraceArtifactParser {
         var remoteQueueHistogram: [String: Int] = [:]
         var errorHistogram: [String: Int] = [:]
         var operationHistogram: [String: Int] = [:]
+        var messageKindHistogram: [String: Int] = [:]
         var threadHistogram: [String: Int] = [:]
         var senderProgramCounterHistogram: [String: Int] = [:]
         var imageOffsetHistogram: [String: Int] = [:]
@@ -207,6 +214,7 @@ public enum MDKReplaydXctraceArtifactParser {
             remoteQueueHistogram[remoteQueueKey, default: 0] += 1
             errorHistogram[String(event.errorCode), default: 0] += 1
             operationHistogram[String(event.operationType), default: 0] += 1
+            messageKindHistogram[event.messageKind, default: 0] += 1
             if let threadID = parseMetadataValue(using: threadIDExpression, from: event.eventMessage) {
                 threadHistogram[threadID, default: 0] += 1
             }
@@ -236,6 +244,7 @@ public enum MDKReplaydXctraceArtifactParser {
             remoteQueueHistogram: remoteQueueHistogram,
             errorHistogram: errorHistogram,
             operationHistogram: operationHistogram,
+            messageKindHistogram: messageKindHistogram,
             threadHistogram: threadHistogram,
             senderProgramCounterHistogram: senderProgramCounterHistogram,
             imageOffsetHistogram: imageOffsetHistogram,
@@ -274,12 +283,14 @@ public enum MDKReplaydXctraceArtifactParser {
         let remoteQueue = captureGroup(at: 1, from: match, in: line)
         let errorCode = Int(captureGroup(at: 2, from: match, in: line) ?? "") ?? 0
         let operationType = Int(captureGroup(at: 3, from: match, in: line) ?? "") ?? 0
+        let messageKind = classifyEnqueueMessageKind(captureGroup(at: 4, from: match, in: line) ?? "")
 
         return MDKReplaydQueueEnqueueFailureEvent(
             timestamp: timestamp,
             remoteQueue: remoteQueue,
             errorCode: errorCode,
             operationType: operationType,
+            messageKind: messageKind,
             eventMessage: line
         )
     }
@@ -346,5 +357,18 @@ public enum MDKReplaydXctraceArtifactParser {
             return "60hz-like"
         }
         return "coalesced-or-mixed"
+    }
+
+    private static func classifyEnqueueMessageKind(_ message: String) -> String {
+        switch message {
+        case "Client terminated the queue":
+            return "client-terminated"
+        case "Queue is full!":
+            return "queue-full"
+        case "Error occurred when enqueuing data":
+            return "generic-enqueue-error"
+        default:
+            return "unknown"
+        }
     }
 }
