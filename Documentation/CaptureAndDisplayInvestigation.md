@@ -1591,3 +1591,20 @@ Interpretation:
     - the current raw bottleneck is real encoder throughput, not missing output callbacks
     - `H.264` is materially faster than current `HEVC` settings on this host at `5120x2880 420v`
     - `AV1` needs explicit capability probing or a different runtime configuration before it can join the default matrix
+- 2026-03-21 the raw VT path now stages frames through a Metal-backed IOSurface pool before encode submit
+  - the reason for the experiment was source-surface coupling:
+    - direct raw `vt-encode` was still encoding the original `SLDisplayStream` IOSurfaces
+    - callback counts tracked encoder drain too closely, which strongly suggested source-surface reuse/backpressure
+  - current staged results on the machine:
+    - `vt-encode` / `hevc`
+      - direct path had previously landed around `8.87 fps`
+      - staged path now lands around `37.83 fps`
+      - this strongly suggests the old `HEVC` path was throttled by source-surface ownership as well as encode cost
+    - `vt-encode-h264`
+      - direct path had previously landed around `37.85 fps`
+      - staged path landed around `30.69 fps`
+      - this points to a different ceiling: the extra Metal staging work does not help the faster `H.264` encoder on this host
+  - current interpretation:
+    - source-surface backpressure was real, but removing it is not sufficient for `120-like` encode throughput
+    - the remaining ceiling is now codec-specific encoder throughput at `5120x2880`
+    - the next optimization target is a custom `IOSurface -> Metal -> encoder` path that can trade staging cost against encode throughput more deliberately than the current generic blit pool
