@@ -9,6 +9,7 @@ public struct MDKSkyLightDisplayStreamProcessingBenchmarkResult: Codable, Equata
     public let status: Int32
     public let stopStatus: Int32
     public let processingMode: MDKCaptureBenchmarkProcessingMode
+    public let videoEncoderCodec: MDKVideoEncoderCodec?
     public let sampleDuration: TimeInterval
     public let callbackCount: UInt64
     public let completeFrameCount: UInt64
@@ -18,8 +19,14 @@ public struct MDKSkyLightDisplayStreamProcessingBenchmarkResult: Codable, Equata
     public let processingErrorHistogram: [String: Int]
     public let processedFrameRate: Double
     public let processedFrameRatio: Double
+    public let outputCallbackCount: UInt64?
     public let completedOutputFrameCount: UInt64?
     public let completedOutputFrameRate: Double?
+    public let completedOutputFrameRatio: Double?
+    public let outputCallbackStatusHistogram: [String: Int]?
+    public let outputCallbackLatencyHistogram: [String: Int]?
+    public let minOutputCallbackLatencyMilliseconds: Double?
+    public let maxOutputCallbackLatencyMilliseconds: Double?
     public let requestedMinimumFrameTime: Double
     public let requestedQueueDepth: Int
     public let requestedShowCursor: Bool
@@ -34,8 +41,12 @@ public struct MDKSkyLightDisplayStreamProcessingBenchmarkResult: Codable, Equata
     public let frameStatusHistogram: [String: Int]
     public let notes: [String]
 
+    public var effectiveOutputFrameRate: Double {
+        completedOutputFrameRate ?? processedFrameRate
+    }
+
     public var meets120LikeTarget: Bool {
-        cadenceClassification == "120hz-like" && processedFrameRate >= 108.0
+        cadenceClassification == "120hz-like" && effectiveOutputFrameRate >= 108.0
     }
 }
 
@@ -137,11 +148,19 @@ private final class MDKSkyLightDisplayStreamProcessingRecorder {
         let summaryProcessedFrameCount = processingSummary?.processedFrameCount ?? processedFrameCount
         let summaryProcessingFailureCount = processingSummary?.processingFailureCount ?? processingFailureCount
         let summaryProcessingErrorHistogram = processingSummary?.processingErrorHistogram ?? processingErrorHistogram
+        let summaryOutputCallbackCount = processingSummary?.outputCallbackCount
         let summaryCompletedOutputFrameCount = processingSummary?.completedOutputFrameCount
+        let summaryOutputCallbackStatusHistogram = processingSummary?.outputCallbackStatusHistogram
+        let summaryOutputCallbackLatencyHistogram = processingSummary?.outputCallbackLatencyHistogram
+        let summaryMinOutputCallbackLatencyMilliseconds = processingSummary?.minOutputCallbackLatencyMilliseconds
+        let summaryMaxOutputCallbackLatencyMilliseconds = processingSummary?.maxOutputCallbackLatencyMilliseconds
         let processedFrameRate = sampleDuration > 0 ? Double(summaryProcessedFrameCount) / sampleDuration : 0
         let processedFrameRatio = completeFrameCount > 0 ? Double(summaryProcessedFrameCount) / Double(completeFrameCount) : 0
         let completedOutputFrameRate = summaryCompletedOutputFrameCount.map {
             sampleDuration > 0 ? Double($0) / sampleDuration : 0
+        }
+        let completedOutputFrameRatio = summaryCompletedOutputFrameCount.map {
+            summaryProcessedFrameCount > 0 ? Double($0) / Double(summaryProcessedFrameCount) : 0
         }
 
         var notes = [
@@ -159,6 +178,9 @@ private final class MDKSkyLightDisplayStreamProcessingRecorder {
             notes.append("processingFailureCount=\(summaryProcessingFailureCount)")
             notes.append("processingErrors=\(summaryProcessingErrorHistogram)")
         }
+        if let summaryOutputCallbackCount {
+            notes.append("outputCallbackCount=\(summaryOutputCallbackCount)")
+        }
         if let processingSummary {
             notes.append(contentsOf: processingSummary.notes)
         }
@@ -168,6 +190,7 @@ private final class MDKSkyLightDisplayStreamProcessingRecorder {
             status: status,
             stopStatus: stopStatus,
             processingMode: processingMode,
+            videoEncoderCodec: processingMode.videoEncoderCodec,
             sampleDuration: sampleDuration,
             callbackCount: callbackCount,
             completeFrameCount: completeFrameCount,
@@ -177,8 +200,14 @@ private final class MDKSkyLightDisplayStreamProcessingRecorder {
             processingErrorHistogram: summaryProcessingErrorHistogram,
             processedFrameRate: processedFrameRate,
             processedFrameRatio: processedFrameRatio,
+            outputCallbackCount: summaryOutputCallbackCount,
             completedOutputFrameCount: summaryCompletedOutputFrameCount,
             completedOutputFrameRate: completedOutputFrameRate,
+            completedOutputFrameRatio: completedOutputFrameRatio,
+            outputCallbackStatusHistogram: summaryOutputCallbackStatusHistogram,
+            outputCallbackLatencyHistogram: summaryOutputCallbackLatencyHistogram,
+            minOutputCallbackLatencyMilliseconds: summaryMinOutputCallbackLatencyMilliseconds,
+            maxOutputCallbackLatencyMilliseconds: summaryMaxOutputCallbackLatencyMilliseconds,
             requestedMinimumFrameTime: requestedMinimumFrameTime,
             requestedQueueDepth: requestedQueueDepth,
             requestedShowCursor: requestedShowCursor,
@@ -264,7 +293,7 @@ public enum MDKSkyLightDisplayStreamProcessingBenchmark {
         let requestedQueueDepth = max(queueDepth, 1)
         let recorder = MDKSkyLightDisplayStreamProcessingRecorder()
         let processor = try MDKCaptureFrameProcessingFactory.make(processingMode: processingMode)
-        let pixelFormat: OSType = processingMode == .videoToolboxEncode
+        let pixelFormat: OSType = processingMode.videoEncoderCodec != nil
             ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
             : kCVPixelFormatType_32BGRA
 

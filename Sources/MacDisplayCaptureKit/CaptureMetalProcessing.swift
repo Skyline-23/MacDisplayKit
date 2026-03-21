@@ -5,6 +5,8 @@ public enum MDKCaptureBenchmarkProcessingMode: String, CaseIterable, Codable, Se
     case metalBind = "metal-bind"
     case metalCopy = "metal-copy"
     case videoToolboxEncode = "vt-encode"
+    case videoToolboxEncodeH264 = "vt-encode-h264"
+    case videoToolboxEncodeAV1 = "vt-encode-av1"
 
     public var localizedName: String {
         switch self {
@@ -16,6 +18,23 @@ public enum MDKCaptureBenchmarkProcessingMode: String, CaseIterable, Codable, Se
             return "metal-copy"
         case .videoToolboxEncode:
             return "vt-encode"
+        case .videoToolboxEncodeH264:
+            return "vt-encode-h264"
+        case .videoToolboxEncodeAV1:
+            return "vt-encode-av1"
+        }
+    }
+
+    var videoEncoderCodec: MDKVideoEncoderCodec? {
+        switch self {
+        case .none, .metalBind, .metalCopy:
+            return nil
+        case .videoToolboxEncode:
+            return .hevc
+        case .videoToolboxEncodeH264:
+            return .h264
+        case .videoToolboxEncodeAV1:
+            return .av1
         }
     }
 }
@@ -65,7 +84,12 @@ struct MDKCaptureFrameProcessingSummary: Sendable, Equatable {
     let processedFrameCount: UInt64
     let processingFailureCount: UInt64
     let processingErrorHistogram: [String: Int]
+    let outputCallbackCount: UInt64?
     let completedOutputFrameCount: UInt64?
+    let outputCallbackStatusHistogram: [String: Int]?
+    let outputCallbackLatencyHistogram: [String: Int]?
+    let minOutputCallbackLatencyMilliseconds: Double?
+    let maxOutputCallbackLatencyMilliseconds: Double?
     let notes: [String]
 }
 

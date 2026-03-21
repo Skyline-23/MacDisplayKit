@@ -399,6 +399,9 @@ enum MDKHostBenchmarkFormatter {
         lines.append("Start status: \(result.status)")
         lines.append("Stop status: \(result.stopStatus)")
         lines.append("Processing mode: \(result.processingMode.rawValue)")
+        if let videoEncoderCodec = result.videoEncoderCodec {
+            lines.append("Video encoder codec: \(videoEncoderCodec.rawValue)")
+        }
         lines.append(String(format: "Sample duration: %.3fs", result.sampleDuration))
         lines.append("Callback count: \(result.callbackCount)")
         lines.append("Complete frames: \(result.completeFrameCount)")
@@ -410,10 +413,34 @@ enum MDKHostBenchmarkFormatter {
         }
         lines.append(String(format: "Processed FPS: %.2f", result.processedFrameRate))
         lines.append(String(format: "Processed ratio: %.3f", result.processedFrameRatio))
+        if let outputCallbackCount = result.outputCallbackCount {
+            lines.append("Encoder output callbacks: \(outputCallbackCount)")
+        }
         if let completedOutputFrameCount = result.completedOutputFrameCount,
            let completedOutputFrameRate = result.completedOutputFrameRate {
             lines.append("Encoder output frames: \(completedOutputFrameCount)")
             lines.append(String(format: "Encoder output FPS: %.2f", completedOutputFrameRate))
+        }
+        if let completedOutputFrameRatio = result.completedOutputFrameRatio {
+            lines.append(String(format: "Encoder output ratio: %.3f", completedOutputFrameRatio))
+        }
+        if let outputCallbackStatusHistogram = result.outputCallbackStatusHistogram,
+           !outputCallbackStatusHistogram.isEmpty {
+            lines.append("Encoder callback statuses: \(outputCallbackStatusHistogram)")
+        }
+        if let outputCallbackLatencyHistogram = result.outputCallbackLatencyHistogram,
+           !outputCallbackLatencyHistogram.isEmpty {
+            lines.append("Encoder callback latency histogram: \(outputCallbackLatencyHistogram)")
+        }
+        if let minOutputCallbackLatencyMilliseconds = result.minOutputCallbackLatencyMilliseconds,
+           let maxOutputCallbackLatencyMilliseconds = result.maxOutputCallbackLatencyMilliseconds {
+            lines.append(
+                String(
+                    format: "Encoder callback latency range: %.3fms..%.3fms",
+                    minOutputCallbackLatencyMilliseconds,
+                    maxOutputCallbackLatencyMilliseconds
+                )
+            )
         }
         lines.append("Cadence classification: \(result.cadenceClassification)")
         lines.append("Interval count: \(result.intervalCount)")
@@ -497,7 +524,7 @@ enum MDKHostBenchmarkFormatter {
             let tuning = candidate.tuningCandidate
             var line = "  - mode=\(candidate.processingMode.rawValue) candidate=\(candidate.identifier) minFrameTime=\(String(format: "%.6f", tuning.minimumFrameTime)) queueDepth=\(tuning.queueDepth) showCursor=\(tuning.showCursor ? "yes" : "no")"
             if let result = evaluation.result {
-                line += " fps=\(String(format: "%.2f", result.observedFrameRate)) processed-fps=\(String(format: "%.2f", result.processedFrameRate)) ratio=\(String(format: "%.3f", result.processedFrameRatio)) cadence=\(result.cadenceClassification) meets120LikeTarget=\(result.meets120LikeTarget ? "yes" : "no") failures=\(result.processingFailureCount)"
+                line += " fps=\(String(format: "%.2f", result.observedFrameRate)) processed-fps=\(String(format: "%.2f", result.processedFrameRate)) effective-output-fps=\(String(format: "%.2f", result.effectiveOutputFrameRate)) ratio=\(String(format: "%.3f", result.processedFrameRatio)) cadence=\(result.cadenceClassification) meets120LikeTarget=\(result.meets120LikeTarget ? "yes" : "no") failures=\(result.processingFailureCount)"
                 if !result.processingErrorHistogram.isEmpty {
                     line += " errors=\(result.processingErrorHistogram)"
                 }

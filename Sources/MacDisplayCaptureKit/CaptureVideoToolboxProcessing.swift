@@ -24,16 +24,38 @@ public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
     }
 }
 
-private let MDKVideoToolboxOutputCallback: VTCompressionOutputCallback = { _, refcon, _, _, _ in
-    guard let refcon else {
+private final class MDKVideoToolboxSubmissionToken {
+    let submittedAt: TimeInterval
+
+    init(submittedAt: TimeInterval) {
+        self.submittedAt = submittedAt
+    }
+}
+
+private let MDKVideoToolboxOutputCallback: VTCompressionOutputCallback = { outputCallbackRefCon, sourceFrameRefCon, status, _, sampleBuffer in
+    guard let outputCallbackRefCon else {
+        if let sourceFrameRefCon {
+            Unmanaged<MDKVideoToolboxSubmissionToken>.fromOpaque(sourceFrameRefCon).release()
+        }
         return
     }
 
-    let processor = Unmanaged<MDKVideoToolboxEncodingProcessor>.fromOpaque(refcon).takeUnretainedValue()
-    processor.recordCompletedOutput()
+    let processor = Unmanaged<MDKVideoToolboxEncodingProcessor>.fromOpaque(outputCallbackRefCon).takeUnretainedValue()
+    let token = sourceFrameRefCon.map {
+        Unmanaged<MDKVideoToolboxSubmissionToken>.fromOpaque($0).takeRetainedValue()
+    }
+    let callbackReceivedAt = ProcessInfo.processInfo.systemUptime
+    processor.recordOutputCallback(
+        status: status,
+        sampleBuffer: sampleBuffer,
+        submissionToken: token,
+        callbackReceivedAt: callbackReceivedAt
+    )
 }
 
 public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, @unchecked Sendable {
+    public let codec: MDKVideoEncoderCodec
+
     private var compressionSession: VTCompressionSession?
     private var activeDimensions: SIMD2<Int>?
     private var activePixelFormat: UInt32?
@@ -44,10 +66,18 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var processingFailureCount: UInt64 = 0
     private var processingErrorHistogram: [String: Int] = [:]
     private let outputQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.output")
+    private var outputCallbackCount: UInt64 = 0
     private var completedOutputFrameCount: UInt64 = 0
+    private var outputCallbackStatusHistogram: [String: Int] = [:]
+    private var outputCallbackLatencyHistogram: [String: Int] = [:]
+    private var minOutputCallbackLatencyMilliseconds: Double?
+    private var maxOutputCallbackLatencyMilliseconds: Double?
+    private var usingHardwareAcceleratedEncoder: Bool?
     private let encodeQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode")
 
-    public init() {}
+    public init(codec: MDKVideoEncoderCodec = .hevc) {
+        self.codec = codec
+    }
 
     deinit {
         encodeQueue.sync {
@@ -86,14 +116,31 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             if let compressionSession {
                 VTCompressionSessionCompleteFrames(compressionSession, untilPresentationTimeStamp: .invalid)
             }
+            let outputSummary = outputQueue.sync {
+                (
+                    outputCallbackCount,
+                    completedOutputFrameCount,
+                    outputCallbackStatusHistogram,
+                    outputCallbackLatencyHistogram,
+                    minOutputCallbackLatencyMilliseconds,
+                    maxOutputCallbackLatencyMilliseconds
+                )
+            }
             return MDKCaptureFrameProcessingSummary(
                 processedFrameCount: processedFrameCount,
                 processingFailureCount: processingFailureCount,
                 processingErrorHistogram: processingErrorHistogram,
-                completedOutputFrameCount: outputQueue.sync { completedOutputFrameCount },
+                outputCallbackCount: outputSummary.0,
+                completedOutputFrameCount: outputSummary.1,
+                outputCallbackStatusHistogram: outputSummary.2,
+                outputCallbackLatencyHistogram: outputSummary.3,
+                minOutputCallbackLatencyMilliseconds: outputSummary.4,
+                maxOutputCallbackLatencyMilliseconds: outputSummary.5,
                 notes: [
                     "videoToolboxSubmitMode=async-queue",
                     "videoToolboxOutputCallback=non-nil",
+                    "videoToolboxCodec=\(codec.rawValue)",
+                    "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
                     "videoToolboxPixelBufferCacheSize=\(pixelBufferCache.count)"
                 ]
             )
@@ -119,6 +166,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
         let presentationTimeStamp = CMTime(value: frameIndex, timescale: 120)
         frameIndex += 1
+        let submissionToken = Unmanaged.passRetained(
+            MDKVideoToolboxSubmissionToken(submittedAt: ProcessInfo.processInfo.systemUptime)
+        )
 
         let status = VTCompressionSessionEncodeFrame(
             compressionSession,
@@ -126,10 +176,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             presentationTimeStamp: presentationTimeStamp,
             duration: .invalid,
             frameProperties: nil,
-            sourceFrameRefcon: nil,
+            sourceFrameRefcon: submissionToken.toOpaque(),
             infoFlagsOut: nil
         )
         guard status == noErr else {
+            submissionToken.release()
             throw MDKVideoToolboxProcessingError.encodeFailed(status: status)
         }
     }
@@ -162,7 +213,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             allocator: kCFAllocatorDefault,
             width: Int32(width),
             height: Int32(height),
-            codecType: kCMVideoCodecType_HEVC,
+            codecType: codec.codecType,
             encoderSpecification: [
                 kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: true as CFBoolean
             ] as CFDictionary,
@@ -186,7 +237,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedDuration, value: (1.0 / 120.0) as CFTypeRef)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 120 as CFTypeRef)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 120 as CFTypeRef)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)
+        if let profileLevel = codec.defaultProfileLevel {
+            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: profileLevel)
+        }
         let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(session)
         guard prepareStatus == noErr else {
             VTCompressionSessionInvalidate(session)
@@ -196,6 +249,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         compressionSession = session
         activeDimensions = SIMD2(width, height)
         activePixelFormat = pixelFormat
+        usingHardwareAcceleratedEncoder = copyBooleanSessionProperty(
+            session,
+            key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder
+        )
     }
 
     private func wrappedPixelBuffer(
@@ -234,13 +291,83 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         pixelBufferCache.removeAll(keepingCapacity: true)
         frameIndex = 0
         outputQueue.sync {
+            outputCallbackCount = 0
             completedOutputFrameCount = 0
+            outputCallbackStatusHistogram = [:]
+            outputCallbackLatencyHistogram = [:]
+            minOutputCallbackLatencyMilliseconds = nil
+            maxOutputCallbackLatencyMilliseconds = nil
+        }
+        usingHardwareAcceleratedEncoder = nil
+    }
+
+    fileprivate func recordOutputCallback(
+        status: OSStatus,
+        sampleBuffer: CMSampleBuffer?,
+        submissionToken: MDKVideoToolboxSubmissionToken?,
+        callbackReceivedAt: TimeInterval
+    ) {
+        let outputCompleted = status == noErr && sampleBuffer != nil
+        let latencyMilliseconds = submissionToken.map {
+            max((callbackReceivedAt - $0.submittedAt) * 1000.0, 0)
+        }
+
+        outputQueue.async { [self] in
+            outputCallbackCount += 1
+            outputCallbackStatusHistogram[describe(status: status), default: 0] += 1
+
+            if let latencyMilliseconds {
+                minOutputCallbackLatencyMilliseconds = min(
+                    minOutputCallbackLatencyMilliseconds ?? latencyMilliseconds,
+                    latencyMilliseconds
+                )
+                maxOutputCallbackLatencyMilliseconds = max(
+                    maxOutputCallbackLatencyMilliseconds ?? latencyMilliseconds,
+                    latencyMilliseconds
+                )
+                outputCallbackLatencyHistogram[roundedLatencyBucket(for: latencyMilliseconds), default: 0] += 1
+            }
+
+            if outputCompleted {
+                completedOutputFrameCount += 1
+            }
         }
     }
 
-    fileprivate func recordCompletedOutput() {
-        outputQueue.async { [self] in
-            completedOutputFrameCount += 1
+    private func describe(status: OSStatus) -> String {
+        status == noErr ? "noErr" : String(status)
+    }
+
+    private func roundedLatencyBucket(for latencyMilliseconds: Double) -> String {
+        let rounded = (latencyMilliseconds * 10.0).rounded() / 10.0
+        return String(format: "%.1fms", rounded)
+    }
+
+    private func describeHardwareAcceleration(_ value: Bool?) -> String {
+        switch value {
+        case .some(true):
+            return "true"
+        case .some(false):
+            return "false"
+        case .none:
+            return "unknown"
         }
+    }
+
+    private func copyBooleanSessionProperty(
+        _ session: VTCompressionSession,
+        key: CFString
+    ) -> Bool? {
+        var value: Unmanaged<CFTypeRef>?
+        let status = VTSessionCopyProperty(session, key: key, allocator: kCFAllocatorDefault, valueOut: &value)
+        guard status == noErr, let copiedValue = value?.takeRetainedValue() else {
+            return nil
+        }
+
+        if CFGetTypeID(copiedValue) == CFBooleanGetTypeID() {
+            return CFBooleanGetValue((copiedValue as! CFBoolean))
+        }
+
+        return nil
     }
 }

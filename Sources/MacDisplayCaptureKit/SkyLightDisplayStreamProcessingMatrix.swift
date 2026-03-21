@@ -74,7 +74,9 @@ public enum MDKSkyLightDisplayStreamProcessingMatrix {
         .none,
         .metalBind,
         .metalCopy,
-        .videoToolboxEncode
+        .videoToolboxEncode,
+        .videoToolboxEncodeH264,
+        .videoToolboxEncodeAV1
     ]
 
     public static let defaultCandidates: [MDKSkyLightDisplayStreamProcessingMatrixCandidate] = defaultProcessingModes.flatMap { processingMode in
@@ -115,14 +117,14 @@ public enum MDKSkyLightDisplayStreamProcessingMatrix {
             "Evaluates raw SkyLight SLDisplayStream processing modes against a fixed tuning candidate set.",
             "Each candidate runs in a fresh child process to avoid in-process stream state contaminating later measurements.",
             "The none processing mode is kept as a raw control and is not eligible for default winner selection.",
-            "Ranking order: meets120LikeTarget, cadence classification, processed frame rate, processed frame ratio, then complete-frame count."
+            "Ranking order: meets120LikeTarget, cadence classification, effective output frame rate, processed frame ratio, then complete-frame count."
         ]
         if let bestIndex,
            evaluations.indices.contains(bestIndex),
            let bestResult = evaluations[bestIndex].result {
             let bestCandidate = evaluations[bestIndex].candidate
             notes.append(
-                "bestCandidate=\(bestCandidate.processingMode.rawValue)/\(bestCandidate.tuningCandidate.identifier) processedFrameRate=\(String(format: "%.2f", bestResult.processedFrameRate)) cadence=\(bestResult.cadenceClassification)"
+                "bestCandidate=\(bestCandidate.processingMode.rawValue)/\(bestCandidate.tuningCandidate.identifier) effectiveOutputFrameRate=\(String(format: "%.2f", bestResult.effectiveOutputFrameRate)) cadence=\(bestResult.cadenceClassification)"
             )
         } else {
             notes.append("No successful processing benchmark candidates were available.")
@@ -161,7 +163,7 @@ public enum MDKSkyLightDisplayStreamProcessingMatrix {
         (
             result.meets120LikeTarget ? 1 : 0,
             cadenceRank(result.cadenceClassification),
-            result.processedFrameRate,
+            result.effectiveOutputFrameRate,
             result.processedFrameRatio,
             result.completeFrameCount
         )

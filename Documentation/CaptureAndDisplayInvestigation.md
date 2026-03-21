@@ -1506,10 +1506,13 @@ Interpretation:
     - `metal-bind`
     - `metal-copy`
     - `vt-encode`
+    - `vt-encode-h264`
+    - `vt-encode-av1`
   - current ranking order is:
+    - `meets120LikeTarget`
     - cadence classification
+    - effective output frame rate
     - processed-frame ratio
-    - processed-frame rate
     - complete-frame count
   - one invalid measurement pattern is now understood:
     - running two raw `SLDisplayStream` benchmarks in parallel on the same display badly contaminates throughput
@@ -1550,12 +1553,41 @@ Interpretation:
   - single ad-hoc raw runs outside the child-process matrix are still noisy after prior raw runs and should not be treated as authoritative without isolation
 - 2026-03-21 the raw `vt-encode` benchmark now records actual encoder output callback counts separately from submit success
   - result fields:
+    - `videoEncoderCodec`
+    - `outputCallbackCount`
     - `completedOutputFrameCount`
     - `completedOutputFrameRate`
+    - `completedOutputFrameRatio`
+    - `outputCallbackStatusHistogram`
+    - `outputCallbackLatencyHistogram`
+    - `minOutputCallbackLatencyMilliseconds`
+    - `maxOutputCallbackLatencyMilliseconds`
   - the intent is to separate:
     - `submit throughput` (`processedFrameCount`)
     - `encoder drain/output throughput` (`completedOutputFrameCount`)
-  - an immediate direct run on the current machine still showed `completedOutputFrameCount=0`
+  - the callback/refcon wiring bug is now fixed:
+    - `VTCompressionSessionCreate(... refcon: self ...)` is now read from the first callback argument
+    - per-frame submission tokens are retained through `sourceFrameRefcon`
+    - submit-to-callback latency is now measured at callback receipt time before queue handoff
+  - current direct raw runs on the machine show:
+    - `vt-encode` / `hevc`
+      - `processedFrameCount=27`
+      - `completedOutputFrameCount=27`
+      - `completedOutputFrameRate≈8.87`
+      - `videoToolboxUsingHardwareEncoder=true`
+      - latency range `24.147ms..182.691ms`
+    - `vt-encode-h264`
+      - `processedFrameCount=116`
+      - `completedOutputFrameCount=116`
+      - `completedOutputFrameRate≈37.85`
+      - `videoToolboxUsingHardwareEncoder=unknown`
+      - latency range `294.050ms..688.547ms`
+    - `vt-encode-av1`
+      - `processingFailureCount=115`
+      - `VTCompressionSessionCreate(...) -> OSStatus -12908`
+      - no encoder output callbacks were observed on this host
   - current interpretation:
-    - the benchmark can now tell whether `VTCompressionSessionEncodeFrame(...)` success is turning into real encoder output
-    - the next validation target is the callback/flush boundary, not the raw `IOSurface -> VT` submission contract
+    - the benchmark can now distinguish `submit accepted` from `encoder drained`
+    - the current raw bottleneck is real encoder throughput, not missing output callbacks
+    - `H.264` is materially faster than current `HEVC` settings on this host at `5120x2880 420v`
+    - `AV1` needs explicit capability probing or a different runtime configuration before it can join the default matrix
