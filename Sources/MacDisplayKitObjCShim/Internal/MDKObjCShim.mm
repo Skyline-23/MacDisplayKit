@@ -784,6 +784,8 @@ using MDKDispatchSourceSetEventHandlerFFn = void (*)(dispatch_source_t, dispatch
 using MDKReadFn = ssize_t (*)(int, void *, size_t);
 using MDKWriteFn = ssize_t (*)(int, const void *, size_t);
 using MDKPipeFn = int (*)(int [2]);
+using MDKIOSurfaceLookupFromMachPortFn = IOSurfaceRef (*)(mach_port_t);
+using MDKIOSurfaceCreateMachPortFn = mach_port_t (*)(IOSurfaceRef);
 using MDKXPCPipeCreateFn = xpc_object_t (*)(const char *, std::uint64_t);
 using MDKXPCPipeSimpleRoutineFn = int (*)(xpc_object_t, xpc_object_t, xpc_object_t *);
 using MDKXPCFDDupFn = int (*)(xpc_object_t);
@@ -801,6 +803,8 @@ static MDKReadFn MDKOriginalReadNoCancel = nullptr;
 static MDKWriteFn MDKOriginalWrite = nullptr;
 static MDKWriteFn MDKOriginalWriteNoCancel = nullptr;
 static MDKPipeFn MDKOriginalPipe = nullptr;
+static MDKIOSurfaceLookupFromMachPortFn MDKOriginalIOSurfaceLookupFromMachPort = nullptr;
+static MDKIOSurfaceCreateMachPortFn MDKOriginalIOSurfaceCreateMachPort = nullptr;
 static MDKXPCPipeCreateFn MDKOriginalXPCPipeCreate = nullptr;
 static MDKXPCPipeSimpleRoutineFn MDKOriginalXPCPipeSimpleRoutine = nullptr;
 static MDKXPCFDDupFn MDKOriginalXPCFDDup = nullptr;
@@ -2064,6 +2068,9 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"fifoWriteInterposeEventCount": @0,
             @"pipeCreateEventCount": @0,
             @"pipeInterposeEventCount": @0,
+            @"ioSurfaceMachLookupEventCount": @0,
+            @"ioSurfaceMachCreateEventCount": @0,
+            @"ioSurfaceMachInterposeEventCount": @0,
             @"xpcPipeCreateEventCount": @0,
             @"xpcPipeSimpleRoutineEventCount": @0,
             @"xpcPipeInterposeEventCount": @0,
@@ -3005,6 +3012,37 @@ static void MDKRecordRPIOSurfaceEvent(NSString *kind, IOSurfaceRef surface) {
             @"surface": MDKSummarizeIOSurface(surface),
         }
     );
+}
+
+static void MDKRecordIOSurfaceMachPortEvent(NSString *kind, mach_port_t port, IOSurfaceRef surface) {
+    BOOL shouldRecord = NO;
+    NSUInteger overallEventCount = 0;
+    NSString *counterKey = [kind isEqualToString:@"iosurface-create-mach-port"] ?
+        @"ioSurfaceMachCreateEventCount" :
+        @"ioSurfaceMachLookupEventCount";
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            MDKActiveSCKTraceState[counterKey] =
+                @([MDKActiveSCKTraceState[counterKey] unsignedIntegerValue] + 1);
+            overallEventCount = [MDKActiveSCKTraceState[@"ioSurfaceMachInterposeEventCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"ioSurfaceMachInterposeEventCount"] = @(overallEventCount);
+            shouldRecord = overallEventCount <= 128;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    NSMutableDictionary<NSString *, id> *payload = [@{
+        @"port": @(port),
+        @"surface": MDKSummarizeIOSurface(surface),
+        @"wrapperSequenceID": MDKCurrentVideoQueueWrapperSequence() > 0 ? @(MDKCurrentVideoQueueWrapperSequence()) : [NSNull null],
+        @"wrapperDepth": @(MDKCurrentVideoQueueWrapperSequenceDepth()),
+    } mutableCopy];
+    if (overallEventCount <= 8) {
+        payload[@"backtrace"] = MDKCopyBacktraceFrames(10, 3);
+    }
+    MDKRecordSCKTraceEvent(kind, payload);
 }
 
 static void MDKRecordCaptureHandlerSampleEvent(NSString *kind, id sample, id timingData) {
@@ -4444,6 +4482,8 @@ extern "C" ssize_t MDKInterposedReadNoCancel(int fd, void *buffer, size_t size);
 extern "C" ssize_t MDKInterposedWrite(int fd, const void *buffer, size_t size);
 extern "C" ssize_t MDKInterposedWriteNoCancel(int fd, const void *buffer, size_t size);
 extern "C" int MDKInterposedPipe(int fds[2]);
+extern "C" IOSurfaceRef MDKInterposedIOSurfaceLookupFromMachPort(mach_port_t port);
+extern "C" mach_port_t MDKInterposedIOSurfaceCreateMachPort(IOSurfaceRef surface);
 extern "C" xpc_object_t MDKInterposedXPCPipeCreate(const char *name, std::uint64_t flags);
 extern "C" int MDKInterposedXPCPipeSimpleRoutine(xpc_object_t pipe, xpc_object_t message, xpc_object_t *reply);
 extern "C" int MDKInterposedXPCFDDup(xpc_object_t object);
@@ -4946,6 +4986,83 @@ static void MDKInstallPipeInterposes(void) {
     });
 }
 
+static void MDKInstallIOSurfaceMachPortInterposes(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        using MDKDyldDynamicInterposeFn = void (*)(const mach_header *, const MDKDyldInterposeTuple[], size_t);
+
+        MDKSetSCKTraceStateValue(@"ioSurfaceMachInterposeAttempted", @YES);
+        auto dynamicInterpose =
+            reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "dyld_dynamic_interpose"));
+        if (dynamicInterpose == nullptr) {
+            dynamicInterpose =
+                reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "_dyld_dynamic_interpose"));
+        }
+        MDKSetSCKTraceStateValue(@"ioSurfaceMachInterposeDyldAvailable", @(dynamicInterpose != nullptr));
+        if (dynamicInterpose == nullptr) {
+            return;
+        }
+
+        MDKOriginalIOSurfaceLookupFromMachPort =
+            reinterpret_cast<MDKIOSurfaceLookupFromMachPortFn>(dlsym(RTLD_DEFAULT, "IOSurfaceLookupFromMachPort"));
+        MDKOriginalIOSurfaceCreateMachPort =
+            reinterpret_cast<MDKIOSurfaceCreateMachPortFn>(dlsym(RTLD_DEFAULT, "IOSurfaceCreateMachPort"));
+        MDKSetSCKTraceStateValue(@"ioSurfaceMachLookupSymbolAvailable", @(MDKOriginalIOSurfaceLookupFromMachPort != nullptr));
+        MDKSetSCKTraceStateValue(@"ioSurfaceCreateMachPortSymbolAvailable", @(MDKOriginalIOSurfaceCreateMachPort != nullptr));
+        if (MDKOriginalIOSurfaceLookupFromMachPort == nullptr && MDKOriginalIOSurfaceCreateMachPort == nullptr) {
+            MDKAppendSCKTraceNote(@"Neither IOSurfaceLookupFromMachPort nor IOSurfaceCreateMachPort was available, so IOSurface mach-port interpose stayed disabled.");
+            return;
+        }
+
+        MDKDyldInterposeTuple interposes[2] = {};
+        size_t interposeCount = 0;
+        if (MDKOriginalIOSurfaceLookupFromMachPort != nullptr) {
+            interposes[interposeCount++] = {
+                reinterpret_cast<const void *>(&MDKInterposedIOSurfaceLookupFromMachPort),
+                reinterpret_cast<const void *>(MDKOriginalIOSurfaceLookupFromMachPort),
+            };
+        }
+        if (MDKOriginalIOSurfaceCreateMachPort != nullptr) {
+            interposes[interposeCount++] = {
+                reinterpret_cast<const void *>(&MDKInterposedIOSurfaceCreateMachPort),
+                reinterpret_cast<const void *>(MDKOriginalIOSurfaceCreateMachPort),
+            };
+        }
+
+        NSUInteger installedImageCount = 0;
+        const mach_header *screenCaptureKitHeader =
+            MDKFindLoadedImageHeader("/System/Library/Frameworks/ScreenCaptureKit.framework/");
+        if (screenCaptureKitHeader != nullptr) {
+            dynamicInterpose(screenCaptureKitHeader, interposes, interposeCount);
+            installedImageCount += 1;
+        }
+        const mach_header *cmCaptureHeader =
+            MDKFindLoadedImageHeader("/System/Library/PrivateFrameworks/CMCapture.framework/");
+        if (cmCaptureHeader != nullptr) {
+            dynamicInterpose(cmCaptureHeader, interposes, interposeCount);
+            installedImageCount += 1;
+        }
+        const mach_header *ioSurfaceHeader =
+            MDKFindLoadedImageHeader("/System/Library/Frameworks/IOSurface.framework/");
+        if (ioSurfaceHeader != nullptr) {
+            dynamicInterpose(ioSurfaceHeader, interposes, interposeCount);
+            installedImageCount += 1;
+        }
+
+        MDKSetSCKTraceStateValue(@"ioSurfaceMachInterposeInstalledImageCount", @(installedImageCount));
+        MDKSetSCKTraceStateValue(@"ioSurfaceMachInterposeInstalledSymbolCount", @(interposeCount));
+        MDKSetSCKTraceStateValue(@"ioSurfaceMachInterposeInstalled", @(installedImageCount > 0));
+        if (installedImageCount == 0) {
+            MDKAppendSCKTraceNote(@"ScreenCaptureKit, CMCapture, and IOSurface were absent from the loaded image list, so IOSurface mach-port interpose stayed disabled.");
+            return;
+        }
+
+        MDKAppendSCKTraceNote([NSString stringWithFormat:@"Installed IOSurface mach-port interpose on %lu image(s) using %lu symbol(s).",
+                               (unsigned long)installedImageCount,
+                               (unsigned long)interposeCount]);
+    });
+}
+
 static void (*MDKResolveOriginalFigRemoteQueueReceiverSetHandler(void))(void *, dispatch_queue_t, id) {
     static void (*original)(void *, dispatch_queue_t, id) = nullptr;
     static dispatch_once_t onceToken;
@@ -5253,6 +5370,26 @@ extern "C" int MDKInterposedPipe(int fds[2]) {
     MDKRecordPipeInterposeEvent(result, targetFDs, savedErrno);
     errno = savedErrno;
     return result;
+}
+
+extern "C" IOSurfaceRef MDKInterposedIOSurfaceLookupFromMachPort(mach_port_t port) {
+    if (MDKOriginalIOSurfaceLookupFromMachPort == nullptr) {
+        return nullptr;
+    }
+
+    IOSurfaceRef surface = MDKOriginalIOSurfaceLookupFromMachPort(port);
+    MDKRecordIOSurfaceMachPortEvent(@"iosurface-lookup-from-mach-port", port, surface);
+    return surface;
+}
+
+extern "C" mach_port_t MDKInterposedIOSurfaceCreateMachPort(IOSurfaceRef surface) {
+    if (MDKOriginalIOSurfaceCreateMachPort == nullptr) {
+        return MACH_PORT_NULL;
+    }
+
+    const mach_port_t port = MDKOriginalIOSurfaceCreateMachPort(surface);
+    MDKRecordIOSurfaceMachPortEvent(@"iosurface-create-mach-port", port, surface);
+    return port;
 }
 
 extern "C" int MDKInterposedXPCFDDup(xpc_object_t object) {
@@ -5831,6 +5968,7 @@ static void MDKInstallSCKProxyTraceHooks(void) {
         MDKInstallFIFOReadInterposes();
         MDKInstallFIFOWriteInterposes();
         MDKInstallPipeInterposes();
+        MDKInstallIOSurfaceMachPortInterposes();
         MDKInstallXPCPipeInterposes();
         MDKInstallXPCFDInterposes();
         Class daemonProxyClass = NSClassFromString(@"RPDaemonProxy");
@@ -9057,6 +9195,18 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             @"pipe-create",
         ]]
     );
+    NSDictionary<NSString *, id> *ioSurfaceLookupCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"iosurface-lookup-from-mach-port",
+        ]]
+    );
+    NSDictionary<NSString *, id> *ioSurfaceCreateCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"iosurface-create-mach-port",
+        ]]
+    );
     NSDictionary<NSString *, id> *surfaceTransportHandleMessageCadenceSummary = MDKCopyTraceEventCadenceSummary(
         traceEvents,
         [NSSet setWithArray:@[
@@ -9352,6 +9502,15 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"pipeCreateEventCount=%@", MDKDescribeTraceValue(pipeCreateCadenceSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"pipeCreateDeltaHistogram=%@", MDKDescribeTraceValue(pipeCreateCadenceSummary[@"deltaHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"pipeCreateCadenceClassification=%@", MDKDescribeTraceValue(pipeCreateCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"ioSurfaceMachInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"ioSurfaceMachInterposeAttempted"])]];
+    [notes addObject:[NSString stringWithFormat:@"ioSurfaceMachInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"ioSurfaceMachInterposeInstalled"])]];
+    [notes addObject:[NSString stringWithFormat:@"ioSurfaceMachInterposeInstalledImageCount=%@", MDKDescribeTraceValue(snapshot[@"ioSurfaceMachInterposeInstalledImageCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"ioSurfaceLookupFromMachPortEventCount=%@", MDKDescribeTraceValue(ioSurfaceLookupCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"ioSurfaceLookupFromMachPortDeltaHistogram=%@", MDKDescribeTraceValue(ioSurfaceLookupCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"ioSurfaceLookupFromMachPortCadenceClassification=%@", MDKDescribeTraceValue(ioSurfaceLookupCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"ioSurfaceCreateMachPortEventCount=%@", MDKDescribeTraceValue(ioSurfaceCreateCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"ioSurfaceCreateMachPortDeltaHistogram=%@", MDKDescribeTraceValue(ioSurfaceCreateCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"ioSurfaceCreateMachPortCadenceClassification=%@", MDKDescribeTraceValue(ioSurfaceCreateCadenceSummary[@"cadenceClassification"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeAttempted"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalled"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalledImageCount=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalledImageCount"])]];

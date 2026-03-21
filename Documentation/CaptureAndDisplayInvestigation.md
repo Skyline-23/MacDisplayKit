@@ -1007,3 +1007,21 @@ Interpretation:
   staying dark in the host, the next meaningful host-side boundary is no longer fd creation at all
 - the sharper remaining target is now the mach-port-to-surface handoff (`IOSurfaceLookupFromMachPort`) or
   the cross-process broker (`replayd`) that feeds those queue artifacts before the host starts draining them
+
+Follow-up passive trace after interposing `IOSurfaceLookupFromMachPort` / `IOSurfaceCreateMachPort`:
+
+- `ioSurfaceMachInterposeAttempted=1`
+- `ioSurfaceMachInterposeInstalled=1`
+- `ioSurfaceMachInterposeInstalledImageCount=3`
+- `ioSurfaceLookupFromMachPortEventCount=0`
+- `ioSurfaceCreateMachPortEventCount=0`
+
+Interpretation:
+
+- the host process is not surfacing the live queue handoff through imported `IOSurfaceLookupFromMachPort`
+  or `IOSurfaceCreateMachPort` either, at least not through ordinary dyld-based interpose on
+  `ScreenCaptureKit`, `CMCapture`, or `IOSurface`
+- with fd creation, xpc transport, and mach-port-to-surface conversion all dark inside the host, the
+  remaining actionable direction is now overwhelmingly cross-process:
+  - the broker path in `replayd`
+  - or another non-imported/private handoff path below `CMCapture` that the host only sees after the queue is live
