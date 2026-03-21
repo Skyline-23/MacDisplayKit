@@ -37,6 +37,19 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(MDKCaptureBenchmarkProcessingMode.videoToolboxEncodeDownscale2x.videoPreprocessStrategy, .downscale2x)
         XCTAssertEqual(MDKCaptureBenchmarkProcessingMode.videoToolboxEncodeH264Downscale2x.videoEncoderCodec, .h264)
         XCTAssertEqual(MDKCaptureBenchmarkProcessingMode.videoToolboxEncodeH264Downscale2x.videoPreprocessStrategy, .downscale2x)
+        XCTAssertEqual(
+            MDKCaptureBenchmarkProcessingMode.videoToolboxEncodeProResProxyExperimental.videoEncoderCodec,
+            .proResProxy
+        )
+        XCTAssertTrue(MDKCaptureBenchmarkProcessingMode.videoToolboxEncodeProResProxyExperimental.isExperimental)
+    }
+
+    func testDefaultRawProcessingMatrixKeepsOptInCodecsOutOfBand() {
+        XCTAssertFalse(MDKSkyLightDisplayStreamProcessingMatrix.defaultProcessingModes.contains(.videoToolboxEncodeAV1))
+        XCTAssertFalse(MDKSkyLightDisplayStreamProcessingMatrix.defaultProcessingModes.contains(.videoToolboxEncodeAV1Downscale2x))
+        XCTAssertFalse(MDKSkyLightDisplayStreamProcessingMatrix.defaultProcessingModes.contains(.videoToolboxEncodeProResProxyExperimental))
+        XCTAssertTrue(MDKSkyLightDisplayStreamProcessingMatrix.optInProcessingModes.contains(.videoToolboxEncodeAV1))
+        XCTAssertTrue(MDKSkyLightDisplayStreamProcessingMatrix.optInProcessingModes.contains(.videoToolboxEncodeProResProxyExperimental))
     }
 
     func testPrivateCaptureCapabilitiesModelHardwareSurfaceAndExtendedRangeHints() {

@@ -70,6 +70,12 @@ public struct MDKSkyLightDisplayStreamProcessingMatrixReport: Codable, Equatable
 }
 
 public enum MDKSkyLightDisplayStreamProcessingMatrix {
+    public static let optInProcessingModes: [MDKCaptureBenchmarkProcessingMode] = [
+        .videoToolboxEncodeAV1,
+        .videoToolboxEncodeAV1Downscale2x,
+        .videoToolboxEncodeProResProxyExperimental
+    ]
+
     public static let defaultProcessingModes: [MDKCaptureBenchmarkProcessingMode] = [
         .none,
         .metalBind,
@@ -77,9 +83,7 @@ public enum MDKSkyLightDisplayStreamProcessingMatrix {
         .videoToolboxEncode,
         .videoToolboxEncodeDownscale2x,
         .videoToolboxEncodeH264,
-        .videoToolboxEncodeH264Downscale2x,
-        .videoToolboxEncodeAV1,
-        .videoToolboxEncodeAV1Downscale2x
+        .videoToolboxEncodeH264Downscale2x
     ]
 
     public static let defaultCandidates: [MDKSkyLightDisplayStreamProcessingMatrixCandidate] = defaultProcessingModes.flatMap { processingMode in
@@ -120,6 +124,8 @@ public enum MDKSkyLightDisplayStreamProcessingMatrix {
             "Evaluates raw SkyLight SLDisplayStream processing modes against a fixed tuning candidate set.",
             "Each candidate runs in a fresh child process to avoid in-process stream state contaminating later measurements.",
             "The none processing mode is kept as a raw control and is not eligible for default winner selection.",
+            "AV1 modes stay opt-in because VideoToolbox hardware availability is host-specific.",
+            "ProRes Proxy remains experimental and is excluded from the default ranking set.",
             "Ranking order: meets120LikeTarget, cadence classification, effective output frame rate, processed frame ratio, then complete-frame count."
         ]
         if let bestIndex,

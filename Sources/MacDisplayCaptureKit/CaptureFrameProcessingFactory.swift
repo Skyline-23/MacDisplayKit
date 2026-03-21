@@ -23,7 +23,8 @@ enum MDKCaptureFrameProcessingFactory {
              .videoToolboxEncodeH264,
              .videoToolboxEncodeH264Downscale2x,
              .videoToolboxEncodeAV1,
-             .videoToolboxEncodeAV1Downscale2x:
+             .videoToolboxEncodeAV1Downscale2x,
+             .videoToolboxEncodeProResProxyExperimental:
             preconditionFailure("VideoToolbox processing modes should be handled before the switch.")
         }
     }

@@ -48,6 +48,7 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
     case h264
     case hevc
     case av1
+    case proResProxy
 
     var codecType: CMVideoCodecType {
         switch self {
@@ -57,6 +58,8 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
             return kCMVideoCodecType_HEVC
         case .av1:
             return kCMVideoCodecType_AV1
+        case .proResProxy:
+            return kCMVideoCodecType_AppleProRes422Proxy
         }
     }
 
@@ -67,10 +70,10 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
     var defaultProfileLevel: CFString? {
         switch self {
         case .h264:
-            return kVTProfileLevel_H264_ConstrainedHigh_AutoLevel
+            return kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel
         case .hevc:
             return kVTProfileLevel_HEVC_Main_AutoLevel
-        case .av1:
+        case .av1, .proResProxy:
             return nil
         }
     }
@@ -79,7 +82,7 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         switch self {
         case .h264:
             return true
-        case .hevc, .av1:
+        case .hevc, .av1, .proResProxy:
             return false
         }
     }
@@ -97,6 +100,8 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
             return min(max(pixelsPerSecond / 20, 12_000_000), 36_000_000)
         case .av1:
             return min(max(pixelsPerSecond / 24, 10_000_000), 32_000_000)
+        case .proResProxy:
+            return min(max(pixelsPerSecond / 5, 40_000_000), 140_000_000)
         }
     }
 
@@ -124,6 +129,8 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
             return 0.36
         case .av1:
             return 0.34
+        case .proResProxy:
+            return 0.30
         }
     }
 
@@ -135,6 +142,44 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
             return 2
         case .av1:
             return 2
+        case .proResProxy:
+            return 0
+        }
+    }
+
+    var supportsAverageBitRate: Bool {
+        switch self {
+        case .proResProxy:
+            return false
+        case .h264, .hevc, .av1:
+            return true
+        }
+    }
+
+    var supportsDataRateLimits: Bool {
+        switch self {
+        case .proResProxy:
+            return false
+        case .h264, .hevc, .av1:
+            return true
+        }
+    }
+
+    var supportsQualityProperty: Bool {
+        switch self {
+        case .h264, .hevc:
+            return true
+        case .av1, .proResProxy:
+            return false
+        }
+    }
+
+    var supportsReferenceBufferCount: Bool {
+        switch self {
+        case .proResProxy:
+            return false
+        case .h264, .hevc, .av1:
+            return true
         }
     }
 }
