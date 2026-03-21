@@ -198,6 +198,7 @@ final class MDKHostBenchmarkController {
             pixelFormat: pixelFormat,
             processingMode: processingMode
         )
+        .appendingNotes(captureRelevantProcessLoadNotes())
     }
 
     func benchmarkSkyLightDisplayStreamTuningMatrix(

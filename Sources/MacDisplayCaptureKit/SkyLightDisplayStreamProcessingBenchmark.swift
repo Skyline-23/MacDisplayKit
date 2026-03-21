@@ -54,6 +54,50 @@ public struct MDKSkyLightDisplayStreamProcessingBenchmarkResult: Codable, Equata
     public var meets120LikeTarget: Bool {
         cadenceClassification == "120hz-like" && effectiveOutputFrameRate >= 108.0
     }
+
+    public func appendingNotes(_ additionalNotes: [String]) -> Self {
+        guard !additionalNotes.isEmpty else {
+            return self
+        }
+
+        return Self(
+            displayID: displayID,
+            status: status,
+            stopStatus: stopStatus,
+            processingMode: processingMode,
+            videoEncoderCodec: videoEncoderCodec,
+            sampleDuration: sampleDuration,
+            callbackCount: callbackCount,
+            completeFrameCount: completeFrameCount,
+            observedFrameRate: observedFrameRate,
+            processedFrameCount: processedFrameCount,
+            processingFailureCount: processingFailureCount,
+            processingErrorHistogram: processingErrorHistogram,
+            processedFrameRate: processedFrameRate,
+            processedFrameRatio: processedFrameRatio,
+            outputCallbackCount: outputCallbackCount,
+            completedOutputFrameCount: completedOutputFrameCount,
+            completedOutputFrameRate: completedOutputFrameRate,
+            completedOutputFrameRatio: completedOutputFrameRatio,
+            outputCallbackStatusHistogram: outputCallbackStatusHistogram,
+            outputCallbackLatencyHistogram: outputCallbackLatencyHistogram,
+            minOutputCallbackLatencyMilliseconds: minOutputCallbackLatencyMilliseconds,
+            maxOutputCallbackLatencyMilliseconds: maxOutputCallbackLatencyMilliseconds,
+            requestedMinimumFrameTime: requestedMinimumFrameTime,
+            requestedQueueDepth: requestedQueueDepth,
+            requestedShowCursor: requestedShowCursor,
+            surfaceWidth: surfaceWidth,
+            surfaceHeight: surfaceHeight,
+            pixelFormat: pixelFormat,
+            intervalCount: intervalCount,
+            minIntervalMilliseconds: minIntervalMilliseconds,
+            maxIntervalMilliseconds: maxIntervalMilliseconds,
+            intervalHistogram: intervalHistogram,
+            cadenceClassification: cadenceClassification,
+            frameStatusHistogram: frameStatusHistogram,
+            notes: notes + additionalNotes
+        )
+    }
 }
 
 private final class MDKSkyLightDisplayStreamProcessingRecorder {
