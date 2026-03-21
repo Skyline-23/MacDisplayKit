@@ -1045,3 +1045,36 @@ Interpretation:
 - that leaves the next practical reverse-engineering step overwhelmingly cross-process:
   - inspect `replayd` as the broker / producer
   - or attach lower than host-side imported stubs, because the host is only seeing the queue after it is already live
+
+Follow-up passive trace after broadening broker-side interposes to raw `bootstrap_*`,
+`xpc_connection_create_from_endpoint`, `xpc_endpoint_create`, `xpc_connection_set_non_launching`,
+`xpc_mach_send_create`, and `xpc_mach_send_copy_right`:
+
+- `bootstrapInterposeAttempted=1`
+- `bootstrapInterposeInstalled=1`
+- `bootstrapInterposeInstalledImageCount=3`
+- `bootstrapLookUpEventCount=0`
+- `bootstrapCheckInEventCount=0`
+- `bootstrapServiceHistogram={}`
+- `xpcBrokerInterposeAttempted=1`
+- `xpcBrokerInterposeInstalled=1`
+- `xpcBrokerInterposeInstalledImageCount=3`
+- `xpcConnectionCreateFromEndpointEventCount=0`
+- `xpcEndpointCreateEventCount=0`
+- `xpcConnectionSetNonLaunchingEventCount=0`
+- `xpcMachSendCreateEventCount=0`
+- `xpcMachSendCopyRightEventCount=0`
+
+Interpretation:
+
+- host-side passive tracing still does not see the `ScreenCaptureKit` / `CMCapture` broker handoff through
+  imported `bootstrap_*`, endpoint-creation, non-launching XPC setup, or Mach-send wrappers
+- local dyld-cache inspection still matters here: `CMCapture` imports `_xpc_connection_create_from_endpoint`,
+  `_xpc_endpoint_create`, `_xpc_dictionary_extract_mach_recv`, `_xpc_dictionary_set_mach_recv`, and raw Mach/MIG
+  symbols, while `ScreenCaptureKit` imports `_xpc_connection_set_non_launching`, `_xpc_mach_send_create`, and
+  `_xpc_mach_send_copy_right`
+- combining those imports with the all-zero host-side trace strongly suggests the live handoff sits across a
+  process boundary, most likely in `replayd`, and only materializes inside the host after the queue is already active
+- the next practical reverse-engineering step is therefore no longer another host-side imported stub; it is:
+  - `replayd` cross-process observation / disassembly around `SCContentSharingSessionService`
+  - or lower Mach/MIG receiver state inside `CMCapture` once the remote queue has already been connected
