@@ -816,6 +816,10 @@ Follow-up passive trace after decoding the live `OS_dispatch_source` object via 
 - `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleFileType=fifo`
 - `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleMode=4528`
 - `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandlePath=nil`
+- `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointer=nil`
+- `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTargetQueueClassName=OS_dispatch_queue_serial`
+- `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTargetQueueDescription=<OS_dispatch_queue_serial: com.skyline23.MacDisplayKit.sck-proxy-trace>`
+- `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTypeSymbol=_dispatch_source_type_read`
 - `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceMask=0`
 - `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceData=2`
 - `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceCancelled=0`
@@ -833,6 +837,11 @@ Interpretation:
 - the queue family is consistent across media types; ScreenCaptureKit/CMCapture appears to allocate
   separate fifo-backed dispatch sources per remote receive queue rather than multiplexing them
   through one mach source
+- the video-side source is explicitly a libdispatch `read` source and its target queue is the same
+  serial sample-handler queue used by the host trace, so the downstream scheduling boundary is now
+  strongly localized to `fifo readability -> dispatch source fire -> wrapper block`
+- the dispatch source has no custom context pointer, so the next likely recoverable hook point is
+  the libdispatch read-source handler registration or the producer that writes into the fifo
 - `mask=0` and `data=2` mean the wakeup side is still opaque, but the source is active rather than
   cancelled and is almost certainly sitting in front of the already-confirmed wrapper block
 - together with the failed `rqReceiverSetSource` interpose, the next practical reverse-engineering

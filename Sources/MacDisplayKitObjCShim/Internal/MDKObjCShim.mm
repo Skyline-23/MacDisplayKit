@@ -186,6 +186,7 @@ static const mach_header *MDKFindLoadedImageHeader(const char *needle) {
 static void MDKInstallRuntimeFigRemoteQueueReceiverInterposes(void);
 static NSString *MDKCopyBlockSignatureString(id block);
 static NSDictionary<NSString *, id> *MDKDescribeBlockLiteralObject(id block);
+static NSArray<NSDictionary<NSString *, id> *> *MDKDescribePointerWords(const void *pointer, size_t allocationSize, size_t maxWordCount);
 static NSDictionary<NSString *, id> *MDKSummarizeObject(id object);
 static void MDKRescanNestedVideoQueueBlockIfPossible(id stream, NSString *reason);
 
@@ -339,6 +340,19 @@ static NSDictionary<NSString *, id> *MDKDescribeShallowPointerPointee(const void
                             objectSummary[@"dispatchSourceMask"] = @(dispatch_source_get_mask(source));
                             objectSummary[@"dispatchSourceData"] = @(dispatch_source_get_data(source));
                             objectSummary[@"dispatchSourceCancelled"] = @(dispatch_source_testcancel(source));
+                            objectSummary[@"dispatchSourceWords"] = MDKDescribePointerWords(pointer, allocationSize, 12);
+                            const void *sourceContext = dispatch_get_context((dispatch_object_t) source);
+                            if (sourceContext != nullptr) {
+                                objectSummary[@"dispatchSourceContextPointer"] =
+                                    [NSString stringWithFormat:@"%p", sourceContext];
+                                if (sourceContext != pointer) {
+                                    NSDictionary<NSString *, id> *sourceContextPointee =
+                                        MDKDescribeShallowPointerPointee(sourceContext);
+                                    if (sourceContextPointee != nil) {
+                                        objectSummary[@"dispatchSourceContextPointee"] = sourceContextPointee;
+                                    }
+                                }
+                            }
                             if (sourceHandle <= INT_MAX) {
                                 const int fd = static_cast<int>(sourceHandle);
                                 struct stat fdStat = {};
@@ -7220,6 +7234,38 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         [videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceHandleMode"] isKindOfClass:[NSNumber class]] ? videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceHandleMode"] : nil;
     NSString *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandlePath =
         [videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceHandlePath"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceHandlePath"] : nil;
+    NSString *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointer =
+        [videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceContextPointer"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceContextPointer"] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointee =
+        [videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceContextPointee"] isKindOfClass:[NSDictionary class]] ? videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceContextPointee"] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointeeObject =
+        [videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointee[@"object"] isKindOfClass:[NSDictionary class]] ? videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointee[@"object"] : nil;
+    NSString *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointeeObjectClassName =
+        [videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointeeObject[@"className"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointeeObject[@"className"] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointeeWord0CodePointer =
+        [videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointee[@"word0CodePointer"] isKindOfClass:[NSDictionary class]] ? videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointee[@"word0CodePointer"] : nil;
+    NSString *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointeeWord0Symbol =
+        [videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointeeWord0CodePointer[@"symbolName"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointeeWord0CodePointer[@"symbolName"] : nil;
+    NSArray<NSDictionary<NSString *, id> *> *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWords =
+        [videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceWords"] isKindOfClass:[NSArray class]] ? videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceWords"] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord3 =
+        videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWords.count > 3 ? videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWords[3] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord3Pointee =
+        [videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord3[@"pointee"] isKindOfClass:[NSDictionary class]] ? videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord3[@"pointee"] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord3PointeeObject =
+        [videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord3Pointee[@"object"] isKindOfClass:[NSDictionary class]] ? videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord3Pointee[@"object"] : nil;
+    NSString *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTargetQueueClassName =
+        [videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord3PointeeObject[@"className"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord3PointeeObject[@"className"] : nil;
+    NSString *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTargetQueueDescription =
+        [videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord3PointeeObject[@"description"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord3PointeeObject[@"description"] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord11 =
+        videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWords.count > 11 ? videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWords[11] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord11Pointee =
+        [videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord11[@"pointee"] isKindOfClass:[NSDictionary class]] ? videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord11[@"pointee"] : nil;
+    NSDictionary<NSString *, id> *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord11PointeeWord0CodePointer =
+        [videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord11Pointee[@"word0CodePointer"] isKindOfClass:[NSDictionary class]] ? videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord11Pointee[@"word0CodePointer"] : nil;
+    NSString *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTypeSymbol =
+        [videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord11PointeeWord0CodePointer[@"symbolName"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceWord11PointeeWord0CodePointer[@"symbolName"] : nil;
     NSNumber *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceMask =
         [videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceMask"] isKindOfClass:[NSNumber class]] ? videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceMask"] : nil;
     NSNumber *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceData =
@@ -7443,6 +7489,12 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleFileType=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleFileType)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleMode=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleMode)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandlePath=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandlePath)]];
+    [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointer=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointer)]];
+    [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointeeObjectClassName=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointeeObjectClassName)]];
+    [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointeeWord0Symbol=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointeeWord0Symbol)]];
+    [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTargetQueueClassName=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTargetQueueClassName)]];
+    [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTargetQueueDescription=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTargetQueueDescription)]];
+    [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTypeSymbol=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTypeSymbol)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceMask=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceMask)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceData=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceData)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceCancelled=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceCancelled)]];
@@ -7610,6 +7662,12 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleFileType=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleFileType)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleMode=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleMode)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandlePath=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandlePath)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointer=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointer)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointeeObjectClassName=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointeeObjectClassName)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointeeWord0Symbol=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceContextPointeeWord0Symbol)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTargetQueueClassName=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTargetQueueClassName)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTargetQueueDescription=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTargetQueueDescription)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTypeSymbol=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceTypeSymbol)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceMask=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceMask)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceData=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceData)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceCancelled=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceCancelled)]];
