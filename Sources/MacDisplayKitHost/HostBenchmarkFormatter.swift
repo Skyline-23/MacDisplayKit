@@ -2,6 +2,37 @@ import Foundation
 import MacDisplayKit
 
 enum MDKHostBenchmarkFormatter {
+    static func formatReplaydProducerTraceReport(
+        _ report: MDKReplaydProducerTraceReport
+    ) -> String {
+        var lines = formatScreenCaptureKitProxyHandshakeTrace(report.passiveTrace)
+            .components(separatedBy: "\n")
+        lines.append("")
+        lines.append("replayd producer sample")
+        lines.append("PID: \(report.replaydSample.replaydPID)")
+        lines.append(String(format: "Sample duration: %.3fs", report.replaydSample.sampleDuration))
+        lines.append("Sample interval: \(report.replaydSample.sampleIntervalMilliseconds)ms")
+        lines.append(String(format: "Sample launch delay: %.3fs", report.replaydSampleDelay))
+        lines.append("Exit status: \(report.replaydSampleExitStatus)")
+        lines.append("Observed producer read queue: \(report.replaydSample.observedProducerReadQueue ? "yes" : "no")")
+        lines.append("Observed rqSenderHandleDequeue: \(report.replaydSample.observedRQSenderHandleDequeue ? "yes" : "no")")
+        lines.append("Observed FigRemoteQueueSender setup: \(report.replaydSample.observedFigRemoteQueueSenderSetup ? "yes" : "no")")
+        lines.append("Observed RPClientProxy capture handler: \(report.replaydSample.observedRPClientProxyCaptureHandler ? "yes" : "no")")
+        lines.append("Observed RPClientProxy startRemoteQueue: \(report.replaydSample.observedRPClientProxyStartRemoteQueue ? "yes" : "no")")
+        lines.append("Observed SkyLight display stream frame available: \(report.replaydSample.observedSkyLightDisplayStreamFrameAvailable ? "yes" : "no")")
+        lines.append("Observed SLContentStream: \(report.replaydSample.observedSLContentStream ? "yes" : "no")")
+        if !report.replaydSample.indicators.isEmpty {
+            lines.append("Indicators:")
+            for indicator in report.replaydSample.indicators where !indicator.matchedLines.isEmpty {
+                lines.append("  - \(indicator.name)")
+                for line in indicator.matchedLines {
+                    lines.append("    line: \(line)")
+                }
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
     static func formatScreenCaptureKitProxyHandshakeTrace(
         _ trace: MDKScreenCaptureKitProxyHandshakeTrace
     ) -> String {

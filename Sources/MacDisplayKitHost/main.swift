@@ -172,7 +172,8 @@ final class HostAppDelegate: NSObject, NSApplicationDelegate {
 
 }
 
-private func runHeadlessModeIfNeeded() -> Int32? {
+@MainActor
+private func runHeadlessModeIfNeeded() async -> Int32? {
     guard CommandLine.arguments.dropFirst().contains(where: { $0.hasPrefix("--") }) else {
         return nil
     }
@@ -180,7 +181,7 @@ private func runHeadlessModeIfNeeded() -> Int32? {
     _ = NSApplication.shared
     NSApp.setActivationPolicy(.prohibited)
     let controller = MDKHostBenchmarkController()
-    return MDKHostCommandLine.runIfRequested(arguments: CommandLine.arguments, controller: controller)
+    return await MDKHostCommandLine.runIfRequested(arguments: CommandLine.arguments, controller: controller)
 }
 
 private func launchHostApplication() -> Never {
@@ -191,7 +192,7 @@ private func launchHostApplication() -> Never {
     fatalError("NSApplicationMain returned unexpectedly")
 }
 
-if let status = runHeadlessModeIfNeeded() {
+if let status = await runHeadlessModeIfNeeded() {
     exit(status)
 }
 

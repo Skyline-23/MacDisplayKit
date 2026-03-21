@@ -296,12 +296,25 @@ static NSDictionary<NSString *, id> *MDKDescribeCodePointer(const void *pointer)
     return summary;
 }
 
+static size_t MDKSafeMallocSize(const void *pointer) {
+    if (pointer == nullptr) {
+        return 0;
+    }
+
+    malloc_zone_t *zone = malloc_zone_from_ptr(const_cast<void *>(pointer));
+    if (zone == nullptr) {
+        return 0;
+    }
+
+    return malloc_size(const_cast<void *>(pointer));
+}
+
 static NSDictionary<NSString *, id> *MDKDescribeShallowPointerPointee(const void *pointer) {
     if (pointer == nullptr) {
         return nil;
     }
 
-    const size_t allocationSize = malloc_size(const_cast<void *>(pointer));
+    const size_t allocationSize = MDKSafeMallocSize(pointer);
     if (allocationSize == 0) {
         return nil;
     }
@@ -470,7 +483,7 @@ static NSArray<NSDictionary<NSString *, id> *> *MDKDescribeBlockCaptureSlots(
             if ([codePointer[@"present"] boolValue]) {
                 slot[@"codePointer"] = codePointer;
             }
-            size_t pointeeAllocationSize = malloc_size(const_cast<void *>(slotPointer));
+            size_t pointeeAllocationSize = MDKSafeMallocSize(slotPointer);
             if (pointeeAllocationSize > 0) {
                 slot[@"pointeeMallocSize"] = @(pointeeAllocationSize);
                 NSArray<NSDictionary<NSString *, id> *> *pointeeWords =
@@ -510,7 +523,7 @@ static NSDictionary<NSString *, id> *MDKDescribeBlockLiteralObject(id block) {
         };
     }
 
-    size_t allocationSize = malloc_size((__bridge const void *) block);
+    size_t allocationSize = MDKSafeMallocSize((__bridge const void *) block);
     size_t logicalSize = allocationSize;
     NSMutableDictionary<NSString *, id> *summary = [@{
         @"present": @YES,
@@ -1800,7 +1813,7 @@ static NSDictionary<NSString *, id> *MDKDescribeRemoteQueueWrapperSlot(
     summary[@"present"] = @YES;
     summary[@"pointer"] = [NSString stringWithFormat:@"%p", slotValue];
 
-    const size_t allocationSize = malloc_size(const_cast<void *>(slotValue));
+    const size_t allocationSize = MDKSafeMallocSize(slotValue);
     if (allocationSize > 0) {
         summary[@"mallocSize"] = @(allocationSize);
         NSArray<NSDictionary<NSString *, id> *> *pointeeWords =
@@ -1844,7 +1857,7 @@ static NSDictionary<NSString *, id> *MDKDescribeRemoteQueueWrapper(const void *w
     NSMutableArray<NSDictionary<NSString *, id> *> *slots = [NSMutableArray array];
     NSMutableArray<NSNumber *> *candidateBlockOffsets = [NSMutableArray array];
     const uint8_t *base = reinterpret_cast<const uint8_t *>(wrapperPointer);
-    size_t wrapperAllocationSize = malloc_size(const_cast<void *>(wrapperPointer));
+    size_t wrapperAllocationSize = MDKSafeMallocSize(wrapperPointer);
     if (wrapperAllocationSize == 0) {
         wrapperAllocationSize = 0x80;
     }
@@ -4804,7 +4817,7 @@ static const void *MDKFindVideoQueueCallbackBlockPointerInWrapper(
     }
 
     uint8_t *wrapperBase = reinterpret_cast<uint8_t *>(const_cast<void *>(wrapperPointer));
-    size_t wrapperAllocationSize = malloc_size(const_cast<void *>(wrapperPointer));
+    size_t wrapperAllocationSize = MDKSafeMallocSize(wrapperPointer);
     if (wrapperAllocationSize == 0) {
         wrapperAllocationSize = 0x80;
     }
@@ -4883,7 +4896,7 @@ static const void *MDKFindDispatchSourcePointerInWrapper(const void *wrapperPoin
     }
 
     uint8_t *wrapperBase = reinterpret_cast<uint8_t *>(const_cast<void *>(wrapperPointer));
-    size_t wrapperAllocationSize = malloc_size(const_cast<void *>(wrapperPointer));
+    size_t wrapperAllocationSize = MDKSafeMallocSize(wrapperPointer);
     if (wrapperAllocationSize == 0) {
         wrapperAllocationSize = 0x80;
     }
@@ -4925,7 +4938,7 @@ static const void *MDKFindDispatchSourceHandlerBlockPointer(
     }
 
     uint8_t *sourceBase = reinterpret_cast<uint8_t *>(const_cast<void *>(dispatchSourcePointer));
-    size_t allocationSize = malloc_size(const_cast<void *>(dispatchSourcePointer));
+    size_t allocationSize = MDKSafeMallocSize(dispatchSourcePointer);
     if (allocationSize == 0) {
         return nullptr;
     }

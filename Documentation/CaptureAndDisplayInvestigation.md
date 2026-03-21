@@ -84,6 +84,7 @@ The host now supports two `SCStream` investigation entry points:
   - `MacDisplayKitHost --experimental-screencapturekit-timing-display <displayID> --sample-duration <seconds> --json`
   - `MacDisplayKitHost --experimental-screencapturekit-timing-display <displayID> --sample-duration <seconds> --with-metal-stimulus --json`
   - `MacDisplayKitHost --experimental-screencapturekit-passive-handshake-display <displayID> --sample-duration <seconds> --json`
+  - `MacDisplayKitHost --experimental-screencapturekit-replayd-producer-trace-display <displayID> --sample-duration <seconds> [--with-metal-stimulus] --json`
   - `MacDisplayKitHost --experimental-screencapturekit-proxy-handshake-display <displayID> --sample-duration <seconds> --json`
 - output includes:
   - sample buffer arrival delta histogram
@@ -338,6 +339,7 @@ The host now exposes the same handshake/startup path without the consuming priva
 
 - command:
   - `MacDisplayKitHost --experimental-screencapturekit-passive-handshake-display <displayID> --sample-duration <seconds> --json`
+  - `MacDisplayKitHost --experimental-screencapturekit-replayd-producer-trace-display <displayID> --sample-duration <seconds> [--with-metal-stimulus] --json`
 
 Interpretation:
 
@@ -358,6 +360,20 @@ Current use:
 
 - use the passive handshake trace when the goal is to connect queue setup to the first healthy public sample without consuming the `IOSurfaceReceiver` mach right
 - use the consuming proxy-handshake trace only when the goal is to inspect receiver creation behavior itself
+- use the replayd producer trace when the goal is to overlap the same passive handshake with a short `sample replayd`
+  window and correlate public `SCStream` setup with daemon-side producer evidence in one run
+
+Replayd producer trace specifics:
+
+- the host resolves the current `replayd` PID with `pgrep -x replayd`
+- it launches the passive handshake trace on the main actor and overlaps it with an actor-coordinated
+  `/usr/bin/sample` invocation against that daemon PID
+- the helper intentionally keeps the sample short:
+  - launch delay is clamped to `0.25s ... 0.5s`
+  - sample duration is clamped to `1.0s ... 1.5s`
+  - sample interval stays at `1ms`
+- the command exits `0` when it successfully produces the combined report, even if the older
+  `passiveTrace.succeeded` field remains `false`
 
 Recent passive-handshake sample on display `2`:
 
@@ -1141,6 +1157,20 @@ Interpretation:
   `_FigRemoteQueueSenderCreate`,
   `_FigRemoteQueueSenderCreateXPCObject`, and
   `_FigRemoteQueueSenderSetMaximumBufferAge`
+- the host now exposes a combined command for this same comparison:
+  - `MacDisplayKitHost --experimental-screencapturekit-replayd-producer-trace-display <displayID> --sample-duration <seconds> --json`
+  - `MacDisplayKitHost --experimental-screencapturekit-replayd-producer-trace-display <displayID> --sample-duration <seconds> --with-metal-stimulus --json`
+- latest verified baseline run from that command captured:
+  - `com.apple.coremedia.remotequeue_sender.readqueue`
+  - `rqSenderHandleDequeue`
+  - `CGYDisplayStreamNotification_server`
+  - `_CGYDisplayStreamFrameAvailable`
+  - `SLContentStream`
+- latest verified `--with-metal-stimulus` run still captured the SkyLight producer edge
+  (`CGYDisplayStreamNotification_server`, `_CGYDisplayStreamFrameAvailable`, `SLContentStream`)
+  but did not capture `rqSenderHandleDequeue` in that specific sample window
+- that makes the new host command the stable way to compare daemon-side producer evidence across
+  idle and stimulus conditions without manually invoking `sample replayd`
 - taken together, the brokered producer side now points much more strongly at
   `CMCapture`'s `FigRemoteQueueSender` path than at an ordinary host-side `libdispatch`
   or `NSXPCConnection` helper

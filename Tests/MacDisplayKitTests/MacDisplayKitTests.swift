@@ -634,4 +634,63 @@ final class MacDisplayKitTests: XCTestCase {
             "CGDisplayStream capture is available and should be benchmarked as an alternate native capture backend."
         )
     }
+
+    func testReplaydProducerSampleParserDetectsProducerAndSkyLightIndicators() throws {
+        let sampleText = """
+        1 Thread_1838321   DispatchQueue_14903: com.apple.coremedia.remotequeue_sender.readqueue  (serial)
+          1 rqSenderHandleDequeue  (in CMCapture) + 64  [0x1a71102c0]
+        _FigRemoteQueueSenderCreate
+        _FigRemoteQueueSenderCreateXPCObject
+        _FigRemoteQueueSenderSetMaximumBufferAge
+        -[RPClientProxy startRemoteQueue:streamID:]
+        -[RPClientProxy captureHandlerWithSample:timingData:]
+        +                     ! 4 CGYDisplayStreamNotification_server  (in SkyLight) + 476  [0x189ef8414]
+        +                     !   2 _CGYDisplayStreamFrameAvailable  (in SkyLight) + 1288  [0x189c51168]
+        +                     !   : 2 __65-[SLContentStream initWithFilter:properties:queue:handler:error:]_block_invoke.375  (in SkyLight) + 208  [0x189aca2ac]
+        """
+
+        let report = MDKReplaydProducerSampleParser.analyze(
+            sampleText: sampleText,
+            replaydPID: 740,
+            sampleDuration: 1.0,
+            sampleIntervalMilliseconds: 1
+        )
+
+        XCTAssertEqual(report.replaydPID, 740)
+        XCTAssertTrue(report.observedProducerReadQueue)
+        XCTAssertTrue(report.observedRQSenderHandleDequeue)
+        XCTAssertTrue(report.observedFigRemoteQueueSenderSetup)
+        XCTAssertTrue(report.observedRPClientProxyCaptureHandler)
+        XCTAssertTrue(report.observedRPClientProxyStartRemoteQueue)
+        XCTAssertTrue(report.observedSkyLightDisplayStreamFrameAvailable)
+        XCTAssertTrue(report.observedSLContentStream)
+        XCTAssertFalse(report.indicators.isEmpty)
+    }
+
+    func testReplaydProducerSampleReportRoundTripsThroughJSON() throws {
+        let report = MDKReplaydProducerSampleReport(
+            replaydPID: 740,
+            sampleDuration: 1.0,
+            sampleIntervalMilliseconds: 1,
+            totalLineCount: 10,
+            observedProducerReadQueue: true,
+            observedRQSenderHandleDequeue: true,
+            observedFigRemoteQueueSenderSetup: true,
+            observedRPClientProxyCaptureHandler: false,
+            observedRPClientProxyStartRemoteQueue: true,
+            observedSkyLightDisplayStreamFrameAvailable: true,
+            observedSLContentStream: true,
+            indicators: [
+                MDKReplaydProducerSampleIndicator(
+                    name: "producer-read-queue",
+                    pattern: "rqSenderHandleDequeue",
+                    matchedLines: ["rqSenderHandleDequeue  (in CMCapture) + 64  [0x1a71102c0]"]
+                )
+            ]
+        )
+
+        let data = try JSONEncoder().encode(report)
+        let decoded = try JSONDecoder().decode(MDKReplaydProducerSampleReport.self, from: data)
+        XCTAssertEqual(decoded, report)
+    }
 }
