@@ -1088,18 +1088,19 @@ Follow-up passive trace after swizzling `NSXPCConnection` setup in the host proc
 - `nsxpcSetExportedInterfaceEventCount=1`
 - `nsxpcServiceHistogram={"com.apple.replayd":1}`
 - `firstNSXPCMachServiceName=com.apple.replayd`
-- `firstNSXPCRemoteObjectInterface={"className":"NSXPCInterface","present":true}`
-- `firstNSXPCExportedInterface={"className":"NSXPCInterface","present":true}`
+- `firstNSXPCRemoteObjectInterface={"className":"NSXPCInterface","present":true,"protocolName":"RPDaemonProtocol"}`
+- `firstNSXPCExportedInterface={"className":"NSXPCInterface","present":true,"protocolName":"RPClientProtocol"}`
 
 Interpretation:
 
 - the host process still does not expose the broker handoff through imported `xpc_connection_create_from_endpoint`,
   `xpc_endpoint_create`, `xpc_connection_set_non_launching`, or `xpc_mach_send_*`
 - but the Objective-C layer *does* show a concrete client connection being created against `com.apple.replayd`
-- both the first remote and exported interface objects are present immediately on that connection, but the
-  current passive summary only sees them as `NSXPCInterface` instances rather than exposing protocol/class detail
+- the first remote interface is now concretely identifiable as `RPDaemonProtocol`
+- the first exported interface is now concretely identifiable as `RPClientProtocol`
 - that is the first direct host-side confirmation that the passive `SCStream` capture path is brokered through
   `replayd`, even though the lower imported C shims stay dark
 - this shifts the next reverse-engineering target from generic host-side imported stubs to two sharper paths:
-  - `NSXPCConnection` / proxy-interface wiring around the `com.apple.replayd` client in the host
+  - `NSXPCConnection` proxy acquisition around the `com.apple.replayd` client in the host
+  - `RPDaemonProxy` itself, especially connection binding and invocation handling
   - `replayd` itself, especially `SCContentSharingSessionService` and the session creation / reply path

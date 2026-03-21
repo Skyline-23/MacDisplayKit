@@ -1593,6 +1593,8 @@ static NSArray<NSString *> * _Nullable MDKSortedDictionaryKeys(id object) {
     return [keys sortedArrayUsingSelector:@selector(compare:)];
 }
 
+static NSDictionary<NSString *, id> * _Nullable MDKSummarizeNSXPCInterface(NSXPCInterface *interface);
+
 static NSDictionary<NSString *, id> *MDKSummarizeObject(id object) {
     if (object == nil) {
         return @{
@@ -1607,6 +1609,11 @@ static NSDictionary<NSString *, id> *MDKSummarizeObject(id object) {
 
     if ([className hasPrefix:@"OS_xpc_"]) {
         [summary addEntriesFromDictionary:MDKSummarizeXPCObject((xpc_object_t)object)];
+    } else if ([object isKindOfClass:[NSXPCInterface class]]) {
+        NSDictionary<NSString *, id> *interfaceSummary = MDKSummarizeNSXPCInterface((NSXPCInterface *) object);
+        if (interfaceSummary != nil) {
+            [summary addEntriesFromDictionary:interfaceSummary];
+        }
     } else if ([object isKindOfClass:[NSDictionary class]]) {
         summary[@"keys"] = MDKSortedDictionaryKeys(object) ?: @[];
     } else if ([object isKindOfClass:[NSArray class]]) {
@@ -1705,6 +1712,46 @@ static id MDKCopyObjectIvar(id object, const char *name) {
     }
 
     return object_getIvar(object, ivar);
+}
+
+static NSDictionary<NSString *, id> * _Nullable MDKSummarizeNSXPCInterface(NSXPCInterface *interface) {
+    if (interface == nil) {
+        return nil;
+    }
+
+    NSMutableDictionary<NSString *, id> *summary = [NSMutableDictionary dictionary];
+
+    NSValue *protocolPointer = MDKCopyRawPointerIvar(interface, "_protocol");
+    Protocol *protocol = protocolPointer != nil ? (__bridge Protocol *) protocolPointer.pointerValue : nullptr;
+    if (protocol != nullptr) {
+        const char *protocolName = protocol_getName(protocol);
+        if (protocolName != nullptr) {
+            summary[@"protocolName"] = [NSString stringWithUTF8String:protocolName] ?: @"";
+        }
+    }
+
+    id xpcDOSubclass = MDKCopyObjectIvar(interface, "_xpcDOSubclass");
+    if (xpcDOSubclass != nil) {
+        summary[@"xpcDOSubclassName"] = NSStringFromClass([xpcDOSubclass class]) ?: @"<unknown>";
+    }
+
+    NSValue *knownSelectorsPointer = MDKCopyRawPointerIvar(interface, "_knownSelectors");
+    if (knownSelectorsPointer != nil) {
+        CFDictionaryRef dictionary = (CFDictionaryRef) knownSelectorsPointer.pointerValue;
+        if (dictionary != nullptr) {
+            summary[@"knownSelectorCount"] = @(CFDictionaryGetCount(dictionary));
+        }
+    }
+
+    NSValue *methodInfoPointer = MDKCopyRawPointerIvar(interface, "_methodInfo");
+    if (methodInfoPointer != nil) {
+        CFDictionaryRef dictionary = (CFDictionaryRef) methodInfoPointer.pointerValue;
+        if (dictionary != nullptr) {
+            summary[@"methodInfoCount"] = @(CFDictionaryGetCount(dictionary));
+        }
+    }
+
+    return summary.count == 0 ? nil : summary;
 }
 
 static NSDictionary<NSString *, id> *MDKDescribeRemoteQueueWrapperSlot(
