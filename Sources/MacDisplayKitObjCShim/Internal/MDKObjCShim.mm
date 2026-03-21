@@ -9469,6 +9469,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     NSArray<NSDictionary<NSString *, id> *> *firstDispatchSourceLatchAndCallExitBacktrace = nil;
     NSArray<NSDictionary<NSString *, id> *> *firstDispatchClientCalloutRQReceiverEntryBacktrace = nil;
     NSArray<NSDictionary<NSString *, id> *> *firstDispatchClientCalloutRQReceiverExitBacktrace = nil;
+    NSDictionary<NSString *, id> *firstNSXPCInitMachServiceEvent = nil;
+    NSDictionary<NSString *, id> *firstNSXPCSetRemoteObjectInterfaceEvent = nil;
+    NSDictionary<NSString *, id> *firstNSXPCSetExportedInterfaceEvent = nil;
     auto copyFirstInterestingWrapperBacktraceFrame = ^NSDictionary<NSString *, id> * _Nullable(NSArray<NSDictionary<NSString *, id> *> *frames) {
         for (NSDictionary<NSString *, id> *frame in frames) {
             NSString *imagePath = [frame[@"imagePath"] isKindOfClass:[NSString class]] ? frame[@"imagePath"] : nil;
@@ -9496,6 +9499,16 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         NSArray<NSDictionary<NSString *, id> *> *backtrace =
             [event[@"backtrace"] isKindOfClass:[NSArray class]] ? event[@"backtrace"] : nil;
         if (backtrace == nil) {
+            if (firstNSXPCInitMachServiceEvent == nil &&
+                [kind isEqualToString:@"nsxpc-init-mach-service"]) {
+                firstNSXPCInitMachServiceEvent = event;
+            } else if (firstNSXPCSetRemoteObjectInterfaceEvent == nil &&
+                       [kind isEqualToString:@"nsxpc-set-remote-object-interface"]) {
+                firstNSXPCSetRemoteObjectInterfaceEvent = event;
+            } else if (firstNSXPCSetExportedInterfaceEvent == nil &&
+                       [kind isEqualToString:@"nsxpc-set-exported-interface"]) {
+                firstNSXPCSetExportedInterfaceEvent = event;
+            }
             continue;
         }
         if (firstVideoQueueWrapperInvokeEntryBacktrace == nil &&
@@ -9528,6 +9541,16 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         } else if (firstDispatchClientCalloutRQReceiverExitBacktrace == nil &&
                    [kind isEqualToString:@"dispatch-client-callout-rq-receiver-exit"]) {
             firstDispatchClientCalloutRQReceiverExitBacktrace = backtrace;
+        }
+        if (firstNSXPCInitMachServiceEvent == nil &&
+            [kind isEqualToString:@"nsxpc-init-mach-service"]) {
+            firstNSXPCInitMachServiceEvent = event;
+        } else if (firstNSXPCSetRemoteObjectInterfaceEvent == nil &&
+                   [kind isEqualToString:@"nsxpc-set-remote-object-interface"]) {
+            firstNSXPCSetRemoteObjectInterfaceEvent = event;
+        } else if (firstNSXPCSetExportedInterfaceEvent == nil &&
+                   [kind isEqualToString:@"nsxpc-set-exported-interface"]) {
+            firstNSXPCSetExportedInterfaceEvent = event;
         }
         if (firstVideoQueueWrapperInvokeEntryBacktrace != nil &&
             firstVideoQueueWrapperInvokeExitBacktrace != nil &&
@@ -9562,6 +9585,12 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         copyFirstInterestingWrapperBacktraceFrame(firstDispatchClientCalloutRQReceiverEntryBacktrace ?: @[]);
     NSDictionary<NSString *, id> *firstDispatchClientCalloutRQReceiverExitFirstInterestingFrame =
         copyFirstInterestingWrapperBacktraceFrame(firstDispatchClientCalloutRQReceiverExitBacktrace ?: @[]);
+    NSString *firstNSXPCMachServiceName =
+        [firstNSXPCInitMachServiceEvent[@"serviceName"] isKindOfClass:[NSString class]] ?
+            firstNSXPCInitMachServiceEvent[@"serviceName"] :
+            nil;
+    id firstNSXPCRemoteObjectInterface = firstNSXPCSetRemoteObjectInterfaceEvent[@"interface"];
+    id firstNSXPCExportedInterface = firstNSXPCSetExportedInterfaceEvent[@"interface"];
     NSMutableDictionary<NSString *, NSNumber *> *videoQueueWrapperToNestedLeadHistogramMutable = [NSMutableDictionary dictionary];
     NSUInteger videoQueueWrapperToNestedLeadPairCount = 0;
     double videoQueueWrapperToNestedLeadMinMilliseconds = DBL_MAX;
@@ -10506,6 +10535,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"nsxpcSetExportedInterfaceDeltaHistogram=%@", MDKDescribeTraceValue(nsxpcSetExportedInterfaceCadenceSummary[@"deltaHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"nsxpcSetExportedInterfaceCadenceClassification=%@", MDKDescribeTraceValue(nsxpcSetExportedInterfaceCadenceSummary[@"cadenceClassification"])]];
     [notes addObject:[NSString stringWithFormat:@"nsxpcServiceHistogram=%@", MDKDescribeTraceValue(snapshot[@"nsxpcServiceHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"firstNSXPCMachServiceName=%@", MDKDescribeTraceValue(firstNSXPCMachServiceName)]];
+    [notes addObject:[NSString stringWithFormat:@"firstNSXPCRemoteObjectInterface=%@", MDKDescribeTraceValue(firstNSXPCRemoteObjectInterface)]];
+    [notes addObject:[NSString stringWithFormat:@"firstNSXPCExportedInterface=%@", MDKDescribeTraceValue(firstNSXPCExportedInterface)]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeAttempted"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalled"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalledImageCount=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalledImageCount"])]];
