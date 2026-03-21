@@ -128,6 +128,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var activeDimensions: SIMD2<Int>?
     private var activePixelFormat: UInt32?
     private var pixelBufferAttributes: CFDictionary?
+    private var encoderPixelBufferAttributes: CFDictionary?
     private var pixelBufferCache: [UInt32: CVPixelBuffer] = [:]
     private var stagingPixelBufferPool: CVPixelBufferPool?
     private var stagingSlots: [Int: MDKVideoToolboxStagingSlot] = [:]
@@ -145,6 +146,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var minOutputCallbackLatencyMilliseconds: Double?
     private var maxOutputCallbackLatencyMilliseconds: Double?
     private var usingHardwareAcceleratedEncoder: Bool?
+    private var encoderPixelBufferPoolIsShared: Bool?
+    private var recommendedParallelizationLimit: Int?
     private var sessionConfigurationNotes: [String] = []
     private let encodeQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode")
 
@@ -227,6 +230,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "metal-staging-pool")",
                     "videoToolboxMaxInflightStagingSlots=\(maxInflightStagingSlots)",
                     "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
+                    "videoToolboxPixelBufferPoolIsShared=\(describeHardwareAcceleration(encoderPixelBufferPoolIsShared))",
+                    "videoToolboxRecommendedParallelizationLimit=\(recommendedParallelizationLimit.map(String.init) ?? "unknown")",
                     "videoToolboxPixelBufferCacheSize=\(pixelBufferCache.count)"
                 ] + sessionConfigurationNotes
             )
@@ -441,12 +446,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: status)
         }
 
-        let averageBitRate = codec.averageBitRate(width: width, height: height, frameRate: 120)
-        let dataRateLimits = codec.dataRateLimits(width: width, height: height, frameRate: 120) as CFArray
-
         setSessionProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue, label: "RealTime")
         setSessionProperty(session, key: kVTCompressionPropertyKey_ProgressiveScan, value: kCFBooleanTrue, label: "ProgressiveScan")
-        setSessionProperty(session, key: kVTCompressionPropertyKey_AllowTemporalCompression, value: kCFBooleanTrue, label: "AllowTemporalCompression")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_AllowTemporalCompression, value: codec == .proResProxy ? kCFBooleanFalse : kCFBooleanTrue, label: "AllowTemporalCompression")
         setSessionProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse, label: "AllowFrameReordering")
         setSessionProperty(session, key: kVTCompressionPropertyKey_AllowOpenGOP, value: kCFBooleanFalse, label: "AllowOpenGOP")
         setSessionProperty(session, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue, label: "PrioritizeEncodingSpeedOverQuality")
@@ -456,10 +458,28 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: 120), label: "ExpectedFrameRate")
         setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: 120), label: "MaxKeyFrameInterval")
         setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: NSNumber(value: 1.0), label: "MaxKeyFrameIntervalDuration")
-        setSessionProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: averageBitRate), label: "AverageBitRate")
-        setSessionProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits, label: "DataRateLimits")
-        setSessionProperty(session, key: kVTCompressionPropertyKey_Quality, value: NSNumber(value: codec.targetQuality), label: "Quality")
-        setSessionProperty(session, key: kVTCompressionPropertyKey_ReferenceBufferCount, value: NSNumber(value: codec.referenceBufferCount), label: "ReferenceBufferCount")
+        if codec.supportsAverageBitRate {
+            setSessionProperty(
+                session,
+                key: kVTCompressionPropertyKey_AverageBitRate,
+                value: NSNumber(value: codec.averageBitRate(width: width, height: height, frameRate: 120)),
+                label: "AverageBitRate"
+            )
+        }
+        if codec.supportsDataRateLimits {
+            setSessionProperty(
+                session,
+                key: kVTCompressionPropertyKey_DataRateLimits,
+                value: codec.dataRateLimits(width: width, height: height, frameRate: 120) as CFArray,
+                label: "DataRateLimits"
+            )
+        }
+        if codec.supportsQualityProperty {
+            setSessionProperty(session, key: kVTCompressionPropertyKey_Quality, value: NSNumber(value: codec.targetQuality), label: "Quality")
+        }
+        if codec.supportsReferenceBufferCount {
+            setSessionProperty(session, key: kVTCompressionPropertyKey_ReferenceBufferCount, value: NSNumber(value: codec.referenceBufferCount), label: "ReferenceBufferCount")
+        }
         if let profileLevel = codec.defaultProfileLevel {
             setSessionProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: profileLevel, label: "ProfileLevel")
         }
@@ -472,18 +492,43 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         compressionSession = session
         activeDimensions = SIMD2(width, height)
         activePixelFormat = pixelFormat
-        let dataRateLimitsDescription = codec
-            .dataRateLimits(width: width, height: height, frameRate: 120)
-            .map(\.stringValue)
-            .joined(separator: ",")
         sessionConfigurationNotes.append("videoToolboxEncodedWidth=\(width)")
         sessionConfigurationNotes.append("videoToolboxEncodedHeight=\(height)")
-        sessionConfigurationNotes.append("videoToolboxConfiguredAverageBitRate=\(averageBitRate)")
-        sessionConfigurationNotes.append("videoToolboxConfiguredDataRateLimits=\(dataRateLimitsDescription)")
+        if codec.supportsAverageBitRate {
+            let averageBitRate = codec.averageBitRate(width: width, height: height, frameRate: 120)
+            sessionConfigurationNotes.append("videoToolboxConfiguredAverageBitRate=\(averageBitRate)")
+        } else {
+            sessionConfigurationNotes.append("videoToolboxConfiguredAverageBitRate=default")
+        }
+        if codec.supportsDataRateLimits {
+            let dataRateLimitsDescription = codec
+                .dataRateLimits(width: width, height: height, frameRate: 120)
+                .map(\.stringValue)
+                .joined(separator: ",")
+            sessionConfigurationNotes.append("videoToolboxConfiguredDataRateLimits=\(dataRateLimitsDescription)")
+        } else {
+            sessionConfigurationNotes.append("videoToolboxConfiguredDataRateLimits=default")
+        }
         usingHardwareAcceleratedEncoder = copyBooleanSessionProperty(
             session,
             key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder
         )
+        encoderPixelBufferPoolIsShared = copyBooleanSessionProperty(
+            session,
+            key: kVTCompressionPropertyKey_PixelBufferPoolIsShared
+        )
+        encoderPixelBufferAttributes = copyDictionarySessionProperty(
+            session,
+            key: kVTCompressionPropertyKey_VideoEncoderPixelBufferAttributes
+        )
+        if #available(macOS 14.0, *) {
+            recommendedParallelizationLimit = copyIntegerSessionProperty(
+                session,
+                key: kVTCompressionPropertyKey_RecommendedParallelizationLimit
+            )
+        } else {
+            recommendedParallelizationLimit = nil
+        }
     }
 
     private func makeEncoderSpecification() -> CFDictionary {
@@ -578,13 +623,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             return
         }
 
-        let attributes: [CFString: Any] = [
-            kCVPixelBufferPixelFormatTypeKey: pixelFormat,
-            kCVPixelBufferWidthKey: width,
-            kCVPixelBufferHeightKey: height,
-            kCVPixelBufferMetalCompatibilityKey: true,
-            kCVPixelBufferIOSurfacePropertiesKey: [:] as [CFString: Any]
-        ]
+        var attributes = (encoderPixelBufferAttributes as? [CFString: Any]) ?? [:]
+        attributes[kCVPixelBufferPixelFormatTypeKey] = pixelFormat
+        attributes[kCVPixelBufferWidthKey] = width
+        attributes[kCVPixelBufferHeightKey] = height
+        attributes[kCVPixelBufferMetalCompatibilityKey] = true
+        attributes[kCVPixelBufferIOSurfacePropertiesKey] = [:] as [CFString: Any]
         let poolAttributes: [CFString: Any] = [
             kCVPixelBufferPoolMinimumBufferCountKey: maxInflightStagingSlots
         ]
@@ -676,6 +720,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         activeDimensions = nil
         activePixelFormat = nil
         pixelBufferAttributes = nil
+        encoderPixelBufferAttributes = nil
         pixelBufferCache.removeAll(keepingCapacity: true)
         stagingPixelBufferPool = nil
         stagingSlots.removeAll(keepingCapacity: true)
@@ -692,6 +737,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             maxOutputCallbackLatencyMilliseconds = nil
         }
         usingHardwareAcceleratedEncoder = nil
+        encoderPixelBufferPoolIsShared = nil
+        recommendedParallelizationLimit = nil
     }
 
     fileprivate func recordOutputCallback(
@@ -756,9 +803,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         _ session: VTCompressionSession,
         key: CFString
     ) -> Bool? {
-        var value: Unmanaged<CFTypeRef>?
-        let status = VTSessionCopyProperty(session, key: key, allocator: kCFAllocatorDefault, valueOut: &value)
-        guard status == noErr, let copiedValue = value?.takeRetainedValue() else {
+        guard let copiedValue = copySessionProperty(session, key: key) else {
             return nil
         }
 
@@ -767,6 +812,48 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         return nil
+    }
+
+    private func copyDictionarySessionProperty(
+        _ session: VTCompressionSession,
+        key: CFString
+    ) -> CFDictionary? {
+        guard let copiedValue = copySessionProperty(session, key: key) else {
+            return nil
+        }
+
+        guard CFGetTypeID(copiedValue) == CFDictionaryGetTypeID() else {
+            return nil
+        }
+
+        return (copiedValue as! CFDictionary)
+    }
+
+    private func copyIntegerSessionProperty(
+        _ session: VTCompressionSession,
+        key: CFString
+    ) -> Int? {
+        guard let copiedValue = copySessionProperty(session, key: key) else {
+            return nil
+        }
+
+        guard CFGetTypeID(copiedValue) == CFNumberGetTypeID() else {
+            return nil
+        }
+
+        return (copiedValue as? NSNumber)?.intValue
+    }
+
+    private func copySessionProperty(
+        _ session: VTCompressionSession,
+        key: CFString
+    ) -> CFTypeRef? {
+        var value: Unmanaged<CFTypeRef>?
+        let status = VTSessionCopyProperty(session, key: key, allocator: kCFAllocatorDefault, valueOut: &value)
+        guard status == noErr else {
+            return nil
+        }
+        return value?.takeRetainedValue()
     }
 
     private func releaseStagingSlot(identifier: Int) {

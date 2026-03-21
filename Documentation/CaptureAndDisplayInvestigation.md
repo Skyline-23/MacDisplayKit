@@ -1614,29 +1614,45 @@ Interpretation:
       - `vt-encode-downscale-2x`
       - `vt-encode-h264-downscale-2x`
       - `vt-encode-av1-downscale-2x`
+      - `vt-encode-prores-proxy-experimental`
     - encoder target dimensions are now derived from the preprocess strategy instead of always matching the source `IOSurface`
-    - `H.264` now requests `kVTProfileLevel_H264_ConstrainedHigh_AutoLevel`
+    - `AV1` remains opt-in only; it is no longer part of the default processing matrix on hosts without a usable hardware engine
+    - `ProRes Proxy` is now exposed as an experimental, non-default processing mode
+    - `H.264` now requests `kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel`
+    - the staged encoder pool now starts from `kVTCompressionPropertyKey_VideoEncoderPixelBufferAttributes` when available, instead of using only generic `CVPixelBuffer` attributes
     - the session now also tries:
       - `kVTVideoEncoderSpecification_EnableLowLatencyRateControl` for `H.264`
-      - `AverageBitRate`
-      - `DataRateLimits`
+      - `AverageBitRate` / `DataRateLimits` only for codecs that support them
       - `MaxKeyFrameIntervalDuration`
-      - `ReferenceBufferCount`
+      - `ReferenceBufferCount` only for codecs that support it
+      - `kVTCompressionPropertyKey_PixelBufferPoolIsShared` and `kVTCompressionPropertyKey_RecommendedParallelizationLimit` are captured as diagnostics
   - current measured behavior on this host:
-    - raw `SLDisplayStream` + no processing under current motion sample:
-      - `observedFrameRate≈38.77`
+    - raw `SLDisplayStream` + no processing under the current motion sample:
+      - `observedFrameRate≈37.07`
+    - raw `SLDisplayStream` tuning matrix under the current motion sample:
+      - `baseline-q3` is the best candidate at `observedFrameRate≈41.39`
+      - the current `request-120-like` shorthand (`min-frame-240hz-q8`) is slower on this machine state at `observedFrameRate≈36.36`
     - `vt-encode-downscale-2x` / `hevc` with motion stimulus:
-      - `processedFrameRate≈33.13`
-      - `completedOutputFrameRate≈32.80`
-      - callback latency tightened sharply to roughly `5.25ms..28.54ms`
-      - this keeps the encode path much closer to the raw capture ceiling than the old full-resolution direct path
+      - `processedFrameRate≈37.73`
+      - `completedOutputFrameRate≈37.73`
+      - `videoToolboxPixelBufferPoolIsShared=true`
+      - `videoToolboxRecommendedParallelizationLimit=1`
+      - callback latency is now mostly clustered around `5.3ms..5.6ms`, with a smaller tail out to `33.8ms`
+      - in the current machine state this keeps the encode path effectively at the raw capture ceiling
+    - `vt-encode-prores-proxy-experimental` with motion stimulus:
+      - `processedFrameRate≈35.99`
+      - `completedOutputFrameRate≈35.50`
+      - `videoToolboxUsingHardwareEncoder=true`
+      - `videoToolboxPixelBufferPoolIsShared=false`
+      - callback latency is mostly `7.8ms..8.1ms`
+      - this makes `ProRes Proxy` a viable experimental zero-copy path, but it is still slightly below the current raw ceiling
     - `vt-encode-h264-downscale-2x` with motion stimulus:
-      - `processedFrameRate≈33.57`
-      - `completedOutputFrameRate≈16.78`
-      - `outputCallbackCount=101` with `noErr`, but only about half of callbacks carried an emitted sample buffer
-    - full-resolution `vt-encode-h264` is unstable on this host:
-      - callback status regularly reports `kVTVideoEncoderNotAvailableNowErr (-12915)`
+      - `processedFrameRate≈34.27`
+      - `completedOutputFrameRate≈16.89`
+      - `outputCallbackCount=70` with `noErr`, but only about half of callbacks carried an emitted sample buffer
+      - moving `H.264` to `ConstrainedBaseline` removed the old `-12915` full-resolution failure pattern, but emitted output is still gated well below callback completion
   - current interpretation:
-    - `HEVC downscale-2x` is the first custom `IOSurface -> Metal -> encoder` path that stays near the current raw capture ceiling on this machine
-    - `H.264` still needs separate tuning; the low-latency/property mix is not yet yielding stable emitted output at the same rate as callback completion
-    - the remaining work is no longer “make VT output callbacks visible”; it is “push the raw capture ceiling back up while preserving the new lower-latency staged encode path”
+    - `HEVC downscale-2x` is now the best-behaved custom `IOSurface -> Metal -> encoder` path in the current machine state, because it holds the raw ceiling and drains every callback
+    - `ProRes Proxy` is worth keeping as an experimental option precisely because Apple’s hardware path is speed-oriented and it now tracks raw capture closely enough to compare against `HEVC`
+    - `H.264` still needs separate tuning; the remaining problem is emitted-sample gating, not missing callbacks or missing hardware acceleration setup
+    - the next leverage is not “more public `SCStream` work”; it is better raw `SLDisplayStream` auto-tuning plus codec-specific encoder tuning on top of that raw winner
