@@ -56,6 +56,14 @@ FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightD
     BOOL request120LikeProperties,
     NSError * _Nullable * _Nullable error
 );
+FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightDisplayStreamBenchmarkWithParameters(
+    NSUInteger displayID,
+    NSTimeInterval sampleDuration,
+    double minimumFrameTime,
+    NSInteger queueDepth,
+    BOOL showCursor,
+    NSError * _Nullable * _Nullable error
+);
 FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoTraceScreenCaptureKitProxyHandshake(
     NSUInteger displayID,
     NSTimeInterval timeout,

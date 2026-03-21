@@ -12548,10 +12548,12 @@ static NSString *MDKDescribeDisplayStreamFrameStatus(CGDisplayStreamFrameStatus 
     }
 }
 
-NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightDisplayStreamBenchmark(
+static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBenchmarkPayload(
     NSUInteger displayID,
     NSTimeInterval sampleDuration,
-    BOOL request120LikeProperties,
+    double minimumFrameTime,
+    NSInteger queueDepth,
+    BOOL showCursor,
     NSError * _Nullable * _Nullable error
 ) {
     using MDKSLDisplayStreamCreateWithDispatchQueueFn = CGDisplayStreamRef (*)(
@@ -12604,9 +12606,9 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightDisplayStreamBenchm
 
     NSMutableDictionary *streamProperties = [NSMutableDictionary dictionary];
     NSUInteger appliedPropertyCount = 0;
-    const double requestedMinimumFrameTime = request120LikeProperties ? (1.0 / 120.0) : 0.0;
-    const NSInteger requestedQueueDepth = request120LikeProperties ? 8 : 3;
-    const BOOL requestedShowCursor = NO;
+    const double requestedMinimumFrameTime = std::max(minimumFrameTime, 0.0);
+    const NSInteger requestedQueueDepth = std::max<NSInteger>(queueDepth, 1);
+    const BOOL requestedShowCursor = showCursor;
 
     if (CFStringRef minimumFrameTimeKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamMinimumFrameTime")) {
         streamProperties[(__bridge NSString *) minimumFrameTimeKey] = @(requestedMinimumFrameTime);
@@ -12709,11 +12711,9 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightDisplayStreamBenchm
 
     NSMutableArray<NSString *> *notes = [NSMutableArray array];
     [notes addObject:@"Uses raw SkyLight SLDisplayStreamCreateWithDispatchQueue instead of replayd-backed SCStream."];
-    if (request120LikeProperties) {
-        [notes addObject:@"Requests a 120-like minimum frame time and a deeper queue depth through CGDisplayStream property keys loaded from CoreGraphics."];
-    } else {
-        [notes addObject:@"Uses a baseline property set without the 120-like minimum frame-time request."];
-    }
+    [notes addObject:[NSString stringWithFormat:@"requestedMinimumFrameTime=%.6f", requestedMinimumFrameTime]];
+    [notes addObject:[NSString stringWithFormat:@"requestedQueueDepth=%ld", static_cast<long>(requestedQueueDepth)]];
+    [notes addObject:[NSString stringWithFormat:@"requestedShowCursor=%@", requestedShowCursor ? @"true" : @"false"]];
     [notes addObject:[NSString stringWithFormat:@"appliedPropertyCount=%lu", static_cast<unsigned long>(appliedPropertyCount)]];
     if (appliedPropertyCount < 3) {
         [notes addObject:@"One or more CGDisplayStream property keys were unavailable, so the benchmark ran with a reduced property dictionary."];
@@ -12730,7 +12730,11 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightDisplayStreamBenchm
         @"callbackCount": @(callbackCount),
         @"completeFrameCount": @(completeFrameCount),
         @"observedFrameRate": @(elapsed > 0.0 ? static_cast<double>(completeFrameCount) / elapsed : 0.0),
-        @"requested120LikeProperties": @(request120LikeProperties),
+        @"requested120LikeProperties": @(
+            requestedMinimumFrameTime >= ((1.0 / 120.0) - 0.000001) &&
+            requestedQueueDepth >= 8 &&
+            requestedShowCursor == NO
+        ),
         @"requestedMinimumFrameTime": @(requestedMinimumFrameTime),
         @"requestedQueueDepth": @(requestedQueueDepth),
         @"requestedShowCursor": @(requestedShowCursor),
@@ -12760,6 +12764,40 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightDisplayStreamBenchm
     }
 
     return payload;
+}
+
+NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightDisplayStreamBenchmark(
+    NSUInteger displayID,
+    NSTimeInterval sampleDuration,
+    BOOL request120LikeProperties,
+    NSError * _Nullable * _Nullable error
+) {
+    return MDKCreateSkyLightDisplayStreamBenchmarkPayload(
+        displayID,
+        sampleDuration,
+        request120LikeProperties ? (1.0 / 120.0) : 0.0,
+        request120LikeProperties ? 8 : 3,
+        NO,
+        error
+    );
+}
+
+NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightDisplayStreamBenchmarkWithParameters(
+    NSUInteger displayID,
+    NSTimeInterval sampleDuration,
+    double minimumFrameTime,
+    NSInteger queueDepth,
+    BOOL showCursor,
+    NSError * _Nullable * _Nullable error
+) {
+    return MDKCreateSkyLightDisplayStreamBenchmarkPayload(
+        displayID,
+        sampleDuration,
+        minimumFrameTime,
+        queueDepth,
+        showCursor,
+        error
+    );
 }
 
 NSDictionary<NSString *, id> * _Nullable MDKShimVideoTraceScreenCaptureKitProxyHandshake(

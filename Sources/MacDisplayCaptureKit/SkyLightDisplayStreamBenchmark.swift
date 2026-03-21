@@ -147,4 +147,29 @@ public enum MDKSkyLightDisplayStreamBenchmark {
 
         return try MDKSkyLightDisplayStreamBenchmarkResult(shimDictionary: payload as NSDictionary)
     }
+
+    public static func run(
+        displayID: UInt32,
+        sampleDuration: TimeInterval,
+        minimumFrameTime: Double,
+        queueDepth: Int,
+        showCursor: Bool
+    ) throws -> MDKSkyLightDisplayStreamBenchmarkResult {
+        var nsError: NSError?
+        guard let payload = MDKShimVideoSkyLightDisplayStreamBenchmarkWithParameters(
+            UInt(displayID),
+            sampleDuration,
+            minimumFrameTime,
+            queueDepth,
+            showCursor,
+            &nsError
+        ) else {
+            if let nsError {
+                throw nsError
+            }
+            throw MDKPrivateCapturePrototypeProbeError.unavailable
+        }
+
+        return try MDKSkyLightDisplayStreamBenchmarkResult(shimDictionary: payload as NSDictionary)
+    }
 }

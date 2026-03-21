@@ -22,7 +22,16 @@ private enum MDKHostCLICommand {
     case privateDisplayStreamProbeMatrix(displayID: UInt32?, json: Bool)
     case privateCaptureBenchmark(displayID: UInt32?, requestExtendedRange: Bool, sampleDuration: TimeInterval, json: Bool)
     case privateProxyCaptureBenchmark(displayID: UInt32?, requestExtendedRange: Bool, sampleDuration: TimeInterval, json: Bool)
-    case skyLightDisplayStreamBenchmark(displayID: UInt32?, sampleDuration: TimeInterval, request120LikeProperties: Bool, json: Bool, useMetalStimulus: Bool)
+    case skyLightDisplayStreamBenchmark(
+        displayID: UInt32?,
+        sampleDuration: TimeInterval,
+        request120LikeProperties: Bool,
+        minimumFrameTimeOverride: Double?,
+        queueDepthOverride: Int?,
+        showCursor: Bool,
+        json: Bool,
+        useMetalStimulus: Bool
+    )
     case benchmark(
         displayID: UInt32?,
         targetIdentifier: String,
@@ -416,17 +425,41 @@ enum MDKHostCommandLine {
                 fputs("Failed to run private proxy capture benchmark: \(error)\n", stderr)
                 return 1
             }
-        case .skyLightDisplayStreamBenchmark(let displayID, let sampleDuration, let request120LikeProperties, let json, let useMetalStimulus):
+        case .skyLightDisplayStreamBenchmark(
+            let displayID,
+            let sampleDuration,
+            let request120LikeProperties,
+            let minimumFrameTimeOverride,
+            let queueDepthOverride,
+            let showCursor,
+            let json,
+            let useMetalStimulus
+        ):
             do {
                 let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
                 let stimulus = useMetalStimulus ? MDKHostMetalStimulus(displayID: resolvedDisplayID) : nil
                 stimulus?.start()
                 defer { stimulus?.stop() }
-                let result = try controller.benchmarkSkyLightDisplayStream(
-                    displayID: resolvedDisplayID,
-                    sampleDuration: sampleDuration,
-                    request120LikeProperties: request120LikeProperties
-                )
+                let result: MDKSkyLightDisplayStreamBenchmarkResult
+                if minimumFrameTimeOverride != nil || queueDepthOverride != nil || showCursor {
+                    let resolvedMinimumFrameTime = minimumFrameTimeOverride
+                        ?? (request120LikeProperties ? (1.0 / 120.0) : 0.0)
+                    let resolvedQueueDepth = queueDepthOverride
+                        ?? (request120LikeProperties ? 8 : 3)
+                    result = try controller.benchmarkSkyLightDisplayStream(
+                        displayID: resolvedDisplayID,
+                        sampleDuration: sampleDuration,
+                        minimumFrameTime: resolvedMinimumFrameTime,
+                        queueDepth: resolvedQueueDepth,
+                        showCursor: showCursor
+                    )
+                } else {
+                    result = try controller.benchmarkSkyLightDisplayStream(
+                        displayID: resolvedDisplayID,
+                        sampleDuration: sampleDuration,
+                        request120LikeProperties: request120LikeProperties
+                    )
+                }
                 if json {
                     let encoder = JSONEncoder()
                     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -696,6 +729,9 @@ enum MDKHostCommandLine {
                 displayID: displayID,
                 sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
                 request120LikeProperties: tokens.contains("--request-120-like"),
+                minimumFrameTimeOverride: parseMinimumFrameTime(tokens: tokens),
+                queueDepthOverride: parseQueueDepth(tokens: tokens),
+                showCursor: tokens.contains("--show-cursor"),
                 json: tokens.contains("--json"),
                 useMetalStimulus: tokens.contains("--with-metal-stimulus")
             )
@@ -770,6 +806,28 @@ enum MDKHostCommandLine {
         }
 
         return count
+    }
+
+    private static func parseMinimumFrameTime(tokens: [String]) -> Double? {
+        guard let index = tokens.firstIndex(of: "--minimum-frame-time"),
+              tokens.indices.contains(index + 1),
+              let value = Double(tokens[index + 1]),
+              value >= 0 else {
+            return nil
+        }
+
+        return value
+    }
+
+    private static func parseQueueDepth(tokens: [String]) -> Int? {
+        guard let index = tokens.firstIndex(of: "--queue-depth"),
+              tokens.indices.contains(index + 1),
+              let value = Int(tokens[index + 1]),
+              value > 0 else {
+            return nil
+        }
+
+        return value
     }
 
     private static func parseOptionalDisplayID(flag: String, tokens: [String]) -> UInt32?? {
