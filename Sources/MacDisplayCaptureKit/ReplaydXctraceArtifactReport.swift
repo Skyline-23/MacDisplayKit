@@ -81,6 +81,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
     public let hotSymbolCadenceSummaries: [MDKReplaydXctraceHotSymbolCadenceSummary]
     public let hotSymbolSyscallSummaries: [MDKReplaydXctraceHotSymbolSyscallSummary]
     public let hotSymbolSyscallCadenceSummaries: [MDKReplaydXctraceHotSymbolSyscallCadenceSummary]
+    public let replaydRunningThreadCadenceSummaries: [MDKReplaydXctraceThreadCadenceSummary]
     public let excerpt: [String]
 
     public init(
@@ -93,6 +94,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
         hotSymbolCadenceSummaries: [MDKReplaydXctraceHotSymbolCadenceSummary],
         hotSymbolSyscallSummaries: [MDKReplaydXctraceHotSymbolSyscallSummary],
         hotSymbolSyscallCadenceSummaries: [MDKReplaydXctraceHotSymbolSyscallCadenceSummary],
+        replaydRunningThreadCadenceSummaries: [MDKReplaydXctraceThreadCadenceSummary],
         excerpt: [String]
     ) {
         self.schema = schema
@@ -104,6 +106,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
         self.hotSymbolCadenceSummaries = hotSymbolCadenceSummaries
         self.hotSymbolSyscallSummaries = hotSymbolSyscallSummaries
         self.hotSymbolSyscallCadenceSummaries = hotSymbolSyscallCadenceSummaries
+        self.replaydRunningThreadCadenceSummaries = replaydRunningThreadCadenceSummaries
         self.excerpt = excerpt
     }
 }
@@ -169,6 +172,37 @@ public struct MDKReplaydXctraceHotSymbolSyscallCadenceSummary: Codable, Equatabl
     ) {
         self.symbolName = symbolName
         self.syscallName = syscallName
+        self.eventCount = eventCount
+        self.minIntervalMilliseconds = minIntervalMilliseconds
+        self.maxIntervalMilliseconds = maxIntervalMilliseconds
+        self.intervalHistogram = intervalHistogram
+        self.cadenceClassification = cadenceClassification
+    }
+}
+
+public struct MDKReplaydXctraceThreadCadenceSummary: Codable, Equatable, Sendable {
+    public let threadID: String
+    public let threadName: String
+    public let eventName: String
+    public let eventCount: Int
+    public let minIntervalMilliseconds: Double?
+    public let maxIntervalMilliseconds: Double?
+    public let intervalHistogram: [String: Int]
+    public let cadenceClassification: String
+
+    public init(
+        threadID: String,
+        threadName: String,
+        eventName: String,
+        eventCount: Int,
+        minIntervalMilliseconds: Double?,
+        maxIntervalMilliseconds: Double?,
+        intervalHistogram: [String: Int],
+        cadenceClassification: String
+    ) {
+        self.threadID = threadID
+        self.threadName = threadName
+        self.eventName = eventName
         self.eventCount = eventCount
         self.minIntervalMilliseconds = minIntervalMilliseconds
         self.maxIntervalMilliseconds = maxIntervalMilliseconds
@@ -258,6 +292,9 @@ public enum MDKReplaydXctraceArtifactParser {
     private static let rowFormattedLabelExpression = try? NSRegularExpression(
         pattern: #"<formatted-label[^>]* fmt=\"([^\"]+)\""#
     )
+    private static let rowEventTimeValueExpression = try? NSRegularExpression(
+        pattern: #"<event-time[^>]*>(\d+)</event-time>"#
+    )
 
     public static func summarizeTableArtifact(
         schema: String,
@@ -273,6 +310,7 @@ public enum MDKReplaydXctraceArtifactParser {
         let hotSymbolCadenceSummaries = summarizeHotSymbolCadences(in: exportText)
         let hotSymbolSyscallSummaries = summarizeHotSymbolSyscalls(in: exportText)
         let hotSymbolSyscallCadenceSummaries = summarizeHotSymbolSyscallCadences(in: exportText)
+        let replaydRunningThreadCadenceSummaries = summarizeReplaydRunningThreadCadences(in: exportText)
 
         return MDKReplaydXctraceTableArtifact(
             schema: schema,
@@ -284,6 +322,7 @@ public enum MDKReplaydXctraceArtifactParser {
             hotSymbolCadenceSummaries: hotSymbolCadenceSummaries,
             hotSymbolSyscallSummaries: hotSymbolSyscallSummaries,
             hotSymbolSyscallCadenceSummaries: hotSymbolSyscallCadenceSummaries,
+            replaydRunningThreadCadenceSummaries: replaydRunningThreadCadenceSummaries,
             excerpt: excerpt
         )
     }
@@ -681,6 +720,125 @@ public enum MDKReplaydXctraceArtifactParser {
         }
     }
 
+    private static func summarizeReplaydRunningThreadCadences(
+        in exportText: String
+    ) -> [MDKReplaydXctraceThreadCadenceSummary] {
+        guard let rowExpression else {
+            return []
+        }
+        let exportRange = NSRange(exportText.startIndex..<exportText.endIndex, in: exportText)
+        let rowMatches = rowExpression.matches(in: exportText, range: exportRange)
+        guard !rowMatches.isEmpty else {
+            return []
+        }
+
+        var schedEventByID: [String: String] = [:]
+        var processPIDByID: [String: String] = [:]
+        var threadByID: [String: (tid: String, fmt: String)] = [:]
+        var threadRunningTimestamps: [String: [Double]] = [:]
+        var threadNames: [String: String] = [:]
+
+        for rowMatch in rowMatches {
+            guard let rowRange = Range(rowMatch.range(at: 1), in: exportText) else {
+                continue
+            }
+            let rowText = String(exportText[rowRange])
+
+            if
+                let eventID = firstTagAttributeValue(tag: "sched-event", attribute: "id", in: rowText),
+                let eventFormat = firstTagAttributeValue(tag: "sched-event", attribute: "fmt", in: rowText)
+            {
+                schedEventByID[eventID] = eventFormat
+            }
+            if
+                let processID = firstTagAttributeValue(tag: "process", attribute: "id", in: rowText),
+                let processPID = firstTagInnerText(tag: "pid", in: rowText)
+            {
+                processPIDByID[processID] = processPID
+            }
+            if
+                let threadID = firstTagAttributeValue(tag: "thread", attribute: "id", in: rowText),
+                let threadFormat = firstTagAttributeValue(tag: "thread", attribute: "fmt", in: rowText),
+                let tid = firstTagInnerText(tag: "tid", in: rowText)
+            {
+                threadByID[threadID] = (tid, threadFormat)
+            }
+        }
+
+        for rowMatch in rowMatches {
+            guard let rowRange = Range(rowMatch.range(at: 1), in: exportText) else {
+                continue
+            }
+            let rowText = String(exportText[rowRange])
+            guard
+                let eventTime = firstCapturedValue(using: rowEventTimeValueExpression, in: rowText),
+                let timestamp = Double(eventTime)
+            else {
+                continue
+            }
+
+            let eventName: String?
+            if let eventRef = firstTagAttributeValue(tag: "sched-event", attribute: "ref", in: rowText) {
+                eventName = schedEventByID[eventRef]
+            } else {
+                eventName = firstTagAttributeValue(tag: "sched-event", attribute: "fmt", in: rowText)
+            }
+
+            let resolvedThread: (tid: String, fmt: String)?
+            if let threadRef = firstTagAttributeValue(tag: "thread", attribute: "ref", in: rowText) {
+                resolvedThread = threadByID[threadRef]
+            } else if
+                let threadFormat = firstTagAttributeValue(tag: "thread", attribute: "fmt", in: rowText),
+                let tid = firstTagInnerText(tag: "tid", in: rowText)
+            {
+                resolvedThread = (tid, threadFormat)
+            } else {
+                resolvedThread = nil
+            }
+
+            let processPID: String?
+            if let processRef = firstTagAttributeValue(tag: "process", attribute: "ref", in: rowText) {
+                processPID = processPIDByID[processRef]
+            } else {
+                processPID = firstTagInnerText(tag: "pid", in: rowText)
+            }
+
+            guard let resolvedThread, eventName == "Running" else {
+                continue
+            }
+
+            let belongsToReplayd = processPID == "740" || resolvedThread.fmt.contains("(replayd, pid: 740)")
+            guard belongsToReplayd else {
+                continue
+            }
+
+            threadRunningTimestamps[resolvedThread.tid, default: []].append(timestamp)
+            threadNames[resolvedThread.tid] = resolvedThread.fmt
+        }
+
+        return threadRunningTimestamps
+            .sorted { lhs, rhs in
+                if lhs.value.count == rhs.value.count {
+                    return lhs.key < rhs.key
+                }
+                return lhs.value.count > rhs.value.count
+            }
+            .map { threadID, timestamps in
+                let sorted = timestamps.sorted()
+                let intervals = zip(sorted, sorted.dropFirst()).map { ($1 - $0) / 1_000_000.0 }
+                return MDKReplaydXctraceThreadCadenceSummary(
+                    threadID: threadID,
+                    threadName: threadNames[threadID] ?? "replayd (\(threadID))",
+                    eventName: "Running",
+                    eventCount: sorted.count,
+                    minIntervalMilliseconds: intervals.min(),
+                    maxIntervalMilliseconds: intervals.max(),
+                    intervalHistogram: histogram(for: intervals),
+                    cadenceClassification: classifyCadence(intervals)
+                )
+            }
+    }
+
     private static func parseRowTimestamp(
         _ rowText: String,
         using expression: NSRegularExpression
@@ -717,5 +875,28 @@ public enum MDKReplaydXctraceArtifactParser {
             return nil
         }
         return captureGroup(at: 1, from: match, in: source)
+    }
+
+    private static func firstTagAttributeValue(
+        tag: String,
+        attribute: String,
+        in source: String
+    ) -> String? {
+        let pattern = #"<\#(tag)\b[^>]*\b\#(attribute)=\"([^\"]+)\""#
+        guard let expression = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+        return firstCapturedValue(using: expression, in: source)
+    }
+
+    private static func firstTagInnerText(
+        tag: String,
+        in source: String
+    ) -> String? {
+        let pattern = #"<\#(tag)\b[^>]*>([^<]+)</\#(tag)>"#
+        guard let expression = try? NSRegularExpression(pattern: pattern) else {
+            return nil
+        }
+        return firstCapturedValue(using: expression, in: source)
     }
 }

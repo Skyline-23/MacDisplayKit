@@ -28,6 +28,7 @@ struct MDKReplaydXctraceArtifactReport: Codable, Equatable, Sendable {
     let tracePath: String
     let tocPath: String
     let tocByteCount: Int
+    let contextSwitchTable: MDKReplaydXctraceTableArtifact
     let systemCallTable: MDKReplaydXctraceTableArtifact
     let timeSampleTable: MDKReplaydXctraceTableArtifact
     let unifiedLog: MDKReplaydUnifiedLogArtifact
@@ -138,6 +139,7 @@ private actor MDKReplaydXctraceCoordinator {
 
         let traceURL = traceDirectoryURL.appendingPathComponent("replayd-system.trace")
         let tocURL = traceDirectoryURL.appendingPathComponent("toc.xml")
+        let contextSwitchURL = traceDirectoryURL.appendingPathComponent("context-switch.xml")
         let syscallURL = traceDirectoryURL.appendingPathComponent("syscall.xml")
         let timeSampleURL = traceDirectoryURL.appendingPathComponent("time-sample.xml")
         let logURL = traceDirectoryURL.appendingPathComponent("replayd-log.ndjson")
@@ -164,6 +166,16 @@ private actor MDKReplaydXctraceCoordinator {
                 "--toc"
             ],
             outputURL: tocURL
+        )
+
+        try Self.runProcess(
+            executablePath: "/usr/bin/xcrun",
+            arguments: [
+                "xctrace", "export",
+                "--input", traceURL.path,
+                "--xpath", "/trace-toc/run[@number=\"1\"]/data/table[@schema=\"context-switch\"]"
+            ],
+            outputURL: contextSwitchURL
         )
 
         try Self.runProcess(
@@ -202,10 +214,16 @@ private actor MDKReplaydXctraceCoordinator {
         )
 
         let tocText = try String(contentsOf: tocURL, encoding: .utf8)
+        let contextSwitchText = try String(contentsOf: contextSwitchURL, encoding: .utf8)
         let syscallText = try String(contentsOf: syscallURL, encoding: .utf8)
         let timeSampleText = try String(contentsOf: timeSampleURL, encoding: .utf8)
         let logText = try String(contentsOf: logURL, encoding: .utf8)
 
+        let contextSwitchTable = MDKReplaydXctraceArtifactParser.summarizeTableArtifact(
+            schema: "context-switch",
+            outputPath: contextSwitchURL.path,
+            exportText: contextSwitchText
+        )
         let systemCallTable = MDKReplaydXctraceArtifactParser.summarizeTableArtifact(
             schema: "syscall",
             outputPath: syscallURL.path,
@@ -222,15 +240,27 @@ private actor MDKReplaydXctraceCoordinator {
         )
 
         var notes: [String] = []
+        if !contextSwitchTable.containsRows {
+            notes.append("xctrace context-switch export returned schema-only XML on this run.")
+        }
         if !systemCallTable.containsRows {
             notes.append("xctrace syscall export returned schema-only XML on this run.")
         }
         if !timeSampleTable.containsRows {
             notes.append("xctrace time-sample export returned schema-only XML on this run.")
         }
-        if systemCallTable.containsRows || timeSampleTable.containsRows {
+        if contextSwitchTable.containsRows || systemCallTable.containsRows || timeSampleTable.containsRows {
             notes.append(
-                "xctrace exported replayd rows: syscall=\(systemCallTable.rowCount) time-sample=\(timeSampleTable.rowCount)."
+                "xctrace exported replayd rows: context-switch=\(contextSwitchTable.rowCount) syscall=\(systemCallTable.rowCount) time-sample=\(timeSampleTable.rowCount)."
+            )
+        }
+        if !contextSwitchTable.replaydRunningThreadCadenceSummaries.isEmpty {
+            let dominantThreads = contextSwitchTable.replaydRunningThreadCadenceSummaries.prefix(2).map {
+                "\($0.threadID)=\($0.cadenceClassification) count=\($0.eventCount)"
+            }
+            let dominantSummary = dominantThreads.joined(separator: ", ")
+            notes.append(
+                "replayd context-switch running cadences \(dominantSummary)."
             )
         }
         if !systemCallTable.hotSymbolHistogram.isEmpty {
@@ -306,6 +336,7 @@ private actor MDKReplaydXctraceCoordinator {
                 tracePath: traceURL.path,
                 tocPath: tocURL.path,
                 tocByteCount: tocText.lengthOfBytes(using: .utf8),
+                contextSwitchTable: contextSwitchTable,
                 systemCallTable: systemCallTable,
                 timeSampleTable: timeSampleTable,
                 unifiedLog: unifiedLog,

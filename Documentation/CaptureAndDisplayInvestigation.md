@@ -1263,6 +1263,13 @@ Interpretation:
         - the sampled syscall histogram for those rows was `{"0x16b73b618":1,"0x16b73bbc0":1}`
         - no `write` rows were sampled for `roEnqueueSampleBuffer`, so `write-only` cadence was unavailable in that window
         - the same run still logged `384` enqueue failures with `60hz-like` spacing
+      - after exporting the `context-switch` table from the same host command, a `6`-second run showed:
+        - `context-switch rowCount=3060`
+        - the dominant replayd `Running` threads were:
+          - `2269541` with `eventCount=378`, `cadenceClassification=60hz-like`
+          - `2269221` with `eventCount=376`, `cadenceClassification=60hz-like`
+        - those thread histograms are dominated by `16.5ms ... 18.0ms` intervals rather than by `~8.3ms`
+        - smaller replayd threads can still show sub-millisecond or tiny `120hz-like` bursts, but not at the event counts that dominate producer work
     - replayd unified log emitted repeated producer-side enqueue failures:
       - `_SCRemoteQueue_Enqueue:217 ... err=-19641 opType=3 Error occurred when enqueuing data`
       - the new parser can now summarize those failures directly from the host artifact:
@@ -1290,6 +1297,9 @@ Interpretation:
       `roEnqueueSampleBuffer`, which ties the live failure stream directly to sample-buffer producer traffic
     - but the syscall-row cadence parser also shows that the exported `roEnqueueSampleBuffer` rows are too sparse and bursty
       to claim a true `120-like` producer cadence from `xctrace` alone
+    - the new `context-switch` parser is much stronger than those sparse syscall samples:
+      it observes dominant replayd producer-side running threads directly, and those dominant threads
+      still classify as `60hz-like`
     - the new syscall-filtered view makes that limitation sharper:
       even when the broker logs steady `60hz-like` enqueue failures, `xctrace` may miss `write` wakeups entirely
       and only sample unrelated `roEnqueueSampleBuffer` syscalls in the same window
@@ -1307,6 +1317,9 @@ Interpretation:
     - that makes the next reverse-engineering target sharper:
       the producer-side queue policy / enqueue failure reason inside `replayd` and `CMCapture`,
       especially around `_SCRemoteQueue_Enqueue` and `FigRemoteQueueSender`
+    - current strongest reading:
+      the `120` ceiling is already lost at or before dominant replayd producer-thread scheduling,
+      not only in the public `SCStream` callback path
   - this does not yet give cadence, but it creates a repeatable artifact that can be inspected with Instruments
     or mined by parsing the `.trace` bundle directly
 - taken together, the brokered producer side now points much more strongly at

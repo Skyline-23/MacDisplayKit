@@ -880,6 +880,74 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertFalse(summary.excerpt.isEmpty)
     }
 
+    func testReplaydXctraceArtifactParserSummarizesReplaydContextSwitchThreads() throws {
+        let xml = """
+        <?xml version="1.0"?>
+        <trace-query-result>
+          <node xpath='//trace-toc[1]/run[1]/data[1]/table[11]'>
+            <schema name="context-switch"/>
+            <row>
+              <event-time id="1" fmt="00:00.000.000">0</event-time>
+              <thread id="11" fmt="replayd (0x21d1e0) (replayd, pid: 740)"><tid id="12" fmt="0x21d1e0">2216416</tid><process id="13" fmt="replayd (740)"><pid id="14" fmt="740">740</pid></process></thread>
+              <sched-event id="16" fmt="Running">Running</sched-event>
+              <process ref="13"/>
+            </row>
+            <row>
+              <event-time id="2" fmt="00:00.016.667">16667000</event-time>
+              <thread ref="11"/>
+              <sched-event ref="16"/>
+              <process ref="13"/>
+            </row>
+            <row>
+              <event-time id="3" fmt="00:00.033.334">33334000</event-time>
+              <thread ref="11"/>
+              <sched-event ref="16"/>
+              <process ref="13"/>
+            </row>
+            <row>
+              <event-time id="4" fmt="00:00.000.000">0</event-time>
+              <thread id="21" fmt="replayd (0x21d3bd) (replayd, pid: 740)"><tid id="22" fmt="0x21d3bd">2216893</tid><process ref="13"/></thread>
+              <sched-event ref="16"/>
+              <process ref="13"/>
+            </row>
+            <row>
+              <event-time id="5" fmt="00:00.016.900">16900000</event-time>
+              <thread ref="21"/>
+              <sched-event ref="16"/>
+              <process ref="13"/>
+            </row>
+            <row>
+              <event-time id="6" fmt="00:00.033.800">33800000</event-time>
+              <thread ref="21"/>
+              <sched-event ref="16"/>
+              <process ref="13"/>
+            </row>
+          </node>
+        </trace-query-result>
+        """
+
+        let summary = MDKReplaydXctraceArtifactParser.summarizeTableArtifact(
+            schema: "context-switch",
+            outputPath: "/tmp/context-switch.xml",
+            exportText: xml
+        )
+
+        XCTAssertEqual(summary.schema, "context-switch")
+        XCTAssertEqual(summary.rowCount, 6)
+        XCTAssertEqual(summary.replaydRunningThreadCadenceSummaries.count, 2)
+        let firstThread = try XCTUnwrap(
+            summary.replaydRunningThreadCadenceSummaries.first(where: { $0.threadID == "2216416" })
+        )
+        XCTAssertEqual(firstThread.eventName, "Running")
+        XCTAssertEqual(firstThread.eventCount, 3)
+        XCTAssertEqual(firstThread.cadenceClassification, "60hz-like")
+        let secondThread = try XCTUnwrap(
+            summary.replaydRunningThreadCadenceSummaries.first(where: { $0.threadID == "2216893" })
+        )
+        XCTAssertEqual(secondThread.eventCount, 3)
+        XCTAssertEqual(secondThread.cadenceClassification, "60hz-like")
+    }
+
     func testReplaydUnifiedLogArtifactParserFiltersInterestingLines() {
         let logText = """
         {"timestamp":"2026-03-21T16:27:18.000+09:00","eventMessage":"noise"}

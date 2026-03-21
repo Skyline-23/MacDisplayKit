@@ -15,6 +15,16 @@ enum MDKHostBenchmarkFormatter {
         lines.append("TOC: \(report.tocPath) bytes=\(report.tocByteCount)")
         lines.append("Tables:")
         lines.append(
+            "  - \(report.contextSwitchTable.schema): rows=\(report.contextSwitchTable.rowCount) bytes=\(report.contextSwitchTable.byteCount) path=\(report.contextSwitchTable.outputPath)"
+        )
+        if !report.contextSwitchTable.replaydRunningThreadCadenceSummaries.isEmpty {
+            for summary in report.contextSwitchTable.replaydRunningThreadCadenceSummaries {
+                lines.append(
+                    "    replaydThreadCadence[\(summary.threadID)]: event=\(summary.eventName) count=\(summary.eventCount) class=\(summary.cadenceClassification) histogram=\(summary.intervalHistogram)"
+                )
+            }
+        }
+        lines.append(
             "  - \(report.systemCallTable.schema): rows=\(report.systemCallTable.rowCount) bytes=\(report.systemCallTable.byteCount) path=\(report.systemCallTable.outputPath)"
         )
         if !report.systemCallTable.hotSymbolHistogram.isEmpty {
