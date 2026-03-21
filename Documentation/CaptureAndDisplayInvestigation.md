@@ -1608,3 +1608,35 @@ Interpretation:
     - source-surface backpressure was real, but removing it is not sufficient for `120-like` encode throughput
     - the remaining ceiling is now codec-specific encoder throughput at `5120x2880`
     - the next optimization target is a custom `IOSurface -> Metal -> encoder` path that can trade staging cost against encode throughput more deliberately than the current generic blit pool
+- 2026-03-21 the raw VT path now supports `Metal downscale-2x -> encoder` and more aggressive low-latency rate-control tuning
+  - configuration changes:
+    - new processing modes:
+      - `vt-encode-downscale-2x`
+      - `vt-encode-h264-downscale-2x`
+      - `vt-encode-av1-downscale-2x`
+    - encoder target dimensions are now derived from the preprocess strategy instead of always matching the source `IOSurface`
+    - `H.264` now requests `kVTProfileLevel_H264_ConstrainedHigh_AutoLevel`
+    - the session now also tries:
+      - `kVTVideoEncoderSpecification_EnableLowLatencyRateControl` for `H.264`
+      - `AverageBitRate`
+      - `DataRateLimits`
+      - `MaxKeyFrameIntervalDuration`
+      - `ReferenceBufferCount`
+  - current measured behavior on this host:
+    - raw `SLDisplayStream` + no processing under current motion sample:
+      - `observedFrameRate≈38.77`
+    - `vt-encode-downscale-2x` / `hevc` with motion stimulus:
+      - `processedFrameRate≈33.13`
+      - `completedOutputFrameRate≈32.80`
+      - callback latency tightened sharply to roughly `5.25ms..28.54ms`
+      - this keeps the encode path much closer to the raw capture ceiling than the old full-resolution direct path
+    - `vt-encode-h264-downscale-2x` with motion stimulus:
+      - `processedFrameRate≈33.57`
+      - `completedOutputFrameRate≈16.78`
+      - `outputCallbackCount=101` with `noErr`, but only about half of callbacks carried an emitted sample buffer
+    - full-resolution `vt-encode-h264` is unstable on this host:
+      - callback status regularly reports `kVTVideoEncoderNotAvailableNowErr (-12915)`
+  - current interpretation:
+    - `HEVC downscale-2x` is the first custom `IOSurface -> Metal -> encoder` path that stays near the current raw capture ceiling on this machine
+    - `H.264` still needs separate tuning; the low-latency/property mix is not yet yielding stable emitted output at the same rate as callback completion
+    - the remaining work is no longer “make VT output callbacks visible”; it is “push the raw capture ceiling back up while preserving the new lower-latency staged encode path”

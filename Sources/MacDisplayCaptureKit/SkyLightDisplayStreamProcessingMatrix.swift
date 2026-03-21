@@ -75,8 +75,11 @@ public enum MDKSkyLightDisplayStreamProcessingMatrix {
         .metalBind,
         .metalCopy,
         .videoToolboxEncode,
+        .videoToolboxEncodeDownscale2x,
         .videoToolboxEncodeH264,
-        .videoToolboxEncodeAV1
+        .videoToolboxEncodeH264Downscale2x,
+        .videoToolboxEncodeAV1,
+        .videoToolboxEncodeAV1Downscale2x
     ]
 
     public static let defaultCandidates: [MDKSkyLightDisplayStreamProcessingMatrixCandidate] = defaultProcessingModes.flatMap { processingMode in

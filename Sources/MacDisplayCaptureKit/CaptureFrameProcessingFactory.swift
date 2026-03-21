@@ -5,7 +5,10 @@ enum MDKCaptureFrameProcessingFactory {
         processingMode: MDKCaptureBenchmarkProcessingMode
     ) throws -> any MDKCaptureFrameProcessing {
         if let codec = processingMode.videoEncoderCodec {
-            return MDKVideoToolboxEncodingProcessor(codec: codec)
+            return MDKVideoToolboxEncodingProcessor(
+                codec: codec,
+                preprocessStrategy: processingMode.videoPreprocessStrategy
+            )
         }
 
         switch processingMode {
@@ -15,7 +18,12 @@ enum MDKCaptureFrameProcessingFactory {
             return try MDKMetalTextureBindingProcessor()
         case .metalCopy:
             return try MDKMetalTextureCopyProcessor()
-        case .videoToolboxEncode, .videoToolboxEncodeH264, .videoToolboxEncodeAV1:
+        case .videoToolboxEncode,
+             .videoToolboxEncodeDownscale2x,
+             .videoToolboxEncodeH264,
+             .videoToolboxEncodeH264Downscale2x,
+             .videoToolboxEncodeAV1,
+             .videoToolboxEncodeAV1Downscale2x:
             preconditionFailure("VideoToolbox processing modes should be handled before the switch.")
         }
     }

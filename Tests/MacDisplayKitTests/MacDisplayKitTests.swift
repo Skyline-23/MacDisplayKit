@@ -22,6 +22,23 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertTrue(MDKCapabilityMatrix.virtualDisplayIsOptional)
     }
 
+    func testDownscale2xStrategyKeepsBiPlanarEncoderTargetsEvenSized() {
+        let target = MDKVideoPreprocessStrategy.downscale2x.outputDimensions(
+            sourceWidth: 5121,
+            sourceHeight: 2881,
+            pixelFormat: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        )
+
+        XCTAssertEqual(target, SIMD2(2560, 1440))
+    }
+
+    func testDownscaleProcessingModesExposeCodecAndPreprocessStrategy() {
+        XCTAssertEqual(MDKCaptureBenchmarkProcessingMode.videoToolboxEncodeDownscale2x.videoEncoderCodec, .hevc)
+        XCTAssertEqual(MDKCaptureBenchmarkProcessingMode.videoToolboxEncodeDownscale2x.videoPreprocessStrategy, .downscale2x)
+        XCTAssertEqual(MDKCaptureBenchmarkProcessingMode.videoToolboxEncodeH264Downscale2x.videoEncoderCodec, .h264)
+        XCTAssertEqual(MDKCaptureBenchmarkProcessingMode.videoToolboxEncodeH264Downscale2x.videoPreprocessStrategy, .downscale2x)
+    }
+
     func testPrivateCaptureCapabilitiesModelHardwareSurfaceAndExtendedRangeHints() {
         let capabilities = MDKPrivateCaptureCapabilities(
             desktopCaptureAvailable: false,

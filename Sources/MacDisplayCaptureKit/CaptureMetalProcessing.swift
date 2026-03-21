@@ -5,8 +5,11 @@ public enum MDKCaptureBenchmarkProcessingMode: String, CaseIterable, Codable, Se
     case metalBind = "metal-bind"
     case metalCopy = "metal-copy"
     case videoToolboxEncode = "vt-encode"
+    case videoToolboxEncodeDownscale2x = "vt-encode-downscale-2x"
     case videoToolboxEncodeH264 = "vt-encode-h264"
+    case videoToolboxEncodeH264Downscale2x = "vt-encode-h264-downscale-2x"
     case videoToolboxEncodeAV1 = "vt-encode-av1"
+    case videoToolboxEncodeAV1Downscale2x = "vt-encode-av1-downscale-2x"
 
     public var localizedName: String {
         switch self {
@@ -18,10 +21,16 @@ public enum MDKCaptureBenchmarkProcessingMode: String, CaseIterable, Codable, Se
             return "metal-copy"
         case .videoToolboxEncode:
             return "vt-encode"
+        case .videoToolboxEncodeDownscale2x:
+            return "vt-encode-downscale-2x"
         case .videoToolboxEncodeH264:
             return "vt-encode-h264"
+        case .videoToolboxEncodeH264Downscale2x:
+            return "vt-encode-h264-downscale-2x"
         case .videoToolboxEncodeAV1:
             return "vt-encode-av1"
+        case .videoToolboxEncodeAV1Downscale2x:
+            return "vt-encode-av1-downscale-2x"
         }
     }
 
@@ -29,12 +38,23 @@ public enum MDKCaptureBenchmarkProcessingMode: String, CaseIterable, Codable, Se
         switch self {
         case .none, .metalBind, .metalCopy:
             return nil
-        case .videoToolboxEncode:
+        case .videoToolboxEncode, .videoToolboxEncodeDownscale2x:
             return .hevc
-        case .videoToolboxEncodeH264:
+        case .videoToolboxEncodeH264, .videoToolboxEncodeH264Downscale2x:
             return .h264
-        case .videoToolboxEncodeAV1:
+        case .videoToolboxEncodeAV1, .videoToolboxEncodeAV1Downscale2x:
             return .av1
+        }
+    }
+
+    var videoPreprocessStrategy: MDKVideoPreprocessStrategy {
+        switch self {
+        case .videoToolboxEncodeDownscale2x,
+             .videoToolboxEncodeH264Downscale2x,
+             .videoToolboxEncodeAV1Downscale2x:
+            return .downscale2x
+        default:
+            return .none
         }
     }
 }

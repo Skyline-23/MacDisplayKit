@@ -3,6 +3,7 @@ import CoreVideo
 import Foundation
 import IOSurface
 import Metal
+import MetalPerformanceShaders
 import VideoToolbox
 
 public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
@@ -14,6 +15,7 @@ public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
     case commandQueueUnavailable
     case commandBufferUnavailable
     case blitEncoderUnavailable
+    case scalerUnavailable
     case stagingPoolCreationFailed(status: CVReturn)
     case stagingBufferCreationFailed(status: CVReturn)
     case stagingSurfaceUnavailable
@@ -38,6 +40,8 @@ public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
             return "Unable to create a Metal command buffer for the staged encoder copy."
         case .blitEncoderUnavailable:
             return "Unable to create a Metal blit encoder for the staged encoder copy."
+        case .scalerUnavailable:
+            return "A Metal scaler is not available for staged encoder downscaling."
         case .stagingPoolCreationFailed(let status):
             return "Unable to create a staged CVPixelBufferPool (CVReturn \(status))."
         case .stagingBufferCreationFailed(let status):
@@ -69,6 +73,28 @@ private struct MDKVideoToolboxStagingSlot {
     let textures: [MTLTexture]
 }
 
+private final class MDKMetalBilinearScaler {
+    private let scaler: MPSImageBilinearScale
+
+    init(device: any MTLDevice) {
+        self.scaler = MPSImageBilinearScale(device: device)
+    }
+
+    func encode(
+        commandBuffer: any MTLCommandBuffer,
+        sourceTextures: [MTLTexture],
+        destinationTextures: [MTLTexture]
+    ) {
+        for (sourceTexture, destinationTexture) in zip(sourceTextures, destinationTextures) {
+            scaler.encode(
+                commandBuffer: commandBuffer,
+                sourceTexture: sourceTexture,
+                destinationTexture: destinationTexture
+            )
+        }
+    }
+}
+
 private let MDKVideoToolboxOutputCallback: VTCompressionOutputCallback = { outputCallbackRefCon, sourceFrameRefCon, status, _, sampleBuffer in
     guard let outputCallbackRefCon else {
         if let sourceFrameRefCon {
@@ -92,8 +118,10 @@ private let MDKVideoToolboxOutputCallback: VTCompressionOutputCallback = { outpu
 
 public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, @unchecked Sendable {
     public let codec: MDKVideoEncoderCodec
+    public let preprocessStrategy: MDKVideoPreprocessStrategy
     private let device: (any MTLDevice)?
     private let commandQueue: (any MTLCommandQueue)?
+    private let scaler: MDKMetalBilinearScaler?
     private let maxInflightStagingSlots: Int
 
     private var compressionSession: VTCompressionSession?
@@ -117,16 +145,20 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var minOutputCallbackLatencyMilliseconds: Double?
     private var maxOutputCallbackLatencyMilliseconds: Double?
     private var usingHardwareAcceleratedEncoder: Bool?
+    private var sessionConfigurationNotes: [String] = []
     private let encodeQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode")
 
     public init(
         codec: MDKVideoEncoderCodec = .hevc,
+        preprocessStrategy: MDKVideoPreprocessStrategy = .none,
         device: (any MTLDevice)? = MTLCreateSystemDefaultDevice(),
         maxInflightStagingSlots: Int = 128
     ) {
         self.codec = codec
+        self.preprocessStrategy = preprocessStrategy
         self.device = device
         self.commandQueue = device?.makeCommandQueue()
+        self.scaler = device.map { MDKMetalBilinearScaler(device: $0) }
         self.maxInflightStagingSlots = max(maxInflightStagingSlots, 1)
     }
 
@@ -191,19 +223,25 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     "videoToolboxSubmitMode=async-queue",
                     "videoToolboxOutputCallback=non-nil",
                     "videoToolboxCodec=\(codec.rawValue)",
+                    "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
                     "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "metal-staging-pool")",
                     "videoToolboxMaxInflightStagingSlots=\(maxInflightStagingSlots)",
                     "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
                     "videoToolboxPixelBufferCacheSize=\(pixelBufferCache.count)"
-                ]
+                ] + sessionConfigurationNotes
             )
         }
     }
 
     private func encode(frame: MDKCaptureFrame) throws {
+        let outputDimensions = preprocessStrategy.outputDimensions(
+            sourceWidth: frame.width,
+            sourceHeight: frame.height,
+            pixelFormat: frame.pixelFormat
+        )
         try ensureCompressionSession(
-            width: frame.width,
-            height: frame.height,
+            width: outputDimensions.x,
+            height: outputDimensions.y,
             pixelFormat: frame.pixelFormat
         )
 
@@ -239,9 +277,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             device: device,
             usage: [.shaderRead]
         )
+        let outputDimensions = preprocessStrategy.outputDimensions(
+            sourceWidth: frame.width,
+            sourceHeight: frame.height,
+            pixelFormat: frame.pixelFormat
+        )
         let slot = try acquireStagingSlot(
-            width: frame.width,
-            height: frame.height,
+            width: outputDimensions.x,
+            height: outputDimensions.y,
             pixelFormat: frame.pixelFormat,
             device: device
         )
@@ -251,29 +294,41 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             releaseStagingSlot(identifier: slotIdentifier)
             throw MDKVideoToolboxProcessingError.commandBufferUnavailable
         }
-        guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
-            releaseStagingSlot(identifier: slotIdentifier)
-            throw MDKVideoToolboxProcessingError.blitEncoderUnavailable
-        }
-
         let presentationTimeStamp = CMTime(value: frameIndex, timescale: 120)
         frameIndex += 1
 
-        for (sourceTexture, destinationTexture) in zip(sourceTextures, slot.textures) {
-            let copySize = MTLSize(width: sourceTexture.width, height: sourceTexture.height, depth: 1)
-            blitEncoder.copy(
-                from: sourceTexture,
-                sourceSlice: 0,
-                sourceLevel: 0,
-                sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-                sourceSize: copySize,
-                to: destinationTexture,
-                destinationSlice: 0,
-                destinationLevel: 0,
-                destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
+        if requiresScaling(sourceTextures: sourceTextures, destinationTextures: slot.textures) {
+            guard let scaler else {
+                releaseStagingSlot(identifier: slotIdentifier)
+                throw MDKVideoToolboxProcessingError.scalerUnavailable
+            }
+            scaler.encode(
+                commandBuffer: commandBuffer,
+                sourceTextures: sourceTextures,
+                destinationTextures: slot.textures
             )
+        } else {
+            guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
+                releaseStagingSlot(identifier: slotIdentifier)
+                throw MDKVideoToolboxProcessingError.blitEncoderUnavailable
+            }
+
+            for (sourceTexture, destinationTexture) in zip(sourceTextures, slot.textures) {
+                let copySize = MTLSize(width: sourceTexture.width, height: sourceTexture.height, depth: 1)
+                blitEncoder.copy(
+                    from: sourceTexture,
+                    sourceSlice: 0,
+                    sourceLevel: 0,
+                    sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                    sourceSize: copySize,
+                    to: destinationTexture,
+                    destinationSlice: 0,
+                    destinationLevel: 0,
+                    destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
+                )
+            }
+            blitEncoder.endEncoding()
         }
-        blitEncoder.endEncoding()
         commandBuffer.addCompletedHandler { [weak self] commandBuffer in
             guard let self else {
                 return
@@ -367,6 +422,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             kCVPixelBufferIOSurfacePropertiesKey: [:] as [CFString: Any]
         ]
         pixelBufferAttributes = sourceImageAttributes as CFDictionary
+        sessionConfigurationNotes.removeAll(keepingCapacity: true)
 
         var session: VTCompressionSession?
         let status = VTCompressionSessionCreate(
@@ -374,9 +430,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             width: Int32(width),
             height: Int32(height),
             codecType: codec.codecType,
-            encoderSpecification: [
-                kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: true as CFBoolean
-            ] as CFDictionary,
+            encoderSpecification: makeEncoderSpecification(),
             imageBufferAttributes: sourceImageAttributes as CFDictionary,
             compressedDataAllocator: nil,
             outputCallback: MDKVideoToolboxOutputCallback,
@@ -387,18 +441,27 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: status)
         }
 
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProgressiveScan, value: kCFBooleanTrue)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowOpenGOP, value: kCFBooleanFalse)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaximizePowerEfficiency, value: kCFBooleanFalse)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: 1 as CFTypeRef)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedDuration, value: (1.0 / 120.0) as CFTypeRef)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 120 as CFTypeRef)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 120 as CFTypeRef)
+        let averageBitRate = codec.averageBitRate(width: width, height: height, frameRate: 120)
+        let dataRateLimits = codec.dataRateLimits(width: width, height: height, frameRate: 120) as CFArray
+
+        setSessionProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue, label: "RealTime")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_ProgressiveScan, value: kCFBooleanTrue, label: "ProgressiveScan")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_AllowTemporalCompression, value: kCFBooleanTrue, label: "AllowTemporalCompression")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse, label: "AllowFrameReordering")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_AllowOpenGOP, value: kCFBooleanFalse, label: "AllowOpenGOP")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue, label: "PrioritizeEncodingSpeedOverQuality")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_MaximizePowerEfficiency, value: kCFBooleanFalse, label: "MaximizePowerEfficiency")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: NSNumber(value: 1), label: "MaxFrameDelayCount")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedDuration, value: NSNumber(value: 1.0 / 120.0), label: "ExpectedDuration")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: 120), label: "ExpectedFrameRate")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: 120), label: "MaxKeyFrameInterval")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: NSNumber(value: 1.0), label: "MaxKeyFrameIntervalDuration")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: averageBitRate), label: "AverageBitRate")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits, label: "DataRateLimits")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_Quality, value: NSNumber(value: codec.targetQuality), label: "Quality")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_ReferenceBufferCount, value: NSNumber(value: codec.referenceBufferCount), label: "ReferenceBufferCount")
         if let profileLevel = codec.defaultProfileLevel {
-            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: profileLevel)
+            setSessionProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: profileLevel, label: "ProfileLevel")
         }
         let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(session)
         guard prepareStatus == noErr else {
@@ -409,10 +472,42 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         compressionSession = session
         activeDimensions = SIMD2(width, height)
         activePixelFormat = pixelFormat
+        let dataRateLimitsDescription = codec
+            .dataRateLimits(width: width, height: height, frameRate: 120)
+            .map(\.stringValue)
+            .joined(separator: ",")
+        sessionConfigurationNotes.append("videoToolboxEncodedWidth=\(width)")
+        sessionConfigurationNotes.append("videoToolboxEncodedHeight=\(height)")
+        sessionConfigurationNotes.append("videoToolboxConfiguredAverageBitRate=\(averageBitRate)")
+        sessionConfigurationNotes.append("videoToolboxConfiguredDataRateLimits=\(dataRateLimitsDescription)")
         usingHardwareAcceleratedEncoder = copyBooleanSessionProperty(
             session,
             key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder
         )
+    }
+
+    private func makeEncoderSpecification() -> CFDictionary {
+        var encoderSpecification: [CFString: Any] = [
+            kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: true as CFBoolean
+        ]
+        if codec.lowLatencyRateControlSupported {
+            encoderSpecification[kVTVideoEncoderSpecification_EnableLowLatencyRateControl] = true as CFBoolean
+        }
+        return encoderSpecification as CFDictionary
+    }
+
+    private func setSessionProperty(
+        _ session: VTCompressionSession,
+        key: CFString,
+        value: CFTypeRef,
+        label: String
+    ) {
+        let status = VTSessionSetProperty(session, key: key, value: value)
+        guard status != noErr else {
+            return
+        }
+
+        sessionConfigurationNotes.append("videoToolboxProperty.\(label)=\(describe(status: status))")
     }
 
     private func acquireStagingSlot(
@@ -534,6 +629,20 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         return textures
     }
 
+    private func requiresScaling(
+        sourceTextures: [MTLTexture],
+        destinationTextures: [MTLTexture]
+    ) -> Bool {
+        guard sourceTextures.count == destinationTextures.count else {
+            return true
+        }
+
+        return zip(sourceTextures, destinationTextures).contains { sourceTexture, destinationTexture in
+            sourceTexture.width != destinationTexture.width ||
+            sourceTexture.height != destinationTexture.height
+        }
+    }
+
     private func wrappedPixelBuffer(
         for frame: MDKCaptureFrame,
         surface: MDKCaptureSurface
@@ -573,6 +682,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         availableStagingSlotIdentifiers.removeAll(keepingCapacity: true)
         nextStagingSlotIdentifier = 0
         frameIndex = 0
+        sessionConfigurationNotes.removeAll(keepingCapacity: true)
         outputQueue.sync {
             outputCallbackCount = 0
             completedOutputFrameCount = 0
