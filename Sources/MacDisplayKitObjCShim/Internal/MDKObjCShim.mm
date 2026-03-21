@@ -782,6 +782,7 @@ using MDKDispatchSourceCreateFn = dispatch_source_t (*)(dispatch_source_type_t, 
 using MDKDispatchSourceSetEventHandlerFn = void (*)(dispatch_source_t, dispatch_block_t);
 using MDKDispatchSourceSetEventHandlerFFn = void (*)(dispatch_source_t, dispatch_function_t);
 using MDKReadFn = ssize_t (*)(int, void *, size_t);
+using MDKWriteFn = ssize_t (*)(int, const void *, size_t);
 using MDKDispatchSourceHandlerBlockInvokeFn = void (*)(void *);
 static MDKRQReceiverSetSourceBlockInvokeFn MDKOriginalRQReceiverSetSourceBlockInvoke = nullptr;
 static MDKDispatchSourceInvokeInternalFn MDKOriginalDispatchSourceInvokeInternal = nullptr;
@@ -792,7 +793,10 @@ static MDKDispatchSourceSetEventHandlerFn MDKOriginalDispatchSourceSetEventHandl
 static MDKDispatchSourceSetEventHandlerFFn MDKOriginalDispatchSourceSetEventHandlerF = nullptr;
 static MDKReadFn MDKOriginalRead = nullptr;
 static MDKReadFn MDKOriginalReadNoCancel = nullptr;
+static MDKWriteFn MDKOriginalWrite = nullptr;
+static MDKWriteFn MDKOriginalWriteNoCancel = nullptr;
 thread_local NSUInteger MDKInterposedFIFOReadDepth = 0;
+thread_local NSUInteger MDKInterposedFIFOWriteDepth = 0;
 
 static void MDKRecordSCKTraceEvent(NSString *kind, NSDictionary<NSString *, id> *payload);
 static NSDictionary<NSString *, id> *MDKSummarizeSampleBuffer(CMSampleBufferRef sampleBuffer);
@@ -2010,6 +2014,9 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"fifoReadEventCount": @0,
             @"fifoReadNoCancelEventCount": @0,
             @"fifoReadInterposeEventCount": @0,
+            @"fifoWriteEventCount": @0,
+            @"fifoWriteNoCancelEventCount": @0,
+            @"fifoWriteInterposeEventCount": @0,
             @"dispatchSourceHandlerCallbackEventCount": @0,
             @"dispatchSourceHandlerBlocks": [NSMutableDictionary dictionary],
             @"dispatchSourceHandlerInvokes": [NSMutableDictionary dictionary],
@@ -3495,6 +3502,45 @@ static void MDKRecordFIFOReadInterposeEvent(
     MDKRecordSCKTraceEvent(kind, payload);
 }
 
+static void MDKRecordFIFOWriteInterposeEvent(
+    NSString *kind,
+    int fd,
+    size_t requestedByteCount,
+    ssize_t result,
+    int savedErrno
+) {
+    BOOL shouldRecord = NO;
+    NSUInteger overallEventCount = 0;
+    NSString *counterKey = [kind isEqualToString:@"fifo-write-nocancel"] ?
+        @"fifoWriteNoCancelEventCount" :
+        @"fifoWriteEventCount";
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            MDKActiveSCKTraceState[counterKey] =
+                @([MDKActiveSCKTraceState[counterKey] unsignedIntegerValue] + 1);
+            overallEventCount = [MDKActiveSCKTraceState[@"fifoWriteInterposeEventCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"fifoWriteInterposeEventCount"] = @(overallEventCount);
+            shouldRecord = overallEventCount <= 128;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    NSMutableDictionary<NSString *, id> *payload = [@{
+        @"fd": @(fd),
+        @"requestedByteCount": @(requestedByteCount),
+        @"result": @(result),
+        @"errno": @(savedErrno),
+        @"wrapperSequenceID": MDKCurrentVideoQueueWrapperSequence() > 0 ? @(MDKCurrentVideoQueueWrapperSequence()) : [NSNull null],
+        @"wrapperDepth": @(MDKCurrentVideoQueueWrapperSequenceDepth()),
+    } mutableCopy];
+    if (overallEventCount <= 8) {
+        payload[@"backtrace"] = MDKCopyBacktraceFrames(10, 3);
+    }
+    MDKRecordSCKTraceEvent(kind, payload);
+}
+
 static void MDKRecordDispatchSourceHandlerCallbackEvent(void) {
     BOOL shouldRecord = NO;
     NSUInteger eventCount = 0;
@@ -4208,6 +4254,8 @@ extern "C" void MDKInterposedDispatchSourceSetEventHandler(dispatch_source_t sou
 extern "C" void MDKInterposedDispatchSourceSetEventHandlerF(dispatch_source_t source, dispatch_function_t handler);
 extern "C" ssize_t MDKInterposedRead(int fd, void *buffer, size_t size);
 extern "C" ssize_t MDKInterposedReadNoCancel(int fd, void *buffer, size_t size);
+extern "C" ssize_t MDKInterposedWrite(int fd, const void *buffer, size_t size);
+extern "C" ssize_t MDKInterposedWriteNoCancel(int fd, const void *buffer, size_t size);
 
 static void MDKInstallRuntimeFigRemoteQueueReceiverInterposes(void) {
     static dispatch_once_t onceToken;
@@ -4410,6 +4458,84 @@ static void MDKInstallFIFOReadInterposes(void) {
         }
 
         MDKAppendSCKTraceNote([NSString stringWithFormat:@"Installed fifo read interpose on %lu image(s) using %lu symbol(s).",
+                               (unsigned long)installedImageCount,
+                               (unsigned long)interposeCount]);
+    });
+}
+
+static void MDKInstallFIFOWriteInterposes(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        using MDKDyldDynamicInterposeFn = void (*)(const mach_header *, const MDKDyldInterposeTuple[], size_t);
+
+        MDKSetSCKTraceStateValue(@"fifoWriteInterposeAttempted", @YES);
+        auto dynamicInterpose =
+            reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "dyld_dynamic_interpose"));
+        if (dynamicInterpose == nullptr) {
+            dynamicInterpose =
+                reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "_dyld_dynamic_interpose"));
+        }
+        MDKSetSCKTraceStateValue(@"fifoWriteInterposeDyldAvailable", @(dynamicInterpose != nullptr));
+        if (dynamicInterpose == nullptr) {
+            return;
+        }
+
+        MDKOriginalWrite = reinterpret_cast<MDKWriteFn>(dlsym(RTLD_DEFAULT, "write"));
+        MDKOriginalWriteNoCancel = reinterpret_cast<MDKWriteFn>(dlsym(RTLD_DEFAULT, "write_nocancel"));
+        if (MDKOriginalWriteNoCancel == nullptr) {
+            MDKOriginalWriteNoCancel = reinterpret_cast<MDKWriteFn>(dlsym(RTLD_DEFAULT, "__write_nocancel"));
+        }
+        MDKSetSCKTraceStateValue(@"fifoWriteInterposeWriteSymbolAvailable", @(MDKOriginalWrite != nullptr));
+        MDKSetSCKTraceStateValue(@"fifoWriteInterposeWriteNoCancelSymbolAvailable", @(MDKOriginalWriteNoCancel != nullptr));
+        if (MDKOriginalWrite == nullptr && MDKOriginalWriteNoCancel == nullptr) {
+            MDKAppendSCKTraceNote(@"Neither write nor write_nocancel was available, so fifo write interpose stayed disabled.");
+            return;
+        }
+
+        MDKDyldInterposeTuple interposes[2] = {};
+        size_t interposeCount = 0;
+        if (MDKOriginalWrite != nullptr) {
+            interposes[interposeCount++] = {
+                reinterpret_cast<const void *>(&MDKInterposedWrite),
+                reinterpret_cast<const void *>(MDKOriginalWrite),
+            };
+        }
+        if (MDKOriginalWriteNoCancel != nullptr) {
+            interposes[interposeCount++] = {
+                reinterpret_cast<const void *>(&MDKInterposedWriteNoCancel),
+                reinterpret_cast<const void *>(MDKOriginalWriteNoCancel),
+            };
+        }
+
+        NSUInteger installedImageCount = 0;
+        const mach_header *screenCaptureKitHeader =
+            MDKFindLoadedImageHeader("/System/Library/Frameworks/ScreenCaptureKit.framework/");
+        if (screenCaptureKitHeader != nullptr) {
+            dynamicInterpose(screenCaptureKitHeader, interposes, interposeCount);
+            installedImageCount += 1;
+        }
+        const mach_header *cmCaptureHeader =
+            MDKFindLoadedImageHeader("/System/Library/PrivateFrameworks/CMCapture.framework/");
+        if (cmCaptureHeader != nullptr) {
+            dynamicInterpose(cmCaptureHeader, interposes, interposeCount);
+            installedImageCount += 1;
+        }
+        const mach_header *libdispatchHeader =
+            MDKFindLoadedImageHeader("/usr/lib/system/libdispatch.dylib");
+        if (libdispatchHeader != nullptr) {
+            dynamicInterpose(libdispatchHeader, interposes, interposeCount);
+            installedImageCount += 1;
+        }
+
+        MDKSetSCKTraceStateValue(@"fifoWriteInterposeInstalledImageCount", @(installedImageCount));
+        MDKSetSCKTraceStateValue(@"fifoWriteInterposeInstalledSymbolCount", @(interposeCount));
+        MDKSetSCKTraceStateValue(@"fifoWriteInterposeInstalled", @(installedImageCount > 0));
+        if (installedImageCount == 0) {
+            MDKAppendSCKTraceNote(@"ScreenCaptureKit, CMCapture, and libdispatch were absent from the loaded image list, so fifo write interpose stayed disabled.");
+            return;
+        }
+
+        MDKAppendSCKTraceNote([NSString stringWithFormat:@"Installed fifo write interpose on %lu image(s) using %lu symbol(s).",
                                (unsigned long)installedImageCount,
                                (unsigned long)interposeCount]);
     });
@@ -4668,6 +4794,42 @@ extern "C" ssize_t MDKInterposedReadNoCancel(int fd, void *buffer, size_t size) 
     MDKInterposedFIFOReadDepth -= 1;
     if (shouldTrace) {
         MDKRecordFIFOReadInterposeEvent(@"fifo-read-nocancel", fd, size, result, savedErrno);
+    }
+    errno = savedErrno;
+    return result;
+}
+
+extern "C" ssize_t MDKInterposedWrite(int fd, const void *buffer, size_t size) {
+    if (MDKOriginalWrite == nullptr) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    const BOOL shouldTrace = MDKInterposedFIFOWriteDepth == 0 && MDKShouldTraceFIFOReadFD(fd);
+    MDKInterposedFIFOWriteDepth += 1;
+    const ssize_t result = MDKOriginalWrite(fd, buffer, size);
+    const int savedErrno = errno;
+    MDKInterposedFIFOWriteDepth -= 1;
+    if (shouldTrace) {
+        MDKRecordFIFOWriteInterposeEvent(@"fifo-write", fd, size, result, savedErrno);
+    }
+    errno = savedErrno;
+    return result;
+}
+
+extern "C" ssize_t MDKInterposedWriteNoCancel(int fd, const void *buffer, size_t size) {
+    if (MDKOriginalWriteNoCancel == nullptr) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    const BOOL shouldTrace = MDKInterposedFIFOWriteDepth == 0 && MDKShouldTraceFIFOReadFD(fd);
+    MDKInterposedFIFOWriteDepth += 1;
+    const ssize_t result = MDKOriginalWriteNoCancel(fd, buffer, size);
+    const int savedErrno = errno;
+    MDKInterposedFIFOWriteDepth -= 1;
+    if (shouldTrace) {
+        MDKRecordFIFOWriteInterposeEvent(@"fifo-write-nocancel", fd, size, result, savedErrno);
     }
     errno = savedErrno;
     return result;
@@ -5183,6 +5345,7 @@ static void MDKInstallSCKProxyTraceHooks(void) {
         MDKInstallRuntimeFigRemoteQueueReceiverInterposes();
         MDKInstallDispatchReadSourceInterposes();
         MDKInstallFIFOReadInterposes();
+        MDKInstallFIFOWriteInterposes();
         Class daemonProxyClass = NSClassFromString(@"RPDaemonProxy");
         if (daemonProxyClass == Nil) {
             return;
@@ -8370,6 +8533,13 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             @"video-recv-fd-signal",
         ]]
     );
+    NSDictionary<NSString *, id> *fifoWriteCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"fifo-write",
+            @"fifo-write-nocancel",
+        ]]
+    );
     NSDictionary<NSString *, id> *surfaceTransportHandleMessageCadenceSummary = MDKCopyTraceEventCadenceSummary(
         traceEvents,
         [NSSet setWithArray:@[
@@ -8652,6 +8822,13 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"videoRemoteQueueRecvFDCadenceClassification=%@", MDKDescribeTraceValue(videoRecvFDCadenceSummary[@"cadenceClassification"])]];
     [notes addObject:[NSString stringWithFormat:@"videoRemoteQueueRecvFDAvailableBytesHistogram=%@", MDKDescribeTraceValue(snapshot[@"videoRemoteQueueRecvFDAvailableBytesHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"videoRemoteQueueRecvFDAvailableBytesMax=%@", MDKDescribeTraceValue(snapshot[@"videoRemoteQueueRecvFDAvailableBytesMax"])]];
+    [notes addObject:[NSString stringWithFormat:@"fifoWriteInterposeEventCount=%@", MDKDescribeTraceValue(snapshot[@"fifoWriteInterposeEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"fifoWriteEventCount=%@", MDKDescribeTraceValue(snapshot[@"fifoWriteEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"fifoWriteNoCancelEventCount=%@", MDKDescribeTraceValue(snapshot[@"fifoWriteNoCancelEventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"fifoWriteDeltaCount=%@", MDKDescribeTraceValue(fifoWriteCadenceSummary[@"deltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"fifoWriteDeltaHistogram=%@", MDKDescribeTraceValue(fifoWriteCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"fifoWrite120HzEquivalentCount=%@", MDKDescribeTraceValue(fifoWriteCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"fifoWriteCadenceClassification=%@", MDKDescribeTraceValue(fifoWriteCadenceSummary[@"cadenceClassification"])]];
     [notes addObject:[NSString stringWithFormat:@"dispatchSourceHandlerInstalledCount=%@", MDKDescribeTraceValue(dispatchSourceHandlerInstallSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"dispatchSourceHandlerCallbackEventCount=%@", MDKDescribeTraceValue(dispatchSourceHandlerCadenceSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"dispatchSourceHandlerCallbackDeltaCount=%@", MDKDescribeTraceValue(dispatchSourceHandlerCadenceSummary[@"deltaCount"])]];

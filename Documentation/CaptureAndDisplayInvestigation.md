@@ -926,3 +926,32 @@ Interpretation:
 - with the wrapper callback, nested ScreenCaptureKit block, and `__rqReceiverSetSource_block_invoke`
   already localized, the next practical upstream target is now the producer / wakeup side feeding
   the fifo-backed dispatch source rather than another userland callback immediately above it
+
+Live host inspection of the receive handles during a three-second passive trace:
+
+- `fd 3`, `fd 5`, and `fd 7` resolve to `PIPE` endpoints in `lsof -p <MacDisplayKitHost pid>`
+- sibling fds `4`, `6`, and `8` are the paired pipe endpoints in the same process
+
+Interpretation:
+
+- the receive handles that libdispatch reports as fifo-backed read sources are concretely realized
+  as local pipe pairs in the host process, not named filesystem FIFOs with a recoverable path
+- that makes the remaining producer-side question sharper: either the producer is writing through a
+  libdispatch-private or non-imported syscall path in-process, or another process/daemon is feeding
+  the opposite pipe endpoint through an already-established channel
+
+Follow-up passive trace after interposing `write` / `write_nocancel` on the same images:
+
+- `fifoWriteInterposeEventCount=0`
+- `fifoWriteEventCount=0`
+- `fifoWriteNoCancelEventCount=0`
+- `videoRemoteQueueRecvFDSignalEventCount=0`
+
+Interpretation:
+
+- even though the wakeup handles are real pipes, no imported `write` or `write_nocancel` calls are
+  visible in `ScreenCaptureKit`, `CMCapture`, or `libdispatch` during the passive trace window
+- combined with the earlier `read`, `dispatch source`, and `dispatch client callout` dead ends, the
+  remaining wakeup path is now best modeled as either:
+  - a libdispatch- or CoreMedia-internal producer path that bypasses imported write stubs, or
+  - a cross-process feed into the paired pipe endpoint that never surfaces as a local write import
