@@ -868,3 +868,22 @@ Interpretation:
     during capture
   - the higher-signal next hop is the fifo producer/write side rather than public read-source
     registration
+
+Follow-up passive trace after interposing fifo drain syscalls:
+
+- note: `Installed fifo read interpose on 3 image(s) using 2 symbol(s).`
+- observed `fifo-read` events: `0`
+- observed `fifo-read-nocancel` events: `0`
+
+Interpretation:
+
+- the live consumer drain immediately upstream of the wrapper callback is not flowing through
+  imported `read` / `read_nocancel` call sites in `ScreenCaptureKit`, `CMCapture`, or
+  `libdispatch`
+- this cuts off the straightforward syscall route and makes `fifo readability -> dispatch source
+  fire -> wrapper block` even narrower: the remaining viable boundary is the libdispatch-internal
+  source invoke/fire path or a producer-side wakeup path that never exposes a userspace `read`
+  import in the traced images
+- because the already-confirmed wrapper and nested ScreenCaptureKit callbacks remain `60hz-like`,
+  the missing `read` events are evidence that the scheduling ceiling is not inside those local
+  callbacks and not inside a public fifo drain wrapper either
