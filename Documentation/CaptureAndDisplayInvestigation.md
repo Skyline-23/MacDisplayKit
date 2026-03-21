@@ -991,3 +991,19 @@ Interpretation:
 - that pushes the remaining live handoff candidates down to two sharper buckets:
   - local `pipe` creation / duplication inside the host capture stack
   - cross-process brokering (`replayd` or another producer) before the host ever sees those queue endpoints
+
+Follow-up passive trace after interposing `pipe()` on the same images:
+
+- `pipeInterposeAttempted=1`
+- `pipeInterposeInstalled=1`
+- `pipeInterposeInstalledImageCount=3`
+- `pipeCreateEventCount=0`
+
+Interpretation:
+
+- the host process is not creating the observed queue pipe pairs through an imported `pipe()` call in
+  `ScreenCaptureKit`, `CMCapture`, or `libxpc` during the passive trace window
+- with `pipe()`, xpc pipe transport, xpc fd duplication, `write`, `read`, and libdispatch fire hooks all
+  staying dark in the host, the next meaningful host-side boundary is no longer fd creation at all
+- the sharper remaining target is now the mach-port-to-surface handoff (`IOSurfaceLookupFromMachPort`) or
+  the cross-process broker (`replayd`) that feeds those queue artifacts before the host starts draining them

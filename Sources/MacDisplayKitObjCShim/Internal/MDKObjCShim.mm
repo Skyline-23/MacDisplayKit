@@ -783,6 +783,7 @@ using MDKDispatchSourceSetEventHandlerFn = void (*)(dispatch_source_t, dispatch_
 using MDKDispatchSourceSetEventHandlerFFn = void (*)(dispatch_source_t, dispatch_function_t);
 using MDKReadFn = ssize_t (*)(int, void *, size_t);
 using MDKWriteFn = ssize_t (*)(int, const void *, size_t);
+using MDKPipeFn = int (*)(int [2]);
 using MDKXPCPipeCreateFn = xpc_object_t (*)(const char *, std::uint64_t);
 using MDKXPCPipeSimpleRoutineFn = int (*)(xpc_object_t, xpc_object_t, xpc_object_t *);
 using MDKXPCFDDupFn = int (*)(xpc_object_t);
@@ -799,6 +800,7 @@ static MDKReadFn MDKOriginalRead = nullptr;
 static MDKReadFn MDKOriginalReadNoCancel = nullptr;
 static MDKWriteFn MDKOriginalWrite = nullptr;
 static MDKWriteFn MDKOriginalWriteNoCancel = nullptr;
+static MDKPipeFn MDKOriginalPipe = nullptr;
 static MDKXPCPipeCreateFn MDKOriginalXPCPipeCreate = nullptr;
 static MDKXPCPipeSimpleRoutineFn MDKOriginalXPCPipeSimpleRoutine = nullptr;
 static MDKXPCFDDupFn MDKOriginalXPCFDDup = nullptr;
@@ -2060,6 +2062,8 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"fifoWriteEventCount": @0,
             @"fifoWriteNoCancelEventCount": @0,
             @"fifoWriteInterposeEventCount": @0,
+            @"pipeCreateEventCount": @0,
+            @"pipeInterposeEventCount": @0,
             @"xpcPipeCreateEventCount": @0,
             @"xpcPipeSimpleRoutineEventCount": @0,
             @"xpcPipeInterposeEventCount": @0,
@@ -3692,6 +3696,38 @@ static void MDKRecordXPCPipeInterposeEvent(
     MDKRecordSCKTraceEvent(kind, payload);
 }
 
+static void MDKRecordPipeInterposeEvent(int result, const int fds[2], int savedErrno) {
+    BOOL shouldRecord = NO;
+    NSUInteger overallEventCount = 0;
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            MDKActiveSCKTraceState[@"pipeCreateEventCount"] =
+                @([MDKActiveSCKTraceState[@"pipeCreateEventCount"] unsignedIntegerValue] + (result == 0 ? 1 : 0));
+            overallEventCount = [MDKActiveSCKTraceState[@"pipeInterposeEventCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"pipeInterposeEventCount"] = @(overallEventCount);
+            shouldRecord = overallEventCount <= 32;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    NSMutableDictionary<NSString *, id> *payload = [@{
+        @"result": @(result),
+        @"errno": @(savedErrno),
+        @"readFD": @(fds[0]),
+        @"writeFD": @(fds[1]),
+        @"readIsFIFO": @(MDKShouldTraceFIFOReadFD(fds[0])),
+        @"writeIsFIFO": @(MDKShouldTraceFIFOReadFD(fds[1])),
+        @"wrapperSequenceID": MDKCurrentVideoQueueWrapperSequence() > 0 ? @(MDKCurrentVideoQueueWrapperSequence()) : [NSNull null],
+        @"wrapperDepth": @(MDKCurrentVideoQueueWrapperSequenceDepth()),
+    } mutableCopy];
+    if (overallEventCount <= 8) {
+        payload[@"backtrace"] = MDKCopyBacktraceFrames(10, 3);
+    }
+    MDKRecordSCKTraceEvent(@"pipe-create", payload);
+}
+
 static void MDKRecordDispatchSourceHandlerCallbackEvent(void) {
     BOOL shouldRecord = NO;
     NSUInteger eventCount = 0;
@@ -4407,6 +4443,7 @@ extern "C" ssize_t MDKInterposedRead(int fd, void *buffer, size_t size);
 extern "C" ssize_t MDKInterposedReadNoCancel(int fd, void *buffer, size_t size);
 extern "C" ssize_t MDKInterposedWrite(int fd, const void *buffer, size_t size);
 extern "C" ssize_t MDKInterposedWriteNoCancel(int fd, const void *buffer, size_t size);
+extern "C" int MDKInterposedPipe(int fds[2]);
 extern "C" xpc_object_t MDKInterposedXPCPipeCreate(const char *name, std::uint64_t flags);
 extern "C" int MDKInterposedXPCPipeSimpleRoutine(xpc_object_t pipe, xpc_object_t message, xpc_object_t *reply);
 extern "C" int MDKInterposedXPCFDDup(xpc_object_t object);
@@ -4849,6 +4886,66 @@ static void MDKInstallXPCPipeInterposes(void) {
     });
 }
 
+static void MDKInstallPipeInterposes(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        using MDKDyldDynamicInterposeFn = void (*)(const mach_header *, const MDKDyldInterposeTuple[], size_t);
+
+        MDKSetSCKTraceStateValue(@"pipeInterposeAttempted", @YES);
+        auto dynamicInterpose =
+            reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "dyld_dynamic_interpose"));
+        if (dynamicInterpose == nullptr) {
+            dynamicInterpose =
+                reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "_dyld_dynamic_interpose"));
+        }
+        MDKSetSCKTraceStateValue(@"pipeInterposeDyldAvailable", @(dynamicInterpose != nullptr));
+        if (dynamicInterpose == nullptr) {
+            return;
+        }
+
+        MDKOriginalPipe = reinterpret_cast<MDKPipeFn>(dlsym(RTLD_DEFAULT, "pipe"));
+        MDKSetSCKTraceStateValue(@"pipeInterposeSymbolAvailable", @(MDKOriginalPipe != nullptr));
+        if (MDKOriginalPipe == nullptr) {
+            MDKAppendSCKTraceNote(@"pipe was unavailable, so pipe interpose stayed disabled.");
+            return;
+        }
+
+        const MDKDyldInterposeTuple interposes[] = {
+            { reinterpret_cast<const void *>(&MDKInterposedPipe), reinterpret_cast<const void *>(MDKOriginalPipe) },
+        };
+
+        NSUInteger installedImageCount = 0;
+        const mach_header *screenCaptureKitHeader =
+            MDKFindLoadedImageHeader("/System/Library/Frameworks/ScreenCaptureKit.framework/");
+        if (screenCaptureKitHeader != nullptr) {
+            dynamicInterpose(screenCaptureKitHeader, interposes, sizeof(interposes) / sizeof(interposes[0]));
+            installedImageCount += 1;
+        }
+        const mach_header *cmCaptureHeader =
+            MDKFindLoadedImageHeader("/System/Library/PrivateFrameworks/CMCapture.framework/");
+        if (cmCaptureHeader != nullptr) {
+            dynamicInterpose(cmCaptureHeader, interposes, sizeof(interposes) / sizeof(interposes[0]));
+            installedImageCount += 1;
+        }
+        const mach_header *libxpcHeader =
+            MDKFindLoadedImageHeader("/usr/lib/system/libxpc.dylib");
+        if (libxpcHeader != nullptr) {
+            dynamicInterpose(libxpcHeader, interposes, sizeof(interposes) / sizeof(interposes[0]));
+            installedImageCount += 1;
+        }
+
+        MDKSetSCKTraceStateValue(@"pipeInterposeInstalledImageCount", @(installedImageCount));
+        MDKSetSCKTraceStateValue(@"pipeInterposeInstalled", @(installedImageCount > 0));
+        if (installedImageCount == 0) {
+            MDKAppendSCKTraceNote(@"ScreenCaptureKit, CMCapture, and libxpc were absent from the loaded image list, so pipe interpose stayed disabled.");
+            return;
+        }
+
+        MDKAppendSCKTraceNote([NSString stringWithFormat:@"Installed pipe interpose on %lu image(s).",
+                               (unsigned long)installedImageCount]);
+    });
+}
+
 static void (*MDKResolveOriginalFigRemoteQueueReceiverSetHandler(void))(void *, dispatch_queue_t, id) {
     static void (*original)(void *, dispatch_queue_t, id) = nullptr;
     static dispatch_once_t onceToken;
@@ -5139,6 +5236,21 @@ extern "C" ssize_t MDKInterposedWriteNoCancel(int fd, const void *buffer, size_t
     if (shouldTrace) {
         MDKRecordFIFOWriteInterposeEvent(@"fifo-write-nocancel", fd, size, result, savedErrno);
     }
+    errno = savedErrno;
+    return result;
+}
+
+extern "C" int MDKInterposedPipe(int fds[2]) {
+    if (MDKOriginalPipe == nullptr) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    int localFDs[2] = { -1, -1 };
+    int *targetFDs = fds != nullptr ? fds : localFDs;
+    const int result = MDKOriginalPipe(targetFDs);
+    const int savedErrno = errno;
+    MDKRecordPipeInterposeEvent(result, targetFDs, savedErrno);
     errno = savedErrno;
     return result;
 }
@@ -5718,6 +5830,7 @@ static void MDKInstallSCKProxyTraceHooks(void) {
         MDKInstallDispatchReadSourceInterposes();
         MDKInstallFIFOReadInterposes();
         MDKInstallFIFOWriteInterposes();
+        MDKInstallPipeInterposes();
         MDKInstallXPCPipeInterposes();
         MDKInstallXPCFDInterposes();
         Class daemonProxyClass = NSClassFromString(@"RPDaemonProxy");
@@ -8938,6 +9051,12 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             @"xpc-pipe-simpleroutine",
         ]]
     );
+    NSDictionary<NSString *, id> *pipeCreateCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"pipe-create",
+        ]]
+    );
     NSDictionary<NSString *, id> *surfaceTransportHandleMessageCadenceSummary = MDKCopyTraceEventCadenceSummary(
         traceEvents,
         [NSSet setWithArray:@[
@@ -9227,6 +9346,12 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"fifoWriteDeltaHistogram=%@", MDKDescribeTraceValue(fifoWriteCadenceSummary[@"deltaHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"fifoWrite120HzEquivalentCount=%@", MDKDescribeTraceValue(fifoWriteCadenceSummary[@"delta120HzEquivalentCount"])]];
     [notes addObject:[NSString stringWithFormat:@"fifoWriteCadenceClassification=%@", MDKDescribeTraceValue(fifoWriteCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"pipeInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"pipeInterposeAttempted"])]];
+    [notes addObject:[NSString stringWithFormat:@"pipeInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"pipeInterposeInstalled"])]];
+    [notes addObject:[NSString stringWithFormat:@"pipeInterposeInstalledImageCount=%@", MDKDescribeTraceValue(snapshot[@"pipeInterposeInstalledImageCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"pipeCreateEventCount=%@", MDKDescribeTraceValue(pipeCreateCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"pipeCreateDeltaHistogram=%@", MDKDescribeTraceValue(pipeCreateCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"pipeCreateCadenceClassification=%@", MDKDescribeTraceValue(pipeCreateCadenceSummary[@"cadenceClassification"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeAttempted"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalled"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalledImageCount=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalledImageCount"])]];
