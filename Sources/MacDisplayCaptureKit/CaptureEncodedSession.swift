@@ -9,6 +9,7 @@ protocol MDKEncodedCaptureSourceRuntime: AnyObject, Sendable {
 protocol MDKEncodedCaptureProcessorRuntime: AnyObject, Sendable {
     func process(frame: MDKCaptureFrame) throws
     func finalize() -> MDKCaptureFrameProcessingSummary?
+    func liveSummary() -> MDKCaptureFrameProcessingSummary?
 }
 
 typealias MDKEncodedCaptureSourceFactory = @Sendable (
@@ -141,6 +142,8 @@ public struct MDKEncodedCaptureCallbacks: Sendable {
 
 public enum MDKEncodedCaptureSessionError: Error, LocalizedError, Equatable {
     case alreadyRunning
+    case callbackRequiredForCallbackOnlyMode
+    case frameStreamUnsupportedInCallbackOnlyMode
     case processingFailed(description: String)
     case restartLimitReached(lastErrorDescription: String)
 
@@ -148,6 +151,10 @@ public enum MDKEncodedCaptureSessionError: Error, LocalizedError, Equatable {
         switch self {
         case .alreadyRunning:
             return "Encoded capture session is already running."
+        case .callbackRequiredForCallbackOnlyMode:
+            return "Encoded capture session requires callbacks when delivery mode is callback-only."
+        case .frameStreamUnsupportedInCallbackOnlyMode:
+            return "Encoded capture session does not support frame streams when delivery mode is callback-only."
         case .processingFailed(let description):
             return "Encoded capture session processing failed: \(description)"
         case .restartLimitReached(let lastErrorDescription):
@@ -226,6 +233,14 @@ public actor MDKEncodedCaptureSession {
     }
 
     public func makeFrameStream() -> AsyncThrowingStream<MDKEncodedFrame, Error> {
+        if configuration.deliveryMode == .callbackOnly {
+            return AsyncThrowingStream { continuation in
+                continuation.finish(
+                    throwing: MDKEncodedCaptureSessionError.frameStreamUnsupportedInCallbackOnlyMode
+                )
+            }
+        }
+
         streamToken += 1
         let token = streamToken
         let box = MDKEncodedCaptureContinuationBox()
@@ -296,16 +311,23 @@ public actor MDKEncodedCaptureSession {
         guard runtime == nil else {
             throw MDKEncodedCaptureSessionError.alreadyRunning
         }
+        if configuration.deliveryMode == .callbackOnly, callbacks == nil {
+            throw MDKEncodedCaptureSessionError.callbackRequiredForCallbackOnlyMode
+        }
 
         self.callbacks = callbacks
         runtimeGeneration &+= 1
         let currentRuntimeGeneration = runtimeGeneration
+        let callbackOnlyDelivery = configuration.deliveryMode == .callbackOnly && callbacks != nil
 
         let outputHandler: @Sendable (MDKEncodedFrame) -> Void = { [weak self] encodedFrame in
             guard let self else {
                 return
             }
             callbacks?.frameHandler(encodedFrame)
+            if callbackOnlyDelivery {
+                return
+            }
             Task {
                 await self.handleEncodedFrame(
                     encodedFrame,
@@ -378,7 +400,13 @@ public actor MDKEncodedCaptureSession {
     }
 
     public func statisticsSnapshot() -> MDKEncodedCaptureSessionStatistics {
-        statistics
+        guard configuration.deliveryMode == .callbackOnly,
+              let runtime,
+              let summary = runtime.processor.liveSummary() else {
+            return statistics
+        }
+
+        return mergedStatistics(with: summary, isRunning: statistics.isRunning)
     }
 
     private func installContinuation(
@@ -708,6 +736,21 @@ public actor MDKEncodedCaptureSession {
         if finishingStream {
             callbacks = nil
         }
+    }
+
+    private func mergedStatistics(
+        with summary: MDKCaptureFrameProcessingSummary,
+        isRunning: Bool
+    ) -> MDKEncodedCaptureSessionStatistics {
+        MDKEncodedCaptureSessionStatistics(
+            emittedFrameCount: max(statistics.emittedFrameCount, summary.completedOutputFrameCount ?? 0),
+            droppedFrameCount: statistics.droppedFrameCount,
+            processingFailureCount: max(statistics.processingFailureCount, summary.processingFailureCount),
+            automaticRestartCount: statistics.automaticRestartCount,
+            lastErrorDescription: statistics.lastErrorDescription,
+            lastStopStatus: statistics.lastStopStatus,
+            isRunning: isRunning
+        )
     }
 
     private func emitEvent(_ event: MDKEncodedCaptureSessionEvent) {

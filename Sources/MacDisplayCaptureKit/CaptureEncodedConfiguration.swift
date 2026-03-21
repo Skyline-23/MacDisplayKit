@@ -1,6 +1,11 @@
 import CoreVideo
 import Foundation
 
+public enum MDKEncodedCaptureDeliveryMode: String, Codable, Equatable, Sendable {
+    case multiplexed
+    case callbackOnly = "callback-only"
+}
+
 public enum MDKEncodedCaptureBackpressurePolicy: Codable, Equatable, Sendable {
     case unbounded
     case dropOldest(limit: Int)
@@ -46,6 +51,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
     public let codec: MDKVideoEncoderCodec
     public let preprocessStrategy: MDKVideoPreprocessStrategy
     public let targetFrameRate: Int
+    public let deliveryMode: MDKEncodedCaptureDeliveryMode
     public let capturePixelFormat: UInt32?
     public let hdrConfiguration: MDKVideoHDRConfiguration?
     public let backpressurePolicy: MDKEncodedCaptureBackpressurePolicy
@@ -57,6 +63,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         codec: MDKVideoEncoderCodec = .hevc,
         preprocessStrategy: MDKVideoPreprocessStrategy = .none,
         targetFrameRate: Int = 120,
+        deliveryMode: MDKEncodedCaptureDeliveryMode = .multiplexed,
         capturePixelFormat: UInt32? = nil,
         hdrConfiguration: MDKVideoHDRConfiguration? = nil,
         backpressurePolicy: MDKEncodedCaptureBackpressurePolicy = .dropOldest(limit: 8),
@@ -67,6 +74,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         self.codec = codec
         self.preprocessStrategy = preprocessStrategy
         self.targetFrameRate = max(targetFrameRate, 1)
+        self.deliveryMode = deliveryMode
         self.capturePixelFormat = capturePixelFormat
         self.hdrConfiguration = hdrConfiguration
         self.backpressurePolicy = backpressurePolicy
@@ -81,6 +89,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         codec: MDKVideoEncoderCodec = .hevc,
         preprocessStrategy: MDKVideoPreprocessStrategy = .none,
         targetFrameRate: Int = 120,
+        deliveryMode: MDKEncodedCaptureDeliveryMode = .multiplexed,
         capturePixelFormat: UInt32? = nil,
         hdrConfiguration: MDKVideoHDRConfiguration? = nil,
         backpressurePolicy: MDKEncodedCaptureBackpressurePolicy = .dropOldest(limit: 8),
@@ -97,6 +106,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
             codec: codec,
             preprocessStrategy: preprocessStrategy,
             targetFrameRate: targetFrameRate,
+            deliveryMode: deliveryMode,
             capturePixelFormat: capturePixelFormat,
             hdrConfiguration: hdrConfiguration,
             backpressurePolicy: backpressurePolicy,

@@ -11,6 +11,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
 
         XCTAssertEqual(configuration.displayID, 7)
         XCTAssertEqual(configuration.codec, .hevc)
+        XCTAssertEqual(configuration.deliveryMode, .multiplexed)
         XCTAssertEqual(configuration.streamConfiguration.queueDepth, 2)
         XCTAssertEqual(configuration.streamConfiguration.queueProfile, .q2)
         XCTAssertEqual(
@@ -177,6 +178,57 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         )
     }
 
+    func testCallbackOnlyConfigurationRequiresCallbackConsumer() async {
+        let session = makeTestSession(
+            configuration: .panelNative(
+                displayID: 12,
+                deliveryMode: .callbackOnly
+            ),
+            source: TestSourceSession(),
+            processorFactory: { outputHandler, failureHandler in
+                let processor = TestProcessor { _, _ in }
+                processor.bind(outputHandler: outputHandler, failureHandler: failureHandler)
+                return processor
+            }
+        )
+
+        do {
+            try await session.start()
+            XCTFail("Expected callback-only session start without callbacks to fail.")
+        } catch let error as MDKEncodedCaptureSessionError {
+            XCTAssertEqual(error, .callbackRequiredForCallbackOnlyMode)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testCallbackOnlyConfigurationTerminatesFrameStreamsImmediately() async {
+        let session = makeTestSession(
+            configuration: .panelNative(
+                displayID: 13,
+                deliveryMode: .callbackOnly
+            ),
+            source: TestSourceSession(),
+            processorFactory: { outputHandler, failureHandler in
+                let processor = TestProcessor { _, _ in }
+                processor.bind(outputHandler: outputHandler, failureHandler: failureHandler)
+                return processor
+            }
+        )
+
+        let stream = await session.makeFrameStream()
+        do {
+            for try await _ in stream {
+                XCTFail("Callback-only frame stream should terminate immediately.")
+            }
+            XCTFail("Expected frame stream to finish with an error.")
+        } catch let error as MDKEncodedCaptureSessionError {
+            XCTAssertEqual(error, .frameStreamUnsupportedInCallbackOnlyMode)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
     func testEncodedCaptureSessionEmitsFramesFromProcessorOutput() async throws {
         let source = TestSourceSession()
         let sampleBuffer = TestSendableSampleBufferBox(sampleBuffer: try Self.makeTestSampleBuffer())
@@ -226,6 +278,10 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
             )
         }
         let session = makeTestSession(
+            configuration: .panelNative(
+                displayID: 11,
+                deliveryMode: .callbackOnly
+            ),
             source: source,
             processorFactory: { outputHandler, failureHandler in
                 processor.bind(outputHandler: outputHandler, failureHandler: failureHandler)
@@ -593,6 +649,8 @@ private final class TestProcessor: MDKEncodedCaptureProcessorRuntime, @unchecked
     ) -> Void
     private var outputHandler: (@Sendable (MDKEncodedFrame) -> Void)?
     private var failureHandler: (@Sendable (String) -> Void)?
+    private var emittedFrameCount: UInt64 = 0
+    private var failureCount: UInt64 = 0
 
     init(
         behavior: @escaping @Sendable (
@@ -616,11 +674,34 @@ private final class TestProcessor: MDKEncodedCaptureProcessorRuntime, @unchecked
             XCTFail("Test processor was not bound before use.")
             return
         }
-        behavior(outputHandler, failureHandler)
+        let countingOutputHandler: @Sendable (MDKEncodedFrame) -> Void = { [weak self] frame in
+            self?.emittedFrameCount += 1
+            outputHandler(frame)
+        }
+        let countingFailureHandler: @Sendable (String) -> Void = { [weak self] description in
+            self?.failureCount += 1
+            failureHandler(description)
+        }
+        behavior(countingOutputHandler, countingFailureHandler)
     }
 
     func finalize() -> MDKCaptureFrameProcessingSummary? {
-        nil
+        liveSummary()
+    }
+
+    func liveSummary() -> MDKCaptureFrameProcessingSummary? {
+        MDKCaptureFrameProcessingSummary(
+            processedFrameCount: emittedFrameCount,
+            processingFailureCount: failureCount,
+            processingErrorHistogram: [:],
+            outputCallbackCount: emittedFrameCount,
+            completedOutputFrameCount: emittedFrameCount,
+            outputCallbackStatusHistogram: [:],
+            outputCallbackLatencyHistogram: [:],
+            minOutputCallbackLatencyMilliseconds: nil,
+            maxOutputCallbackLatencyMilliseconds: nil,
+            notes: []
+        )
     }
 }
 

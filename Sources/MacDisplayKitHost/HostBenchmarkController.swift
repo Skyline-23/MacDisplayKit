@@ -542,7 +542,19 @@ final class MDKHostBenchmarkController {
         sampleDuration: TimeInterval,
         consumerMode: MDKHostEncodedCaptureConsumerMode
     ) async throws -> MDKHostEncodedCaptureSessionReport {
-        let session = MDKEncodedCaptureSession(configuration: configuration)
+        let effectiveConfiguration = MDKEncodedCaptureConfiguration(
+            displayID: configuration.displayID,
+            streamConfiguration: configuration.streamConfiguration,
+            codec: configuration.codec,
+            preprocessStrategy: configuration.preprocessStrategy,
+            targetFrameRate: configuration.targetFrameRate,
+            deliveryMode: consumerMode == .callback ? .callbackOnly : .multiplexed,
+            capturePixelFormat: configuration.capturePixelFormat,
+            hdrConfiguration: configuration.hdrConfiguration,
+            backpressurePolicy: configuration.backpressurePolicy,
+            recoveryPolicy: configuration.recoveryPolicy
+        )
+        let session = MDKEncodedCaptureSession(configuration: effectiveConfiguration)
         let observer = MDKHostEncodedCaptureSessionObserver()
         let consumerTask: Task<Void, Never>?
         switch consumerMode {
@@ -579,7 +591,7 @@ final class MDKHostBenchmarkController {
         _ = await consumerTask?.value
         let statistics = await session.statisticsSnapshot()
         return await observer.makeReport(
-            configuration: configuration,
+            configuration: effectiveConfiguration,
             consumerMode: consumerMode,
             sampleDuration: sampleDuration,
             statistics: statistics,

@@ -324,6 +324,24 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
     }
 
+    func liveSummary() -> MDKCaptureFrameProcessingSummary? {
+        encodeQueue.sync {}
+        return outputQueue.sync {
+            MDKCaptureFrameProcessingSummary(
+                processedFrameCount: processedFrameCount,
+                processingFailureCount: processingFailureCount,
+                processingErrorHistogram: processingErrorHistogram,
+                outputCallbackCount: outputCallbackCount,
+                completedOutputFrameCount: completedOutputFrameCount,
+                outputCallbackStatusHistogram: outputCallbackStatusHistogram,
+                outputCallbackLatencyHistogram: outputCallbackLatencyHistogram,
+                minOutputCallbackLatencyMilliseconds: minOutputCallbackLatencyMilliseconds,
+                maxOutputCallbackLatencyMilliseconds: maxOutputCallbackLatencyMilliseconds,
+                notes: []
+            )
+        }
+    }
+
     private func encode(frame: MDKCaptureFrame) throws {
         let targetPixelFormat = codec.preferredInputPixelFormat(for: frame.pixelFormat)
         let outputDimensions = preprocessStrategy.outputDimensions(
