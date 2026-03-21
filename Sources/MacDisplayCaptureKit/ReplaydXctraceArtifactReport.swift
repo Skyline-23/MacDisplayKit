@@ -80,6 +80,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
     public let hotSymbolHistogram: [String: Int]
     public let hotSymbolCadenceSummaries: [MDKReplaydXctraceHotSymbolCadenceSummary]
     public let hotSymbolSyscallSummaries: [MDKReplaydXctraceHotSymbolSyscallSummary]
+    public let hotSymbolSyscallCadenceSummaries: [MDKReplaydXctraceHotSymbolSyscallCadenceSummary]
     public let excerpt: [String]
 
     public init(
@@ -91,6 +92,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
         hotSymbolHistogram: [String: Int],
         hotSymbolCadenceSummaries: [MDKReplaydXctraceHotSymbolCadenceSummary],
         hotSymbolSyscallSummaries: [MDKReplaydXctraceHotSymbolSyscallSummary],
+        hotSymbolSyscallCadenceSummaries: [MDKReplaydXctraceHotSymbolSyscallCadenceSummary],
         excerpt: [String]
     ) {
         self.schema = schema
@@ -101,6 +103,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
         self.hotSymbolHistogram = hotSymbolHistogram
         self.hotSymbolCadenceSummaries = hotSymbolCadenceSummaries
         self.hotSymbolSyscallSummaries = hotSymbolSyscallSummaries
+        self.hotSymbolSyscallCadenceSummaries = hotSymbolSyscallCadenceSummaries
         self.excerpt = excerpt
     }
 }
@@ -143,6 +146,34 @@ public struct MDKReplaydXctraceHotSymbolSyscallSummary: Codable, Equatable, Send
         self.symbolName = symbolName
         self.syscallHistogram = syscallHistogram
         self.signatureExamples = signatureExamples
+    }
+}
+
+public struct MDKReplaydXctraceHotSymbolSyscallCadenceSummary: Codable, Equatable, Sendable {
+    public let symbolName: String
+    public let syscallName: String
+    public let eventCount: Int
+    public let minIntervalMilliseconds: Double?
+    public let maxIntervalMilliseconds: Double?
+    public let intervalHistogram: [String: Int]
+    public let cadenceClassification: String
+
+    public init(
+        symbolName: String,
+        syscallName: String,
+        eventCount: Int,
+        minIntervalMilliseconds: Double?,
+        maxIntervalMilliseconds: Double?,
+        intervalHistogram: [String: Int],
+        cadenceClassification: String
+    ) {
+        self.symbolName = symbolName
+        self.syscallName = syscallName
+        self.eventCount = eventCount
+        self.minIntervalMilliseconds = minIntervalMilliseconds
+        self.maxIntervalMilliseconds = maxIntervalMilliseconds
+        self.intervalHistogram = intervalHistogram
+        self.cadenceClassification = cadenceClassification
     }
 }
 
@@ -241,6 +272,7 @@ public enum MDKReplaydXctraceArtifactParser {
         let hotSymbolHistogram = summarizeHotSymbols(in: exportText)
         let hotSymbolCadenceSummaries = summarizeHotSymbolCadences(in: exportText)
         let hotSymbolSyscallSummaries = summarizeHotSymbolSyscalls(in: exportText)
+        let hotSymbolSyscallCadenceSummaries = summarizeHotSymbolSyscallCadences(in: exportText)
 
         return MDKReplaydXctraceTableArtifact(
             schema: schema,
@@ -251,6 +283,7 @@ public enum MDKReplaydXctraceArtifactParser {
             hotSymbolHistogram: hotSymbolHistogram,
             hotSymbolCadenceSummaries: hotSymbolCadenceSummaries,
             hotSymbolSyscallSummaries: hotSymbolSyscallSummaries,
+            hotSymbolSyscallCadenceSummaries: hotSymbolSyscallCadenceSummaries,
             excerpt: excerpt
         )
     }
@@ -583,6 +616,68 @@ public enum MDKReplaydXctraceArtifactParser {
                 syscallHistogram: syscallHistogram,
                 signatureExamples: perSymbolSignatures[pattern.name] ?? []
             )
+        }
+    }
+
+    private static func summarizeHotSymbolSyscallCadences(
+        in exportText: String
+    ) -> [MDKReplaydXctraceHotSymbolSyscallCadenceSummary] {
+        guard
+            let rowExpression,
+            let rowStartTimeExpression
+        else {
+            return []
+        }
+
+        let exportRange = NSRange(exportText.startIndex..<exportText.endIndex, in: exportText)
+        let rowMatches = rowExpression.matches(in: exportText, range: exportRange)
+        guard !rowMatches.isEmpty else {
+            return []
+        }
+
+        var symbolSyscallTimestamps: [String: [String: [Double]]] = [:]
+
+        for rowMatch in rowMatches {
+            guard
+                let rowRange = Range(rowMatch.range(at: 1), in: exportText)
+            else {
+                continue
+            }
+            let rowText = String(exportText[rowRange])
+            guard let timestamp = parseRowTimestamp(rowText, using: rowStartTimeExpression) else {
+                continue
+            }
+            let syscallName = firstCapturedValue(using: rowSyscallExpression, in: rowText) ?? "<unknown>"
+
+            for pattern in hotSymbolPatterns {
+                guard let expression = try? NSRegularExpression(pattern: pattern.expression) else {
+                    continue
+                }
+                let rowTextRange = NSRange(rowText.startIndex..<rowText.endIndex, in: rowText)
+                if expression.firstMatch(in: rowText, range: rowTextRange) != nil {
+                    symbolSyscallTimestamps[pattern.name, default: [:]][syscallName, default: []].append(timestamp)
+                }
+            }
+        }
+
+        return hotSymbolPatterns.flatMap { pattern in
+            let syscallMap = symbolSyscallTimestamps[pattern.name] ?? [:]
+            return syscallMap.keys.sorted().compactMap { (syscallName: String) -> MDKReplaydXctraceHotSymbolSyscallCadenceSummary? in
+                guard let timestamps = syscallMap[syscallName], !timestamps.isEmpty else {
+                    return nil
+                }
+                let sorted = timestamps.sorted()
+                let intervals = zip(sorted, sorted.dropFirst()).map { ($1 - $0) / 1_000_000.0 }
+                return MDKReplaydXctraceHotSymbolSyscallCadenceSummary(
+                    symbolName: pattern.name,
+                    syscallName: syscallName,
+                    eventCount: sorted.count,
+                    minIntervalMilliseconds: intervals.min(),
+                    maxIntervalMilliseconds: intervals.max(),
+                    intervalHistogram: histogram(for: intervals),
+                    cadenceClassification: classifyCadence(intervals)
+                )
+            }
         }
     }
 

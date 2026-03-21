@@ -243,6 +243,25 @@ private actor MDKReplaydXctraceCoordinator {
                 "replayd syscall backtraces classified roEnqueueSampleBuffer cadence as \(roEnqueueSampleBufferCadence.cadenceClassification) over \(roEnqueueSampleBufferCadence.eventCount) sampled rows."
             )
         }
+        if let roEnqueueSampleBufferSyscalls = systemCallTable.hotSymbolSyscallSummaries.first(
+            where: { $0.symbolName == "roEnqueueSampleBuffer" }
+        ) {
+            notes.append(
+                "replayd syscall backtraces saw roEnqueueSampleBuffer syscall histogram \(roEnqueueSampleBufferSyscalls.syscallHistogram)."
+            )
+            if roEnqueueSampleBufferSyscalls.syscallHistogram["write"] == nil {
+                notes.append(
+                    "the current xctrace window did not sample any roEnqueueSampleBuffer/write rows, so write-only cadence is unavailable on this run."
+                )
+            }
+        }
+        if let roEnqueueSampleBufferWriteCadence = systemCallTable.hotSymbolSyscallCadenceSummaries.first(
+            where: { $0.symbolName == "roEnqueueSampleBuffer" && $0.syscallName == "write" }
+        ) {
+            notes.append(
+                "replayd syscall backtraces classified roEnqueueSampleBuffer/write cadence as \(roEnqueueSampleBufferWriteCadence.cadenceClassification) over \(roEnqueueSampleBufferWriteCadence.eventCount) sampled rows."
+            )
+        }
         if
             let enqueueFailures = unifiedLog.enqueueFailureSummary,
             enqueueFailures.operationHistogram.count == 1,

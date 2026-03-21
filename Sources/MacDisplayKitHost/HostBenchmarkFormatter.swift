@@ -34,6 +34,13 @@ enum MDKHostBenchmarkFormatter {
                 )
             }
         }
+        if !report.systemCallTable.hotSymbolSyscallCadenceSummaries.isEmpty {
+            for summary in report.systemCallTable.hotSymbolSyscallCadenceSummaries {
+                lines.append(
+                    "    syscallCadence[\(summary.symbolName)/\(summary.syscallName)]: count=\(summary.eventCount) class=\(summary.cadenceClassification) histogram=\(summary.intervalHistogram)"
+                )
+            }
+        }
         lines.append(
             "  - \(report.timeSampleTable.schema): rows=\(report.timeSampleTable.rowCount) bytes=\(report.timeSampleTable.byteCount) path=\(report.timeSampleTable.outputPath)"
         )
@@ -51,6 +58,13 @@ enum MDKHostBenchmarkFormatter {
             for summary in report.timeSampleTable.hotSymbolSyscallSummaries {
                 lines.append(
                     "    syscalls[\(summary.symbolName)]: histogram=\(summary.syscallHistogram) signatures=\(summary.signatureExamples)"
+                )
+            }
+        }
+        if !report.timeSampleTable.hotSymbolSyscallCadenceSummaries.isEmpty {
+            for summary in report.timeSampleTable.hotSymbolSyscallCadenceSummaries {
+                lines.append(
+                    "    syscallCadence[\(summary.symbolName)/\(summary.syscallName)]: count=\(summary.eventCount) class=\(summary.cadenceClassification) histogram=\(summary.intervalHistogram)"
                 )
             }
         }

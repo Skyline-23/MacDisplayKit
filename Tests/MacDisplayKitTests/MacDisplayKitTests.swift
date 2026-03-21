@@ -870,6 +870,13 @@ final class MacDisplayKitTests: XCTestCase {
         )
         XCTAssertEqual(sampleBufferSyscalls.syscallHistogram["write"], 3)
         XCTAssertEqual(sampleBufferSyscalls.signatureExamples.count, 3)
+        let sampleBufferWriteCadence = try XCTUnwrap(
+            summary.hotSymbolSyscallCadenceSummaries.first(
+                where: { $0.symbolName == "roEnqueueSampleBuffer" && $0.syscallName == "write" }
+            )
+        )
+        XCTAssertEqual(sampleBufferWriteCadence.eventCount, 3)
+        XCTAssertEqual(sampleBufferWriteCadence.cadenceClassification, "120hz-like")
         XCTAssertFalse(summary.excerpt.isEmpty)
     }
 

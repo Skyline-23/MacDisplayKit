@@ -1258,6 +1258,11 @@ Interpretation:
       - `roEnqueueSampleBuffer` rows remain `coalesced-or-mixed` rather than `120hz-like`
       - a `6`-second run still only surfaced `4` sampled `roEnqueueSampleBuffer` rows with `140ms`, `173ms`, and `418ms` gaps
       - the same `6`-second run still logged `393` enqueue failures with `60hz-like` spacing
+      - after adding syscall-filtered cadence summaries, another `6`-second run showed:
+        - `roEnqueueSampleBuffer` total cadence dropped to `insufficient-data` on only `2` sampled rows
+        - the sampled syscall histogram for those rows was `{"0x16b73b618":1,"0x16b73bbc0":1}`
+        - no `write` rows were sampled for `roEnqueueSampleBuffer`, so `write-only` cadence was unavailable in that window
+        - the same run still logged `384` enqueue failures with `60hz-like` spacing
     - replayd unified log emitted repeated producer-side enqueue failures:
       - `_SCRemoteQueue_Enqueue:217 ... err=-19641 opType=3 Error occurred when enqueuing data`
       - the new parser can now summarize those failures directly from the host artifact:
@@ -1285,6 +1290,9 @@ Interpretation:
       `roEnqueueSampleBuffer`, which ties the live failure stream directly to sample-buffer producer traffic
     - but the syscall-row cadence parser also shows that the exported `roEnqueueSampleBuffer` rows are too sparse and bursty
       to claim a true `120-like` producer cadence from `xctrace` alone
+    - the new syscall-filtered view makes that limitation sharper:
+      even when the broker logs steady `60hz-like` enqueue failures, `xctrace` may miss `write` wakeups entirely
+      and only sample unrelated `roEnqueueSampleBuffer` syscalls in the same window
     - all observed failures in the latest run came from a single replayd callsite offset (`senderProgramCounter=766532`)
       rather than from multiple producer sites
     - static arm64e disassembly of `/usr/libexec/replayd` narrows that offset to the enqueue-error logger region:
