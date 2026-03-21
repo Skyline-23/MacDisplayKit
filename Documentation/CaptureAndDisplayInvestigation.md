@@ -813,17 +813,28 @@ Follow-up passive trace after decoding the live `OS_dispatch_source` object via 
 
 - `videoReceiveQueueWrapperSlot32PointeeWord6ObjectClassName=OS_dispatch_source`
 - `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandle=3`
+- `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleFileType=fifo`
+- `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleMode=4528`
+- `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandlePath=nil`
 - `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceMask=0`
 - `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceData=2`
 - `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceCancelled=0`
 - `rqReceiverSetSourceInvokeEntryEventCount=0`
+- raw wrapper snapshots on the same run also resolve the sibling queue handles to fifo-backed
+  dispatch sources:
+  - audio wrapper `handle=5`, `fileType=fifo`, `data=0`
+  - microphone wrapper `handle=7`, `fileType=fifo`, `data=0`
 
 Interpretation:
 
 - the upstream wakeup object for the video receive path is not a mach-receive source; the live
-  dispatch source currently reports `handle=3`, which is consistent with an fd-backed source
+  dispatch source currently reports `handle=3` and resolves to a `fifo`, so the wakeup path is
+  fd-backed pipe scheduling rather than a mach-message receive source
+- the queue family is consistent across media types; ScreenCaptureKit/CMCapture appears to allocate
+  separate fifo-backed dispatch sources per remote receive queue rather than multiplexing them
+  through one mach source
 - `mask=0` and `data=2` mean the wakeup side is still opaque, but the source is active rather than
   cancelled and is almost certainly sitting in front of the already-confirmed wrapper block
 - together with the failed `rqReceiverSetSource` interpose, the next practical reverse-engineering
-  target is now the fd-backed dispatch-source scheduling boundary rather than the later CMCapture or
-  ScreenCaptureKit local blocks
+  target is now the fd-backed dispatch-source scheduling boundary and its read/drain path rather
+  than the later CMCapture or ScreenCaptureKit local blocks

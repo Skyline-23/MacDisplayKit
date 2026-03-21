@@ -13,6 +13,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <sys/ioctl.h>
+#import <sys/stat.h>
 #import <unistd.h>
 #import <xpc/xpc.h>
 #import <mach-o/loader.h>
@@ -333,10 +334,42 @@ static NSDictionary<NSString *, id> *MDKDescribeShallowPointerPointee(const void
                         }
                         if ([className isEqualToString:@"OS_dispatch_source"]) {
                             dispatch_source_t source = (__bridge dispatch_source_t) const_cast<void *>(pointer);
-                            objectSummary[@"dispatchSourceHandle"] = @(dispatch_source_get_handle(source));
+                            uintptr_t sourceHandle = dispatch_source_get_handle(source);
+                            objectSummary[@"dispatchSourceHandle"] = @(sourceHandle);
                             objectSummary[@"dispatchSourceMask"] = @(dispatch_source_get_mask(source));
                             objectSummary[@"dispatchSourceData"] = @(dispatch_source_get_data(source));
                             objectSummary[@"dispatchSourceCancelled"] = @(dispatch_source_testcancel(source));
+                            if (sourceHandle <= INT_MAX) {
+                                const int fd = static_cast<int>(sourceHandle);
+                                struct stat fdStat = {};
+                                if (fstat(fd, &fdStat) == 0) {
+                                    NSString *fileType = @"unknown";
+                                    if (S_ISREG(fdStat.st_mode)) {
+                                        fileType = @"regular";
+                                    } else if (S_ISDIR(fdStat.st_mode)) {
+                                        fileType = @"directory";
+                                    } else if (S_ISCHR(fdStat.st_mode)) {
+                                        fileType = @"character-device";
+                                    } else if (S_ISBLK(fdStat.st_mode)) {
+                                        fileType = @"block-device";
+                                    } else if (S_ISFIFO(fdStat.st_mode)) {
+                                        fileType = @"fifo";
+                                    } else if (S_ISLNK(fdStat.st_mode)) {
+                                        fileType = @"symlink";
+                                    } else if (S_ISSOCK(fdStat.st_mode)) {
+                                        fileType = @"socket";
+                                    }
+                                    objectSummary[@"dispatchSourceHandleFileType"] = fileType;
+                                    objectSummary[@"dispatchSourceHandleMode"] = @(fdStat.st_mode);
+                                }
+#ifdef F_GETPATH
+                                char pathBuffer[PATH_MAX] = {};
+                                if (fcntl(fd, F_GETPATH, pathBuffer) != -1 && pathBuffer[0] != '\0') {
+                                    objectSummary[@"dispatchSourceHandlePath"] =
+                                        [NSString stringWithUTF8String:pathBuffer] ?: @"";
+                                }
+#endif
+                            }
                         }
                     }
                     summary[@"object"] = objectSummary;
@@ -7181,6 +7214,12 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         [videoReceiveQueueWrapperSlot32PointeeWord6Object[@"description"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32PointeeWord6Object[@"description"] : nil;
     NSNumber *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandle =
         [videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceHandle"] isKindOfClass:[NSNumber class]] ? videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceHandle"] : nil;
+    NSString *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleFileType =
+        [videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceHandleFileType"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceHandleFileType"] : nil;
+    NSNumber *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleMode =
+        [videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceHandleMode"] isKindOfClass:[NSNumber class]] ? videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceHandleMode"] : nil;
+    NSString *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandlePath =
+        [videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceHandlePath"] isKindOfClass:[NSString class]] ? videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceHandlePath"] : nil;
     NSNumber *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceMask =
         [videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceMask"] isKindOfClass:[NSNumber class]] ? videoReceiveQueueWrapperSlot32PointeeWord6Object[@"dispatchSourceMask"] : nil;
     NSNumber *videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceData =
@@ -7401,6 +7440,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6ObjectClassName=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6ObjectClassName)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6ObjectDescription=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6ObjectDescription)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandle=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandle)]];
+    [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleFileType=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleFileType)]];
+    [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleMode=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleMode)]];
+    [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandlePath=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandlePath)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceMask=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceMask)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceData=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceData)]];
     [notes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceCancelled=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceCancelled)]];
@@ -7565,6 +7607,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6ObjectClassName=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6ObjectClassName)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6ObjectDescription=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6ObjectDescription)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandle=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandle)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleFileType=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleFileType)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleMode=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandleMode)]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandlePath=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandlePath)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceMask=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceMask)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceData=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceData)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceCancelled=%@", MDKDescribeTraceValue(videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceCancelled)]];
