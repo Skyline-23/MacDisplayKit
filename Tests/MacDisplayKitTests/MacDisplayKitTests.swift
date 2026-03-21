@@ -275,6 +275,79 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(result.probe.portMessageCount, 2)
     }
 
+    func testSkyLightDisplayStreamBenchmarkResultRoundTripsThroughJSON() throws {
+        let result = MDKSkyLightDisplayStreamBenchmarkResult(
+            displayID: 2,
+            status: 0,
+            stopStatus: 0,
+            sampleDuration: 2.0,
+            callbackCount: 200,
+            completeFrameCount: 193,
+            observedFrameRate: 96.5,
+            requested120LikeProperties: true,
+            requestedMinimumFrameTime: 1.0 / 120.0,
+            requestedQueueDepth: 8,
+            requestedShowCursor: false,
+            appliedPropertyCount: 3,
+            surfaceWidth: 5120,
+            surfaceHeight: 2880,
+            pixelFormat: kCVPixelFormatType_32BGRA,
+            intervalCount: 192,
+            minIntervalMilliseconds: 4.167,
+            maxIntervalMilliseconds: 62.499,
+            intervalHistogram: ["8.3ms": 101],
+            cadenceClassification: "120hz-like",
+            frameStatusHistogram: ["frame-complete": 193],
+            notes: ["raw benchmark payload"]
+        )
+
+        let data = try JSONEncoder().encode(result)
+        let decoded = try JSONDecoder().decode(MDKSkyLightDisplayStreamBenchmarkResult.self, from: data)
+        XCTAssertEqual(decoded, result)
+    }
+
+    func testSkyLightDisplayStreamBenchmarkResultParsesShimDictionary() throws {
+        let payload: NSDictionary = [
+            "displayID": NSNumber(value: 2),
+            "status": NSNumber(value: 0),
+            "stopStatus": NSNumber(value: 0),
+            "sampleDuration": NSNumber(value: 2.0),
+            "callbackCount": NSNumber(value: 200),
+            "completeFrameCount": NSNumber(value: 193),
+            "observedFrameRate": NSNumber(value: 96.5),
+            "requested120LikeProperties": NSNumber(value: true),
+            "requestedMinimumFrameTime": NSNumber(value: 1.0 / 120.0),
+            "requestedQueueDepth": NSNumber(value: 8),
+            "requestedShowCursor": NSNumber(value: false),
+            "appliedPropertyCount": NSNumber(value: 3),
+            "surfaceWidth": NSNumber(value: 5120),
+            "surfaceHeight": NSNumber(value: 2880),
+            "pixelFormat": NSNumber(value: kCVPixelFormatType_32BGRA),
+            "intervalCount": NSNumber(value: 192),
+            "minIntervalMilliseconds": NSNumber(value: 4.167),
+            "maxIntervalMilliseconds": NSNumber(value: 62.499),
+            "intervalHistogram": ["8.3ms": NSNumber(value: 101), "12.5ms": NSNumber(value: 40)],
+            "cadenceClassification": "120hz-like",
+            "frameStatusHistogram": ["frame-complete": NSNumber(value: 193), "frame-idle": NSNumber(value: 7)],
+            "notes": ["raw benchmark payload"]
+        ]
+
+        let result = try MDKSkyLightDisplayStreamBenchmarkResult(shimDictionary: payload)
+        XCTAssertEqual(result.displayID, 2)
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.stopStatus, 0)
+        XCTAssertEqual(result.completeFrameCount, 193)
+        XCTAssertEqual(result.observedFrameRate, 96.5)
+        XCTAssertTrue(result.requested120LikeProperties)
+        XCTAssertEqual(result.requestedQueueDepth, 8)
+        XCTAssertEqual(result.appliedPropertyCount, 3)
+        XCTAssertEqual(result.surfaceWidth, 5120)
+        XCTAssertEqual(result.surfaceHeight, 2880)
+        XCTAssertEqual(result.intervalHistogram["8.3ms"], 101)
+        XCTAssertEqual(result.frameStatusHistogram["frame-idle"], 7)
+        XCTAssertEqual(result.cadenceClassification, "120hz-like")
+    }
+
     func testScreenCaptureKitProxyHandshakeTraceRoundTripsThroughJSON() throws {
         let trace = MDKScreenCaptureKitProxyHandshakeTrace(
             displayID: 42,

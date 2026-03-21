@@ -1402,3 +1402,38 @@ Interpretation:
     - the observed runtime log error `-19641` (`0xffffb347`) is neither of those special-case branches
     - so the repeated `_SCRemoteQueue_Enqueue ... err=-19641 opType=3` lines are currently landing in the
       generic `"Error occurred when enqueuing data"` path rather than the explicit queue-full/client-terminated paths
+- 2026-03-21 raw `SkyLight` `SLDisplayStream` bypass is now reproducible from the repo through `MacDisplayKitHost`
+  - command:
+    - `MacDisplayKitHost --experimental-skylight-displaystream-benchmark-display auto --sample-duration 2 --json`
+    - optional:
+      - `--request-120-like`
+      - `--with-metal-stimulus`
+  - the new host command calls raw `SkyLight` exports directly:
+    - `SLDisplayStreamCreateWithDispatchQueue`
+    - `SLDisplayStreamStart`
+    - `SLDisplayStreamStop`
+  - it loads the public `CoreGraphics` property keys dynamically and can request:
+    - `kCGDisplayStreamMinimumFrameTime`
+    - `kCGDisplayStreamQueueDepth`
+    - `kCGDisplayStreamShowCursor`
+  - latest reproducible `AW2725Q` results:
+    - baseline properties (`queueDepth=3`, no minimum-frame-time request):
+      - `observedFrameRate=93.45`
+      - `cadenceClassification=coalesced-or-mixed`
+      - `intervalHistogram={"4.2ms":47,"8.3ms":53,"12.5ms":34,"16.7ms":49,"25.0ms":2,"62.5ms":1}`
+    - same baseline with `--with-metal-stimulus`:
+      - `observedFrameRate=92.96`
+      - `intervalHistogram={"4.2ms":46,"8.3ms":53,"12.5ms":32,"16.7ms":51,"20.8ms":1,"25.0ms":1,"62.5ms":1}`
+    - explicit `--request-120-like` properties (`minimumFrameTime=1/120`, `queueDepth=8`):
+      - `observedFrameRate=81.34`
+      - `intervalHistogram={"4.2ms":19,"8.3ms":66,"12.5ms":40,"16.7ms":18,"20.8ms":6,"25.0ms":3,"29.2ms":5,"33.3ms":3,"54.2ms":1,"58.3ms":1}`
+    - `--request-120-like --with-metal-stimulus`:
+      - `observedFrameRate=82.56`
+      - `intervalHistogram={"4.2ms":19,"8.3ms":70,"12.5ms":40,"16.7ms":19,"20.8ms":5,"25.0ms":2,"29.2ms":5,"33.3ms":3,"54.2ms":1,"58.3ms":1}`
+  - current interpretation:
+    - raw `SLDisplayStream` bypasses a large part of the `replayd/SCStream` ceiling and reaches roughly `93 fps`
+      on the current machine, which is materially higher than the brokered host path
+    - the bypass still does not sustain a dominant `120hz-like` cadence because the histogram remains mixed
+    - the explicit `minimumFrameTime=1/120` request is currently counterproductive on this panel and lowers throughput
+    - that shifts the next optimization target from `SCStream` tuning to raw `SkyLight` display-stream property tuning
+      and lower-level `SLContentStream` / `CGYDisplayStreamFrameAvailable` exploration

@@ -22,6 +22,7 @@ private enum MDKHostCLICommand {
     case privateDisplayStreamProbeMatrix(displayID: UInt32?, json: Bool)
     case privateCaptureBenchmark(displayID: UInt32?, requestExtendedRange: Bool, sampleDuration: TimeInterval, json: Bool)
     case privateProxyCaptureBenchmark(displayID: UInt32?, requestExtendedRange: Bool, sampleDuration: TimeInterval, json: Bool)
+    case skyLightDisplayStreamBenchmark(displayID: UInt32?, sampleDuration: TimeInterval, request120LikeProperties: Bool, json: Bool, useMetalStimulus: Bool)
     case benchmark(
         displayID: UInt32?,
         targetIdentifier: String,
@@ -415,6 +416,32 @@ enum MDKHostCommandLine {
                 fputs("Failed to run private proxy capture benchmark: \(error)\n", stderr)
                 return 1
             }
+        case .skyLightDisplayStreamBenchmark(let displayID, let sampleDuration, let request120LikeProperties, let json, let useMetalStimulus):
+            do {
+                let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
+                let stimulus = useMetalStimulus ? MDKHostMetalStimulus(displayID: resolvedDisplayID) : nil
+                stimulus?.start()
+                defer { stimulus?.stop() }
+                let result = try controller.benchmarkSkyLightDisplayStream(
+                    displayID: resolvedDisplayID,
+                    sampleDuration: sampleDuration,
+                    request120LikeProperties: request120LikeProperties
+                )
+                if json {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    let data = try encoder.encode(result)
+                    if let text = String(data: data, encoding: .utf8) {
+                        print(text)
+                    }
+                } else {
+                    print(MDKHostBenchmarkFormatter.formatSkyLightDisplayStreamBenchmarkResult(result))
+                }
+                return result.status == 0 && result.completeFrameCount > 0 ? 0 : 2
+            } catch {
+                fputs("Failed to run raw SkyLight display stream benchmark: \(error)\n", stderr)
+                return 1
+            }
         case .benchmark(let displayID, let targetIdentifier, let intent, let processingMode, let json):
             guard let display = resolveDisplay(displayID, controller: controller) else {
                 fputs("Unable to resolve a display for the benchmark.\n", stderr)
@@ -658,6 +685,19 @@ enum MDKHostCommandLine {
                 requestExtendedRange: tokens.contains("--experimental-private-hw-capture-proxy-benchmark-hdr"),
                 sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
                 json: tokens.contains("--json")
+            )
+        }
+
+        if let displayID = parseOptionalDisplayID(
+            flag: "--experimental-skylight-displaystream-benchmark-display",
+            tokens: tokens
+        ) {
+            return .skyLightDisplayStreamBenchmark(
+                displayID: displayID,
+                sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
+                request120LikeProperties: tokens.contains("--request-120-like"),
+                json: tokens.contains("--json"),
+                useMetalStimulus: tokens.contains("--with-metal-stimulus")
             )
         }
 

@@ -6,6 +6,7 @@
 #import <execinfo.h>
 #import <dlfcn.h>
 #import <mach/mach.h>
+#import <mach/mach_time.h>
 #import <mach-o/dyld.h>
 #import <malloc/malloc.h>
 #import <poll.h>
@@ -150,6 +151,13 @@ static void *MDKLookupCaptureSymbol(const char *symbolName) {
 static void *MDKLookupScreenCaptureKitSymbol(const char *symbolName) {
     return MDKLookupCaptureSymbolInImage(
         "/System/Library/Frameworks/ScreenCaptureKit.framework/ScreenCaptureKit",
+        symbolName
+    );
+}
+
+static void *MDKLookupCoreGraphicsSymbol(const char *symbolName) {
+    return MDKLookupCaptureSymbolInImage(
+        "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
         symbolName
     );
 }
@@ -12448,6 +12456,310 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateDisplayStreamProbeWi
         @"portSequenceNumber": portSnapshot[@"portSequenceNumber"] ?: @0,
         @"portMessagesWaiting": portSnapshot[@"portMessagesWaiting"] ?: @NO,
     };
+}
+
+static CFStringRef MDKCopyCoreGraphicsDisplayStreamKey(const char *symbolName) {
+    auto symbol = reinterpret_cast<CFStringRef *>(MDKLookupCoreGraphicsSymbol(symbolName));
+    if (symbol == nullptr) {
+        return nil;
+    }
+
+    return *symbol;
+}
+
+static NSArray<NSNumber *> *MDKCreateIntervalMillisecondsFromDisplayTimes(NSArray<NSNumber *> *displayTimes) {
+    if (displayTimes.count < 2) {
+        return @[];
+    }
+
+    static mach_timebase_info_data_t timebaseInfo;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        mach_timebase_info(&timebaseInfo);
+    });
+
+    const long double numerator = static_cast<long double>(timebaseInfo.numer);
+    const long double denominator = static_cast<long double>(std::max(timebaseInfo.denom, 1u));
+    NSMutableArray<NSNumber *> *intervals = [NSMutableArray arrayWithCapacity:(displayTimes.count - 1)];
+    for (NSUInteger index = 1; index < displayTimes.count; index += 1) {
+        const std::uint64_t previous = displayTimes[index - 1].unsignedLongLongValue;
+        const std::uint64_t current = displayTimes[index].unsignedLongLongValue;
+        if (current <= previous) {
+            continue;
+        }
+
+        const long double deltaNanoseconds =
+            static_cast<long double>(current - previous) * numerator / denominator;
+        const long double deltaMilliseconds = deltaNanoseconds / 1000000.0L;
+        [intervals addObject:@(static_cast<double>(deltaMilliseconds))];
+    }
+
+    return intervals;
+}
+
+static NSDictionary<NSString *, NSNumber *> *MDKHistogramForMillisecondIntervals(NSArray<NSNumber *> *intervals) {
+    NSMutableDictionary<NSString *, NSNumber *> *histogram = [NSMutableDictionary dictionary];
+    for (NSNumber *value in intervals) {
+        const double roundedMilliseconds = std::round(value.doubleValue * 10.0) / 10.0;
+        NSString *bucket = [NSString stringWithFormat:@"%.1fms", roundedMilliseconds];
+        histogram[bucket] = @([histogram[bucket] integerValue] + 1);
+    }
+
+    return histogram;
+}
+
+static NSString *MDKClassifyCadenceForMillisecondIntervals(NSArray<NSNumber *> *intervals) {
+    if (intervals.count < 2) {
+        return @"insufficient-data";
+    }
+
+    NSUInteger count120Like = 0;
+    NSUInteger count60Like = 0;
+    for (NSNumber *value in intervals) {
+        const double milliseconds = value.doubleValue;
+        if (milliseconds <= 10.0) {
+            count120Like += 1;
+        }
+        if (milliseconds >= 12.0 && milliseconds <= 21.0) {
+            count60Like += 1;
+        }
+    }
+
+    const double totalCount = static_cast<double>(intervals.count);
+    if ((static_cast<double>(count120Like) / totalCount) >= 0.7) {
+        return @"120hz-like";
+    }
+    if ((static_cast<double>(count60Like) / totalCount) >= 0.7) {
+        return @"60hz-like";
+    }
+    return @"coalesced-or-mixed";
+}
+
+static NSString *MDKDescribeDisplayStreamFrameStatus(CGDisplayStreamFrameStatus status) {
+    switch (status) {
+        case kCGDisplayStreamFrameStatusFrameComplete:
+            return @"frame-complete";
+        case kCGDisplayStreamFrameStatusFrameIdle:
+            return @"frame-idle";
+        case kCGDisplayStreamFrameStatusStopped:
+            return @"stopped";
+        default:
+            return [NSString stringWithFormat:@"status-%d", static_cast<int>(status)];
+    }
+}
+
+NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightDisplayStreamBenchmark(
+    NSUInteger displayID,
+    NSTimeInterval sampleDuration,
+    BOOL request120LikeProperties,
+    NSError * _Nullable * _Nullable error
+) {
+    using MDKSLDisplayStreamCreateWithDispatchQueueFn = CGDisplayStreamRef (*)(
+        CGDirectDisplayID,
+        size_t,
+        size_t,
+        int32_t,
+        CFDictionaryRef _Nullable,
+        dispatch_queue_t,
+        CGDisplayStreamFrameAvailableHandler
+    );
+    using MDKSLDisplayStreamStartFn = CGError (*)(CGDisplayStreamRef);
+    using MDKSLDisplayStreamStopFn = CGError (*)(CGDisplayStreamRef);
+
+    auto createSymbol = reinterpret_cast<MDKSLDisplayStreamCreateWithDispatchQueueFn>(
+        MDKLookupCaptureSymbol("SLDisplayStreamCreateWithDispatchQueue")
+    );
+    auto startSymbol = reinterpret_cast<MDKSLDisplayStreamStartFn>(
+        MDKLookupCaptureSymbol("SLDisplayStreamStart")
+    );
+    auto stopSymbol = reinterpret_cast<MDKSLDisplayStreamStopFn>(
+        MDKLookupCaptureSymbol("SLDisplayStreamStop")
+    );
+    if (createSymbol == nullptr || startSymbol == nullptr || stopSymbol == nullptr) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
+                                         code:1
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"One or more raw SkyLight SLDisplayStream symbols are unavailable."
+                                     }];
+        }
+        return nil;
+    }
+
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(static_cast<CGDirectDisplayID>(displayID));
+    if (mode == nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
+                                         code:2
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Unable to resolve the current display mode for the requested display."
+                                     }];
+        }
+        return nil;
+    }
+
+    const size_t width = std::max(static_cast<size_t>(CGDisplayModeGetPixelWidth(mode)), static_cast<size_t>(1));
+    const size_t height = std::max(static_cast<size_t>(CGDisplayModeGetPixelHeight(mode)), static_cast<size_t>(1));
+    CFRelease(mode);
+
+    NSMutableDictionary *streamProperties = [NSMutableDictionary dictionary];
+    NSUInteger appliedPropertyCount = 0;
+    const double requestedMinimumFrameTime = request120LikeProperties ? (1.0 / 120.0) : 0.0;
+    const NSInteger requestedQueueDepth = request120LikeProperties ? 8 : 3;
+    const BOOL requestedShowCursor = NO;
+
+    if (CFStringRef minimumFrameTimeKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamMinimumFrameTime")) {
+        streamProperties[(__bridge NSString *) minimumFrameTimeKey] = @(requestedMinimumFrameTime);
+        appliedPropertyCount += 1;
+    }
+    if (CFStringRef queueDepthKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamQueueDepth")) {
+        streamProperties[(__bridge NSString *) queueDepthKey] = @(requestedQueueDepth);
+        appliedPropertyCount += 1;
+    }
+    if (CFStringRef showCursorKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamShowCursor")) {
+        streamProperties[(__bridge NSString *) showCursorKey] = @(requestedShowCursor);
+        appliedPropertyCount += 1;
+    }
+
+    const CFDictionaryRef streamPropertiesRef =
+        streamProperties.count > 0 ? (__bridge CFDictionaryRef) streamProperties : nil;
+    dispatch_queue_t queue = dispatch_queue_create(
+        "com.skyline23.MacDisplayKit.skylight.displaystream.benchmark",
+        DISPATCH_QUEUE_SERIAL
+    );
+
+    __block NSMutableArray<NSNumber *> *displayTimes = [NSMutableArray array];
+    __block NSMutableDictionary<NSString *, NSNumber *> *frameStatusHistogram = [NSMutableDictionary dictionary];
+    __block std::uint64_t callbackCount = 0;
+    __block std::uint64_t completeFrameCount = 0;
+    __block size_t surfaceWidth = 0;
+    __block size_t surfaceHeight = 0;
+    __block OSType surfacePixelFormat = 0;
+    __block BOOL sawSurface = NO;
+
+    CGDisplayStreamRef stream = createSymbol(
+        static_cast<CGDirectDisplayID>(displayID),
+        width,
+        height,
+        static_cast<int32_t>(kCVPixelFormatType_32BGRA),
+        streamPropertiesRef,
+        queue,
+        ^(CGDisplayStreamFrameStatus status,
+          uint64_t displayTime,
+          IOSurfaceRef frameSurface,
+          __unused CGDisplayStreamUpdateRef updateRef) {
+            callbackCount += 1;
+            NSString *statusName = MDKDescribeDisplayStreamFrameStatus(status);
+            frameStatusHistogram[statusName] = @([frameStatusHistogram[statusName] integerValue] + 1);
+
+            if (status != kCGDisplayStreamFrameStatusFrameComplete || frameSurface == nil) {
+                return;
+            }
+
+            completeFrameCount += 1;
+            sawSurface = YES;
+            if (surfaceWidth == 0) {
+                surfaceWidth = IOSurfaceGetWidth(frameSurface);
+            }
+            if (surfaceHeight == 0) {
+                surfaceHeight = IOSurfaceGetHeight(frameSurface);
+            }
+            if (surfacePixelFormat == 0) {
+                surfacePixelFormat = IOSurfaceGetPixelFormat(frameSurface);
+            }
+            [displayTimes addObject:@(displayTime)];
+        }
+    );
+    if (stream == nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
+                                         code:3
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"SLDisplayStreamCreateWithDispatchQueue returned nil."
+                                     }];
+        }
+        return nil;
+    }
+
+    const CFAbsoluteTime startedAt = CFAbsoluteTimeGetCurrent();
+    const CGError startStatus = startSymbol(stream);
+    const NSTimeInterval targetDuration = std::max(sampleDuration, 0.001);
+    [NSThread sleepForTimeInterval:targetDuration];
+    const CGError stopStatus = stopSymbol(stream);
+    dispatch_sync(queue, ^{
+    });
+    const NSTimeInterval elapsed = std::max(CFAbsoluteTimeGetCurrent() - startedAt, 0.0);
+    CFRelease(stream);
+
+    NSArray<NSNumber *> *intervals = MDKCreateIntervalMillisecondsFromDisplayTimes(displayTimes);
+    NSDictionary<NSString *, NSNumber *> *intervalHistogram = MDKHistogramForMillisecondIntervals(intervals);
+    NSString *cadenceClassification = MDKClassifyCadenceForMillisecondIntervals(intervals);
+    NSNumber *minIntervalMilliseconds = nil;
+    NSNumber *maxIntervalMilliseconds = nil;
+    if (intervals.count > 0) {
+        double minValue = intervals.firstObject.doubleValue;
+        double maxValue = intervals.firstObject.doubleValue;
+        for (NSNumber *value in intervals) {
+            minValue = std::min(minValue, value.doubleValue);
+            maxValue = std::max(maxValue, value.doubleValue);
+        }
+        minIntervalMilliseconds = @(minValue);
+        maxIntervalMilliseconds = @(maxValue);
+    }
+
+    NSMutableArray<NSString *> *notes = [NSMutableArray array];
+    [notes addObject:@"Uses raw SkyLight SLDisplayStreamCreateWithDispatchQueue instead of replayd-backed SCStream."];
+    if (request120LikeProperties) {
+        [notes addObject:@"Requests a 120-like minimum frame time and a deeper queue depth through CGDisplayStream property keys loaded from CoreGraphics."];
+    } else {
+        [notes addObject:@"Uses a baseline property set without the 120-like minimum frame-time request."];
+    }
+    [notes addObject:[NSString stringWithFormat:@"appliedPropertyCount=%lu", static_cast<unsigned long>(appliedPropertyCount)]];
+    if (appliedPropertyCount < 3) {
+        [notes addObject:@"One or more CGDisplayStream property keys were unavailable, so the benchmark ran with a reduced property dictionary."];
+    }
+    if (!sawSurface) {
+        [notes addObject:@"The stream did not deliver any complete IOSurface-backed frames during the sample window."];
+    }
+
+    NSMutableDictionary<NSString *, id> *payload = [@{
+        @"displayID": @(displayID),
+        @"status": @(startStatus),
+        @"stopStatus": @(stopStatus),
+        @"sampleDuration": @(elapsed),
+        @"callbackCount": @(callbackCount),
+        @"completeFrameCount": @(completeFrameCount),
+        @"observedFrameRate": @(elapsed > 0.0 ? static_cast<double>(completeFrameCount) / elapsed : 0.0),
+        @"requested120LikeProperties": @(request120LikeProperties),
+        @"requestedMinimumFrameTime": @(requestedMinimumFrameTime),
+        @"requestedQueueDepth": @(requestedQueueDepth),
+        @"requestedShowCursor": @(requestedShowCursor),
+        @"appliedPropertyCount": @(appliedPropertyCount),
+        @"surfaceWidth": @(surfaceWidth > 0 ? surfaceWidth : width),
+        @"surfaceHeight": @(surfaceHeight > 0 ? surfaceHeight : height),
+        @"pixelFormat": @(static_cast<std::uint32_t>(surfacePixelFormat != 0 ? surfacePixelFormat : kCVPixelFormatType_32BGRA)),
+        @"intervalCount": @(intervals.count),
+        @"intervalHistogram": intervalHistogram,
+        @"cadenceClassification": cadenceClassification,
+        @"frameStatusHistogram": frameStatusHistogram,
+        @"notes": notes,
+    } mutableCopy];
+    if (minIntervalMilliseconds != nil) {
+        payload[@"minIntervalMilliseconds"] = minIntervalMilliseconds;
+    }
+    if (maxIntervalMilliseconds != nil) {
+        payload[@"maxIntervalMilliseconds"] = maxIntervalMilliseconds;
+    }
+
+    if (startStatus != kCGErrorSuccess && error != nullptr) {
+        *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
+                                     code:startStatus
+                                 userInfo:@{
+                                     NSLocalizedDescriptionKey: @"SLDisplayStreamStart returned a non-zero status."
+                                 }];
+    }
+
+    return payload;
 }
 
 NSDictionary<NSString *, id> * _Nullable MDKShimVideoTraceScreenCaptureKitProxyHandshake(

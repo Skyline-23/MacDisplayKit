@@ -50,6 +50,12 @@ FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateDi
     NSInteger selectiveSharingMode,
     NSError * _Nullable * _Nullable error
 );
+FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightDisplayStreamBenchmark(
+    NSUInteger displayID,
+    NSTimeInterval sampleDuration,
+    BOOL request120LikeProperties,
+    NSError * _Nullable * _Nullable error
+);
 FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoTraceScreenCaptureKitProxyHandshake(
     NSUInteger displayID,
     NSTimeInterval timeout,

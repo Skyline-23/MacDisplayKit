@@ -348,6 +348,47 @@ enum MDKHostBenchmarkFormatter {
         return lines.joined(separator: "\n")
     }
 
+    static func formatSkyLightDisplayStreamBenchmarkResult(
+        _ result: MDKSkyLightDisplayStreamBenchmarkResult
+    ) -> String {
+        var lines: [String] = []
+        lines.append("Raw SkyLight display stream benchmark")
+        lines.append("Display ID: \(result.displayID)")
+        lines.append("Start status: \(result.status)")
+        lines.append("Stop status: \(result.stopStatus)")
+        lines.append(String(format: "Sample duration: %.3fs", result.sampleDuration))
+        lines.append("Callback count: \(result.callbackCount)")
+        lines.append("Complete frames: \(result.completeFrameCount)")
+        lines.append(String(format: "Observed FPS: %.2f", result.observedFrameRate))
+        lines.append("Cadence classification: \(result.cadenceClassification)")
+        lines.append("Interval count: \(result.intervalCount)")
+        if let minIntervalMilliseconds = result.minIntervalMilliseconds,
+           let maxIntervalMilliseconds = result.maxIntervalMilliseconds {
+            lines.append(
+                String(
+                    format: "Interval range: %.3fms..%.3fms",
+                    minIntervalMilliseconds,
+                    maxIntervalMilliseconds
+                )
+            )
+        }
+        lines.append("Interval histogram: \(result.intervalHistogram)")
+        lines.append("Frame status histogram: \(result.frameStatusHistogram)")
+        lines.append("Requested 120-like properties: \(result.requested120LikeProperties ? "yes" : "no")")
+        lines.append(String(format: "Requested minimum frame time: %.6fs", result.requestedMinimumFrameTime))
+        lines.append("Requested queue depth: \(result.requestedQueueDepth)")
+        lines.append("Requested show cursor: \(result.requestedShowCursor ? "yes" : "no")")
+        lines.append("Applied property count: \(result.appliedPropertyCount)")
+        lines.append("Surface size: \(result.surfaceWidth)x\(result.surfaceHeight)")
+        lines.append(String(format: "Pixel format: 0x%08X", result.pixelFormat))
+        lines.append("")
+        lines.append("Notes:")
+        for note in result.notes {
+            lines.append("  - \(note)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     static func formatPrivateCaptureProbeResult(
         _ result: MDKPrivateCaptureProbeResult
     ) -> String {

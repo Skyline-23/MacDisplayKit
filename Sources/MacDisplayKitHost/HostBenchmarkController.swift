@@ -140,6 +140,18 @@ final class MDKHostBenchmarkController {
         )
     }
 
+    func benchmarkSkyLightDisplayStream(
+        displayID: UInt32,
+        sampleDuration: TimeInterval,
+        request120LikeProperties: Bool
+    ) throws -> MDKSkyLightDisplayStreamBenchmarkResult {
+        try MDKSkyLightDisplayStreamBenchmark.run(
+            displayID: displayID,
+            sampleDuration: sampleDuration,
+            request120LikeProperties: request120LikeProperties
+        )
+    }
+
     func traceScreenCaptureKitProxyHandshake(
         displayID: UInt32,
         sampleDuration: TimeInterval
