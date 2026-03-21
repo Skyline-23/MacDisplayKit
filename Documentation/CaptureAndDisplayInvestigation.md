@@ -1272,6 +1272,11 @@ Interpretation:
       - `0x1000bb1f4 .. 0x1000bb258` logs `"Error occurred when enqueuing data"`
       - `0x1000bb2b8 .. 0x1000bb324` logs `"Cannot Enqueue on an invalid remoteQueue %p"`
       - `0x1000bb384 .. 0x1000bb408` logs `"Queue is full. Resetting...."`
+    - the replayd caller at `0x10007ed30 .. 0x10007eeb4` is now identifiable as the producer hot path:
+      - it calls `FigRemoteOperationSenderResetIfFullAndEnqueueOperation`
+      - `err == -0x411d` takes a dedicated send/sample-buffer error path
+      - `err == -0x4119` takes the `"Client terminated the queue"` path
+      - other nonzero errors, including the observed `-19641`, fall into the generic enqueue-error logger at `0x1000bb1f4`
     - that makes the next reverse-engineering target sharper:
       the producer-side queue policy / enqueue failure reason inside `replayd` and `CMCapture`,
       especially around `_SCRemoteQueue_Enqueue` and `FigRemoteQueueSender`

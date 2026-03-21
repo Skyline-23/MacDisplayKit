@@ -240,6 +240,17 @@ private actor MDKReplaydXctraceCoordinator {
             notes.append(
                 "replayd unified log captured \(enqueueFailures.eventCount) _SCRemoteQueue_Enqueue failures with \(enqueueFailures.cadenceClassification) spacing."
             )
+            if enqueueFailures.errorHistogram["-19641"] != nil {
+                notes.append(
+                    "static replayd disassembly shows err=-19641 bypasses the queue-full and client-terminated special cases and lands in the generic enqueue-error branch after _FigRemoteOperationSenderResetIfFullAndEnqueueOperation."
+                )
+            }
+            if enqueueFailures.senderProgramCounterHistogram.count == 1,
+               let senderPC = enqueueFailures.senderProgramCounterHistogram.keys.first {
+                notes.append(
+                    "replayd enqueue failures collapsed to senderProgramCounter=\(senderPC) in this capture window."
+                )
+            }
         }
         if unifiedLog.matchedLines.contains(where: { $0.localizedCaseInsensitiveContains("screenframeCount=0") }) {
             notes.append("replayd health-monitor log reported screenframeCount=0 during the paired trace window.")
