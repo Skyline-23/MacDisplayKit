@@ -1405,6 +1405,7 @@ Interpretation:
 - 2026-03-21 raw `SkyLight` `SLDisplayStream` bypass is now reproducible from the repo through `MacDisplayKitHost`
   - command:
     - `MacDisplayKitHost --experimental-skylight-displaystream-benchmark-display auto --sample-duration 2 --json`
+    - `MacDisplayKitHost --experimental-skylight-displaystream-tuning-matrix-display auto --sample-duration 2 --json`
     - optional:
       - `--request-120-like`
       - `--minimum-frame-time <seconds>`
@@ -1450,12 +1451,37 @@ Interpretation:
       - `observedFrameRate=101.94`
       - `cadenceClassification=120hz-like`
       - `intervalHistogram={"4.2ms":46,"8.3ms":98,"12.5ms":29,"16.7ms":24,"20.8ms":5,"58.3ms":1,"62.5ms":1}`
+    - later single-run validation on the same panel showed the raw path can go higher:
+      - `--minimum-frame-time 0 --queue-depth 8`:
+        - `observedFrameRate=118.86`
+        - `cadenceClassification=120hz-like`
+        - `intervalHistogram={"4.2ms":102,"8.3ms":68,"12.5ms":40,"16.7ms":20,"20.8ms":8}`
+      - `--minimum-frame-time 1/120 --queue-depth 8`:
+        - `observedFrameRate=93.69`
+        - `cadenceClassification=coalesced-or-mixed`
+        - `intervalHistogram={"4.2ms":29,"8.3ms":69,"12.5ms":57,"16.7ms":24,"20.8ms":9}`
+  - host-only tuning matrix now exists to compare a fixed candidate set without manually running each configuration:
+    - command:
+      - `MacDisplayKitHost --experimental-skylight-displaystream-tuning-matrix-display auto --sample-duration 2 --json`
+      - optional:
+        - `--with-metal-stimulus`
+    - the first in-process matrix under-reported throughput because reusing the same host process contaminated later runs
+    - the matrix now launches a fresh child process per candidate before ranking
+    - latest child-isolated matrix results:
+      - no stimulus:
+        - `bestCandidate=min-frame-240hz-q8`
+        - `observedFrameRate=115.65`
+        - `cadenceClassification=120hz-like`
+      - with Metal stimulus:
+        - `bestCandidate=min-frame-240hz-q8`
+        - `observedFrameRate=114.43`
+        - `cadenceClassification=120hz-like`
   - current interpretation:
-    - raw `SLDisplayStream` bypasses a large part of the `replayd/SCStream` ceiling and reaches roughly `93 fps`
-      on the current machine, which is materially higher than the brokered host path
-    - tuned overrides now lift the same raw path to roughly `100-103 fps`, and active motion can tip the cadence
-      classifier into `120hz-like` even though the histogram remains mixed
+    - raw `SLDisplayStream` bypasses a large part of the `replayd/SCStream` ceiling and is now demonstrably capable
+      of roughly `115-119 fps` on the current machine, which is materially higher than the brokered host path
+    - tuned overrides now lift the same raw path into repeatable `120hz-like` territory, although the interval histogram
+      still mixes `4.2ms`, `8.3ms`, and slower buckets rather than collapsing to a pure `8.3ms` band
     - the explicit `minimumFrameTime=1/120` request is currently counterproductive on this panel and lowers throughput,
-      while `queueDepth=8` or `minimumFrameTime=1/240` produce materially better results
+      while `queueDepth=8` and especially `minimumFrameTime=1/240` with `queueDepth=8` produce materially better results
     - that shifts the next optimization target from `SCStream` tuning to raw `SkyLight` display-stream property tuning
       and lower-level `SLContentStream` / `CGYDisplayStreamFrameAvailable` exploration

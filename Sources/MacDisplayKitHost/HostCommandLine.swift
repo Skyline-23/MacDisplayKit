@@ -32,6 +32,12 @@ private enum MDKHostCLICommand {
         json: Bool,
         useMetalStimulus: Bool
     )
+    case skyLightDisplayStreamTuningMatrix(
+        displayID: UInt32?,
+        sampleDuration: TimeInterval,
+        json: Bool,
+        useMetalStimulus: Bool
+    )
     case benchmark(
         displayID: UInt32?,
         targetIdentifier: String,
@@ -475,6 +481,29 @@ enum MDKHostCommandLine {
                 fputs("Failed to run raw SkyLight display stream benchmark: \(error)\n", stderr)
                 return 1
             }
+        case .skyLightDisplayStreamTuningMatrix(let displayID, let sampleDuration, let json, let useMetalStimulus):
+            do {
+                let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
+                let report = try controller.benchmarkSkyLightDisplayStreamTuningMatrix(
+                    displayID: resolvedDisplayID,
+                    sampleDuration: sampleDuration,
+                    useMetalStimulus: useMetalStimulus
+                )
+                if json {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    let data = try encoder.encode(report)
+                    if let text = String(data: data, encoding: .utf8) {
+                        print(text)
+                    }
+                } else {
+                    print(MDKHostBenchmarkFormatter.formatSkyLightDisplayStreamTuningMatrixReport(report))
+                }
+                return report.bestEvaluation != nil ? 0 : 2
+            } catch {
+                fputs("Failed to run raw SkyLight display stream tuning matrix: \(error)\n", stderr)
+                return 1
+            }
         case .benchmark(let displayID, let targetIdentifier, let intent, let processingMode, let json):
             guard let display = resolveDisplay(displayID, controller: controller) else {
                 fputs("Unable to resolve a display for the benchmark.\n", stderr)
@@ -732,6 +761,18 @@ enum MDKHostCommandLine {
                 minimumFrameTimeOverride: parseMinimumFrameTime(tokens: tokens),
                 queueDepthOverride: parseQueueDepth(tokens: tokens),
                 showCursor: tokens.contains("--show-cursor"),
+                json: tokens.contains("--json"),
+                useMetalStimulus: tokens.contains("--with-metal-stimulus")
+            )
+        }
+
+        if let displayID = parseOptionalDisplayID(
+            flag: "--experimental-skylight-displaystream-tuning-matrix-display",
+            tokens: tokens
+        ) {
+            return .skyLightDisplayStreamTuningMatrix(
+                displayID: displayID,
+                sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
                 json: tokens.contains("--json"),
                 useMetalStimulus: tokens.contains("--with-metal-stimulus")
             )

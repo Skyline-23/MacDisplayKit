@@ -348,6 +348,128 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(result.cadenceClassification, "120hz-like")
     }
 
+    func testSkyLightDisplayStreamTuningMatrixPrefers120LikeCandidate() {
+        let mixedResult = MDKSkyLightDisplayStreamBenchmarkResult(
+            displayID: 2,
+            status: 0,
+            stopStatus: 0,
+            sampleDuration: 2.0,
+            callbackCount: 200,
+            completeFrameCount: 200,
+            observedFrameRate: 105.0,
+            requested120LikeProperties: false,
+            requestedMinimumFrameTime: 0,
+            requestedQueueDepth: 8,
+            requestedShowCursor: false,
+            appliedPropertyCount: 3,
+            surfaceWidth: 5120,
+            surfaceHeight: 2880,
+            pixelFormat: kCVPixelFormatType_32BGRA,
+            intervalCount: 199,
+            minIntervalMilliseconds: 4.167,
+            maxIntervalMilliseconds: 62.499,
+            intervalHistogram: ["8.3ms": 90],
+            cadenceClassification: "coalesced-or-mixed",
+            frameStatusHistogram: ["frame-complete": 200],
+            notes: []
+        )
+        let fastCandidate = MDKSkyLightDisplayStreamTuningEvaluation(
+            candidate: MDKSkyLightDisplayStreamTuningCandidate(
+                identifier: "baseline-q8",
+                minimumFrameTime: 0,
+                queueDepth: 8,
+                showCursor: false
+            ),
+            result: mixedResult
+        )
+
+        let oneTwentyLikeResult = MDKSkyLightDisplayStreamBenchmarkResult(
+            displayID: 2,
+            status: 0,
+            stopStatus: 0,
+            sampleDuration: 2.0,
+            callbackCount: 198,
+            completeFrameCount: 198,
+            observedFrameRate: 102.0,
+            requested120LikeProperties: false,
+            requestedMinimumFrameTime: 1.0 / 240.0,
+            requestedQueueDepth: 3,
+            requestedShowCursor: false,
+            appliedPropertyCount: 3,
+            surfaceWidth: 5120,
+            surfaceHeight: 2880,
+            pixelFormat: kCVPixelFormatType_32BGRA,
+            intervalCount: 197,
+            minIntervalMilliseconds: 4.167,
+            maxIntervalMilliseconds: 62.499,
+            intervalHistogram: ["8.3ms": 100],
+            cadenceClassification: "120hz-like",
+            frameStatusHistogram: ["frame-complete": 198],
+            notes: []
+        )
+        let oneTwentyLikeCandidate = MDKSkyLightDisplayStreamTuningEvaluation(
+            candidate: MDKSkyLightDisplayStreamTuningCandidate(
+                identifier: "min-frame-240hz-q3",
+                minimumFrameTime: 1.0 / 240.0,
+                queueDepth: 3,
+                showCursor: false
+            ),
+            result: oneTwentyLikeResult
+        )
+
+        let bestIndex = MDKSkyLightDisplayStreamTuningMatrix.bestEvaluationIndex(
+            for: [fastCandidate, oneTwentyLikeCandidate]
+        )
+
+        XCTAssertEqual(bestIndex, 1)
+    }
+
+    func testSkyLightDisplayStreamTuningMatrixReportReturnsBestEvaluation() {
+        let evaluation = MDKSkyLightDisplayStreamTuningEvaluation(
+            candidate: MDKSkyLightDisplayStreamTuningCandidate(
+                identifier: "baseline-q8",
+                minimumFrameTime: 0,
+                queueDepth: 8,
+                showCursor: false
+            ),
+            result: MDKSkyLightDisplayStreamBenchmarkResult(
+                displayID: 2,
+                status: 0,
+                stopStatus: 0,
+                sampleDuration: 2.0,
+                callbackCount: 200,
+                completeFrameCount: 200,
+                observedFrameRate: 100.0,
+                requested120LikeProperties: false,
+                requestedMinimumFrameTime: 0,
+                requestedQueueDepth: 8,
+                requestedShowCursor: false,
+                appliedPropertyCount: 3,
+                surfaceWidth: 5120,
+                surfaceHeight: 2880,
+                pixelFormat: kCVPixelFormatType_32BGRA,
+                intervalCount: 199,
+                minIntervalMilliseconds: 4.167,
+                maxIntervalMilliseconds: 62.499,
+                intervalHistogram: ["8.3ms": 95],
+                cadenceClassification: "120hz-like",
+                frameStatusHistogram: ["frame-complete": 200],
+                notes: []
+            )
+        )
+
+        let report = MDKSkyLightDisplayStreamTuningMatrixReport(
+            displayID: 2,
+            sampleDuration: 2.0,
+            useMetalStimulus: true,
+            evaluations: [evaluation],
+            bestEvaluationIndex: 0,
+            notes: []
+        )
+
+        XCTAssertEqual(report.bestEvaluation, evaluation)
+    }
+
     func testScreenCaptureKitProxyHandshakeTraceRoundTripsThroughJSON() throws {
         let trace = MDKScreenCaptureKitProxyHandshakeTrace(
             displayID: 42,

@@ -389,6 +389,38 @@ enum MDKHostBenchmarkFormatter {
         return lines.joined(separator: "\n")
     }
 
+    static func formatSkyLightDisplayStreamTuningMatrixReport(
+        _ report: MDKSkyLightDisplayStreamTuningMatrixReport
+    ) -> String {
+        var lines: [String] = []
+        lines.append("Raw SkyLight display stream tuning matrix")
+        lines.append("Display ID: \(report.displayID)")
+        lines.append(String(format: "Sample duration: %.3fs", report.sampleDuration))
+        lines.append("Metal stimulus: \(report.useMetalStimulus ? "yes" : "no")")
+        if let bestEvaluation = report.bestEvaluation {
+            lines.append(
+                "Best candidate: \(bestEvaluation.candidate.identifier) fps=\(String(format: "%.2f", bestEvaluation.result.observedFrameRate)) cadence=\(bestEvaluation.result.cadenceClassification)"
+            )
+        } else {
+            lines.append("Best candidate: none")
+        }
+        lines.append("")
+        lines.append("Evaluations:")
+        for evaluation in report.evaluations {
+            lines.append(
+                "  - \(evaluation.candidate.identifier): minFrameTime=\(String(format: "%.6f", evaluation.candidate.minimumFrameTime)) queueDepth=\(evaluation.candidate.queueDepth) showCursor=\(evaluation.candidate.showCursor ? "yes" : "no") fps=\(String(format: "%.2f", evaluation.result.observedFrameRate)) cadence=\(evaluation.result.cadenceClassification)"
+            )
+        }
+        if !report.notes.isEmpty {
+            lines.append("")
+            lines.append("Notes:")
+            for note in report.notes {
+                lines.append("  - \(note)")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
     static func formatPrivateCaptureProbeResult(
         _ result: MDKPrivateCaptureProbeResult
     ) -> String {
