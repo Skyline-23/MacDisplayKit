@@ -28,6 +28,8 @@ private enum MDKHostCLICommand {
         request120LikeProperties: Bool,
         minimumFrameTimeOverride: Double?,
         queueDepthOverride: Int?,
+        surfaceWidthOverride: Int?,
+        surfaceHeightOverride: Int?,
         processingMode: MDKCaptureBenchmarkProcessingMode?,
         showCursor: Bool,
         json: Bool,
@@ -444,6 +446,8 @@ enum MDKHostCommandLine {
             let request120LikeProperties,
             let minimumFrameTimeOverride,
             let queueDepthOverride,
+            let surfaceWidthOverride,
+            let surfaceHeightOverride,
             let processingMode,
             let showCursor,
             let json,
@@ -456,7 +460,11 @@ enum MDKHostCommandLine {
                 defer { stimulus?.stop() }
                 let result: MDKSkyLightDisplayStreamBenchmarkResult
                 let request120LikeCandidate = MDKSkyLightDisplayStreamTuningMatrix.request120LikeCandidate
-                if minimumFrameTimeOverride != nil || queueDepthOverride != nil || showCursor {
+                if minimumFrameTimeOverride != nil ||
+                    queueDepthOverride != nil ||
+                    surfaceWidthOverride != nil ||
+                    surfaceHeightOverride != nil ||
+                    showCursor {
                     let resolvedMinimumFrameTime = minimumFrameTimeOverride
                         ?? (request120LikeProperties ? request120LikeCandidate.minimumFrameTime : 0.0)
                     let resolvedQueueDepth = queueDepthOverride
@@ -468,6 +476,8 @@ enum MDKHostCommandLine {
                             minimumFrameTime: resolvedMinimumFrameTime,
                             queueDepth: resolvedQueueDepth,
                             showCursor: showCursor,
+                            outputWidth: surfaceWidthOverride,
+                            outputHeight: surfaceHeightOverride,
                             processingMode: processingMode
                         )
                         if json {
@@ -487,7 +497,9 @@ enum MDKHostCommandLine {
                         sampleDuration: sampleDuration,
                         minimumFrameTime: resolvedMinimumFrameTime,
                         queueDepth: resolvedQueueDepth,
-                        showCursor: showCursor
+                        showCursor: showCursor,
+                        outputWidth: surfaceWidthOverride,
+                        outputHeight: surfaceHeightOverride
                     )
                 } else {
                     if let processingMode {
@@ -497,6 +509,8 @@ enum MDKHostCommandLine {
                             minimumFrameTime: request120LikeProperties ? request120LikeCandidate.minimumFrameTime : 0.0,
                             queueDepth: request120LikeProperties ? request120LikeCandidate.queueDepth : 3,
                             showCursor: false,
+                            outputWidth: surfaceWidthOverride,
+                            outputHeight: surfaceHeightOverride,
                             processingMode: processingMode
                         )
                         if json {
@@ -834,6 +848,8 @@ enum MDKHostCommandLine {
                 request120LikeProperties: tokens.contains("--request-120-like"),
                 minimumFrameTimeOverride: parseMinimumFrameTime(tokens: tokens),
                 queueDepthOverride: parseQueueDepth(tokens: tokens),
+                surfaceWidthOverride: parseSurfaceDimension(flag: "--surface-width", tokens: tokens),
+                surfaceHeightOverride: parseSurfaceDimension(flag: "--surface-height", tokens: tokens),
                 processingMode: parseProcessingMode(tokens: tokens),
                 showCursor: tokens.contains("--show-cursor"),
                 json: tokens.contains("--json"),
@@ -949,6 +965,17 @@ enum MDKHostCommandLine {
 
     private static func parseQueueDepth(tokens: [String]) -> Int? {
         guard let index = tokens.firstIndex(of: "--queue-depth"),
+              tokens.indices.contains(index + 1),
+              let value = Int(tokens[index + 1]),
+              value > 0 else {
+            return nil
+        }
+
+        return value
+    }
+
+    private static func parseSurfaceDimension(flag: String, tokens: [String]) -> Int? {
+        guard let index = tokens.firstIndex(of: flag),
               tokens.indices.contains(index + 1),
               let value = Int(tokens[index + 1]),
               value > 0 else {

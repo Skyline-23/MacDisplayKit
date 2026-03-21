@@ -12556,18 +12556,44 @@ static BOOL MDKResolveDisplayModeSize(
     size_t *widthOut,
     size_t *heightOut
 ) {
-    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(static_cast<CGDirectDisplayID>(displayID));
-    if (mode == nil) {
+    NSArray *modes = CFBridgingRelease(
+        CGDisplayCopyAllDisplayModes(static_cast<CGDirectDisplayID>(displayID), nil)
+    );
+    if (modes.count == 0) {
+        return NO;
+    }
+
+    size_t bestWidth = 0;
+    size_t bestHeight = 0;
+    double bestRefreshRate = 0.0;
+
+    for (id candidate in modes) {
+        CGDisplayModeRef mode = (__bridge CGDisplayModeRef) candidate;
+        const size_t candidateWidth = std::max(static_cast<size_t>(CGDisplayModeGetPixelWidth(mode)), static_cast<size_t>(1));
+        const size_t candidateHeight = std::max(static_cast<size_t>(CGDisplayModeGetPixelHeight(mode)), static_cast<size_t>(1));
+        const double candidateArea = static_cast<double>(candidateWidth) * static_cast<double>(candidateHeight);
+        const double bestArea = static_cast<double>(bestWidth) * static_cast<double>(bestHeight);
+        const double candidateRefreshRate = CGDisplayModeGetRefreshRate(mode);
+
+        if (candidateArea > bestArea ||
+            (candidateArea == bestArea && candidateRefreshRate > bestRefreshRate)) {
+            bestWidth = candidateWidth;
+            bestHeight = candidateHeight;
+            bestRefreshRate = candidateRefreshRate;
+        }
+    }
+
+    if (bestWidth == 0 || bestHeight == 0) {
         return NO;
     }
 
     if (widthOut != nullptr) {
-        *widthOut = std::max(static_cast<size_t>(CGDisplayModeGetPixelWidth(mode)), static_cast<size_t>(1));
+        *widthOut = bestWidth;
     }
     if (heightOut != nullptr) {
-        *heightOut = std::max(static_cast<size_t>(CGDisplayModeGetPixelHeight(mode)), static_cast<size_t>(1));
+        *heightOut = bestHeight;
     }
-    CFRelease(mode);
+
     return YES;
 }
 
@@ -12615,6 +12641,8 @@ static BOOL MDKPopulateSkyLightDisplayStreamProperties(
                  minimumFrameTime:(double)minimumFrameTime
                        queueDepth:(NSInteger)queueDepth
                        showCursor:(BOOL)showCursor
+                      outputWidth:(NSUInteger)outputWidth
+                     outputHeight:(NSUInteger)outputHeight
                       pixelFormat:(uint32_t)pixelFormat
                      frameHandler:(MDKShimSkyLightDisplayStreamFrameHandler)frameHandler {
     self = [super init];
@@ -12626,6 +12654,8 @@ static BOOL MDKPopulateSkyLightDisplayStreamProperties(
     _minimumFrameTime = std::max(minimumFrameTime, 0.0);
     _queueDepth = std::max<NSInteger>(queueDepth, 1);
     _showCursor = showCursor;
+    _outputWidth = outputWidth;
+    _outputHeight = outputHeight;
     _pixelFormat = pixelFormat;
     _frameHandler = [frameHandler copy];
     _queue = dispatch_queue_create("com.skyline23.MacDisplayKit.skylight.displaystream.session", DISPATCH_QUEUE_SERIAL);
@@ -12670,17 +12700,19 @@ static BOOL MDKPopulateSkyLightDisplayStreamProperties(
         return NO;
     }
 
-    size_t width = 0;
-    size_t height = 0;
-    if (!MDKResolveDisplayModeSize(_displayID, &width, &height)) {
-        if (error != nullptr) {
-            *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
-                                         code:2
-                                     userInfo:@{
-                                         NSLocalizedDescriptionKey: @"Unable to resolve the current display mode for the requested display."
-                                     }];
+    size_t width = std::max(static_cast<size_t>(_outputWidth), static_cast<size_t>(0));
+    size_t height = std::max(static_cast<size_t>(_outputHeight), static_cast<size_t>(0));
+    if (width == 0 || height == 0) {
+        if (!MDKResolveDisplayModeSize(_displayID, &width, &height)) {
+            if (error != nullptr) {
+                *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
+                                             code:2
+                                         userInfo:@{
+                                             NSLocalizedDescriptionKey: @"Unable to resolve the requested display capture dimensions."
+                                         }];
+            }
+            return NO;
         }
-        return NO;
     }
 
     NSMutableDictionary *streamProperties = [NSMutableDictionary dictionary];
@@ -12757,6 +12789,8 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
     double minimumFrameTime,
     NSInteger queueDepth,
     BOOL showCursor,
+    NSUInteger outputWidth,
+    NSUInteger outputHeight,
     NSError * _Nullable * _Nullable error
 ) {
     using MDKSLDisplayStreamCreateWithDispatchQueueFn = CGDisplayStreamRef (*)(
@@ -12791,17 +12825,19 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
         return nil;
     }
 
-    size_t width = 0;
-    size_t height = 0;
-    if (!MDKResolveDisplayModeSize(displayID, &width, &height)) {
-        if (error != nullptr) {
-            *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
-                                         code:2
-                                     userInfo:@{
-                                         NSLocalizedDescriptionKey: @"Unable to resolve the current display mode for the requested display."
-                                     }];
+    size_t width = std::max(static_cast<size_t>(outputWidth), static_cast<size_t>(0));
+    size_t height = std::max(static_cast<size_t>(outputHeight), static_cast<size_t>(0));
+    if (width == 0 || height == 0) {
+        if (!MDKResolveDisplayModeSize(displayID, &width, &height)) {
+            if (error != nullptr) {
+                *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
+                                             code:2
+                                         userInfo:@{
+                                             NSLocalizedDescriptionKey: @"Unable to resolve the requested display capture dimensions."
+                                         }];
+            }
+            return nil;
         }
-        return nil;
     }
 
     NSMutableDictionary *streamProperties = [NSMutableDictionary dictionary];
@@ -12908,7 +12944,13 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
     [notes addObject:[NSString stringWithFormat:@"requestedMinimumFrameTime=%.6f", requestedMinimumFrameTime]];
     [notes addObject:[NSString stringWithFormat:@"requestedQueueDepth=%ld", static_cast<long>(requestedQueueDepth)]];
     [notes addObject:[NSString stringWithFormat:@"requestedShowCursor=%@", requestedShowCursor ? @"true" : @"false"]];
+    if (outputWidth > 0 && outputHeight > 0) {
+        [notes addObject:[NSString stringWithFormat:@"requestedOutputDimensions=%lux%lu", static_cast<unsigned long>(outputWidth), static_cast<unsigned long>(outputHeight)]];
+    } else {
+        [notes addObject:@"requestedOutputDimensions=panel-native-auto"];
+    }
     [notes addObject:[NSString stringWithFormat:@"appliedPropertyCount=%lu", static_cast<unsigned long>(appliedPropertyCount)]];
+    [notes addObject:[NSString stringWithFormat:@"resolvedCaptureDimensions=%zux%zu", width, height]];
     if (appliedPropertyCount < 3) {
         [notes addObject:@"One or more CGDisplayStream property keys were unavailable, so the benchmark ran with a reduced property dictionary."];
     }
@@ -12972,6 +13014,8 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightDisplayStreamBenchm
         request120LikeProperties ? MDKSLDisplayStreamTunedMinimumFrameTime : 0.0,
         request120LikeProperties ? MDKSLDisplayStreamTunedQueueDepth : 3,
         NO,
+        0,
+        0,
         error
     );
 }
@@ -12982,6 +13026,8 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightDisplayStreamBenchm
     double minimumFrameTime,
     NSInteger queueDepth,
     BOOL showCursor,
+    NSUInteger outputWidth,
+    NSUInteger outputHeight,
     NSError * _Nullable * _Nullable error
 ) {
     return MDKCreateSkyLightDisplayStreamBenchmarkPayload(
@@ -12990,6 +13036,8 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightDisplayStreamBenchm
         minimumFrameTime,
         queueDepth,
         showCursor,
+        outputWidth,
+        outputHeight,
         error
     );
 }

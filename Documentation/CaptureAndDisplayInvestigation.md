@@ -1675,3 +1675,15 @@ Interpretation:
     - the old `request-120-like` shorthand was stale because it still requested `queueDepth=8`
     - on the current `5120x2880 @ 240Hz` scaled desktop, `queueDepth=8` correlates with a large drop in raw callback cadence
     - concurrent `WindowServer`/`ColorSync` load is still worth tracking, but the first concrete fix is to retune the shorthand to `min-frame-240hz-q3`
+- 2026-03-21 raw `SLDisplayStream` now resolves panel-native dimensions by default, while also allowing explicit output-dimension overrides
+  - mode inventory on `AW2725Q` confirms:
+    - current scaled mode reports `5120x2880` backing at `2560x1440 @ 240Hz`
+    - panel-native mode inventory still tops out at `3840x2160 @ 240Hz`
+  - the benchmark now defaults to the panel-native mode dimensions rather than blindly following the scaled backing size
+  - explicit comparison under the current host load with `request-120-like + q3 + Metal stimulus`:
+    - `requestedOutputDimensions=3840x2160` -> `observedFrameRate≈36.76`
+    - `requestedOutputDimensions=5120x2880` -> `observedFrameRate≈36.86`
+  - current interpretation:
+    - using panel-native dimensions is the correct default policy for a generic display kit
+    - but the present `~37 fps` ceiling is not explained by the `3840 vs 5120` choice alone
+    - the dominant current limiter remains host compositor/color-management load, not just the stream's destination dimensions

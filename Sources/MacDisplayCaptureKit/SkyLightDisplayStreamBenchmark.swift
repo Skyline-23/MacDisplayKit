@@ -159,15 +159,21 @@ public enum MDKSkyLightDisplayStreamBenchmark {
         sampleDuration: TimeInterval,
         minimumFrameTime: Double,
         queueDepth: Int,
-        showCursor: Bool
+        showCursor: Bool,
+        outputWidth: Int? = nil,
+        outputHeight: Int? = nil
     ) throws -> MDKSkyLightDisplayStreamBenchmarkResult {
         var nsError: NSError?
+        let resolvedOutputWidth = UInt(max(outputWidth ?? 0, 0))
+        let resolvedOutputHeight = UInt(max(outputHeight ?? 0, 0))
         guard let payload = MDKShimVideoSkyLightDisplayStreamBenchmarkWithParameters(
             UInt(displayID),
             sampleDuration,
             minimumFrameTime,
             queueDepth,
             showCursor,
+            resolvedOutputWidth,
+            resolvedOutputHeight,
             &nsError
         ) else {
             if let nsError {

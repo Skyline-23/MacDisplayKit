@@ -293,6 +293,8 @@ public enum MDKSkyLightDisplayStreamProcessingBenchmark {
         minimumFrameTime: Double,
         queueDepth: Int,
         showCursor: Bool,
+        outputWidth: Int? = nil,
+        outputHeight: Int? = nil,
         processingMode: MDKCaptureBenchmarkProcessingMode
     ) throws -> MDKSkyLightDisplayStreamProcessingBenchmarkResult {
         let requestedMinimumFrameTime = max(minimumFrameTime, 0)
@@ -302,12 +304,16 @@ public enum MDKSkyLightDisplayStreamProcessingBenchmark {
         let pixelFormat: OSType = processingMode.videoEncoderCodec != nil
             ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
             : kCVPixelFormatType_32BGRA
+        let resolvedOutputWidth = UInt(max(outputWidth ?? 0, 0))
+        let resolvedOutputHeight = UInt(max(outputHeight ?? 0, 0))
 
         let session = MDKShimSkyLightDisplayStreamSession(
             displayID: UInt(displayID),
             minimumFrameTime: requestedMinimumFrameTime,
             queueDepth: requestedQueueDepth,
             showCursor: showCursor,
+            outputWidth: resolvedOutputWidth,
+            outputHeight: resolvedOutputHeight,
             pixelFormat: pixelFormat
         ) { status, displayTime, frameSurface in
             recorder.record(

@@ -19,6 +19,8 @@ typedef void (^MDKShimSkyLightDisplayStreamFrameHandler)(
                  minimumFrameTime:(double)minimumFrameTime
                        queueDepth:(NSInteger)queueDepth
                        showCursor:(BOOL)showCursor
+                      outputWidth:(NSUInteger)outputWidth
+                     outputHeight:(NSUInteger)outputHeight
                       pixelFormat:(uint32_t)pixelFormat
                      frameHandler:(MDKShimSkyLightDisplayStreamFrameHandler)frameHandler NS_DESIGNATED_INITIALIZER;
 
@@ -26,6 +28,8 @@ typedef void (^MDKShimSkyLightDisplayStreamFrameHandler)(
 @property (nonatomic, readonly) double minimumFrameTime;
 @property (nonatomic, readonly) NSInteger queueDepth;
 @property (nonatomic, readonly) BOOL showCursor;
+@property (nonatomic, readonly) NSUInteger outputWidth;
+@property (nonatomic, readonly) NSUInteger outputHeight;
 @property (nonatomic, readonly) uint32_t pixelFormat;
 @property (nonatomic, readonly, getter=isRunning) BOOL running;
 
@@ -94,6 +98,8 @@ FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightD
     double minimumFrameTime,
     NSInteger queueDepth,
     BOOL showCursor,
+    NSUInteger outputWidth,
+    NSUInteger outputHeight,
     NSError * _Nullable * _Nullable error
 );
 FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoTraceScreenCaptureKitProxyHandshake(
