@@ -1268,6 +1268,10 @@ Interpretation:
       it is hitting `_SCRemoteQueue_Enqueue` failures while the host-side passive trace remains `60hz-like`
     - all observed failures in the latest run came from a single replayd callsite offset (`senderProgramCounter=766532`)
       rather than from multiple producer sites
+    - static arm64e disassembly of `/usr/libexec/replayd` narrows that offset to the enqueue-error logger region:
+      - `0x1000bb1f4 .. 0x1000bb258` logs `"Error occurred when enqueuing data"`
+      - `0x1000bb2b8 .. 0x1000bb324` logs `"Cannot Enqueue on an invalid remoteQueue %p"`
+      - `0x1000bb384 .. 0x1000bb408` logs `"Queue is full. Resetting...."`
     - that makes the next reverse-engineering target sharper:
       the producer-side queue policy / enqueue failure reason inside `replayd` and `CMCapture`,
       especially around `_SCRemoteQueue_Enqueue` and `FigRemoteQueueSender`
