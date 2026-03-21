@@ -788,6 +788,10 @@ using MDKIOSurfaceLookupFromMachPortFn = IOSurfaceRef (*)(mach_port_t);
 using MDKIOSurfaceCreateMachPortFn = mach_port_t (*)(IOSurfaceRef);
 using MDKXPCPipeCreateFn = xpc_object_t (*)(const char *, std::uint64_t);
 using MDKXPCPipeSimpleRoutineFn = int (*)(xpc_object_t, xpc_object_t, xpc_object_t *);
+using MDKXPCConnectionCreateMachServiceFn = xpc_connection_t (*)(const char *, dispatch_queue_t, std::uint64_t);
+using MDKXPCConnectionSendMessageFn = void (*)(xpc_connection_t, xpc_object_t);
+using MDKXPCConnectionSendMessageWithReplyFn = void (*)(xpc_connection_t, xpc_object_t, dispatch_queue_t, xpc_handler_t);
+using MDKXPCConnectionSendMessageWithReplySyncFn = xpc_object_t (*)(xpc_connection_t, xpc_object_t);
 using MDKXPCFDDupFn = int (*)(xpc_object_t);
 using MDKXPCDictionaryDupFDFn = int (*)(xpc_object_t, const char *);
 using MDKDispatchSourceHandlerBlockInvokeFn = void (*)(void *);
@@ -807,6 +811,10 @@ static MDKIOSurfaceLookupFromMachPortFn MDKOriginalIOSurfaceLookupFromMachPort =
 static MDKIOSurfaceCreateMachPortFn MDKOriginalIOSurfaceCreateMachPort = nullptr;
 static MDKXPCPipeCreateFn MDKOriginalXPCPipeCreate = nullptr;
 static MDKXPCPipeSimpleRoutineFn MDKOriginalXPCPipeSimpleRoutine = nullptr;
+static MDKXPCConnectionCreateMachServiceFn MDKOriginalXPCConnectionCreateMachService = nullptr;
+static MDKXPCConnectionSendMessageFn MDKOriginalXPCConnectionSendMessage = nullptr;
+static MDKXPCConnectionSendMessageWithReplyFn MDKOriginalXPCConnectionSendMessageWithReply = nullptr;
+static MDKXPCConnectionSendMessageWithReplySyncFn MDKOriginalXPCConnectionSendMessageWithReplySync = nullptr;
 static MDKXPCFDDupFn MDKOriginalXPCFDDup = nullptr;
 static MDKXPCDictionaryDupFDFn MDKOriginalXPCDictionaryDupFD = nullptr;
 thread_local NSUInteger MDKInterposedFIFOReadDepth = 0;
@@ -2071,6 +2079,12 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"ioSurfaceMachLookupEventCount": @0,
             @"ioSurfaceMachCreateEventCount": @0,
             @"ioSurfaceMachInterposeEventCount": @0,
+            @"xpcConnectionCreateMachServiceEventCount": @0,
+            @"xpcConnectionSendMessageEventCount": @0,
+            @"xpcConnectionSendMessageWithReplyEventCount": @0,
+            @"xpcConnectionSendMessageWithReplySyncEventCount": @0,
+            @"xpcConnectionInterposeEventCount": @0,
+            @"xpcConnectionServiceHistogram": [NSMutableDictionary dictionary],
             @"xpcPipeCreateEventCount": @0,
             @"xpcPipeSimpleRoutineEventCount": @0,
             @"xpcPipeInterposeEventCount": @0,
@@ -3036,6 +3050,75 @@ static void MDKRecordIOSurfaceMachPortEvent(NSString *kind, mach_port_t port, IO
     NSMutableDictionary<NSString *, id> *payload = [@{
         @"port": @(port),
         @"surface": MDKSummarizeIOSurface(surface),
+        @"wrapperSequenceID": MDKCurrentVideoQueueWrapperSequence() > 0 ? @(MDKCurrentVideoQueueWrapperSequence()) : [NSNull null],
+        @"wrapperDepth": @(MDKCurrentVideoQueueWrapperSequenceDepth()),
+    } mutableCopy];
+    if (overallEventCount <= 8) {
+        payload[@"backtrace"] = MDKCopyBacktraceFrames(10, 3);
+    }
+    MDKRecordSCKTraceEvent(kind, payload);
+}
+
+static void MDKRecordXPCConnectionInterposeEvent(
+    NSString *kind,
+    xpc_connection_t connection,
+    const char *serviceName,
+    std::uint64_t flags,
+    xpc_object_t message,
+    xpc_object_t reply
+) {
+    NSDictionary<NSString *, id> *messageSummary = MDKCopyCompactXPCSummary(message);
+    NSDictionary<NSString *, id> *replySummary = MDKCopyCompactXPCSummary(reply);
+    NSDictionary<NSString *, id> *connectionSummary = MDKSummarizeXPCObject(connection);
+    NSString *service = serviceName != nullptr ? [NSString stringWithUTF8String:serviceName] : nil;
+
+    BOOL shouldRecord = NO;
+    NSUInteger overallEventCount = 0;
+    NSString *counterKey = @"xpcConnectionSendMessageEventCount";
+    if ([kind isEqualToString:@"xpc-connection-create-mach-service"]) {
+        counterKey = @"xpcConnectionCreateMachServiceEventCount";
+    } else if ([kind isEqualToString:@"xpc-connection-send-message-with-reply"]) {
+        counterKey = @"xpcConnectionSendMessageWithReplyEventCount";
+    } else if ([kind isEqualToString:@"xpc-connection-send-message-with-reply-sync"]) {
+        counterKey = @"xpcConnectionSendMessageWithReplySyncEventCount";
+    }
+
+    BOOL interesting = NO;
+    NSString *connectionDescription =
+        [connectionSummary[@"description"] isKindOfClass:[NSString class]] ? connectionSummary[@"description"] : nil;
+    if ((service != nil && [service localizedCaseInsensitiveContainsString:@"replay"]) ||
+        (service != nil && [service localizedCaseInsensitiveContainsString:@"screen"]) ||
+        (connectionDescription != nil && [connectionDescription localizedCaseInsensitiveContainsString:@"replay"]) ||
+        (connectionDescription != nil && [connectionDescription localizedCaseInsensitiveContainsString:@"screen"]) ||
+        MDKCompactXPCSummaryContainsInterestingQueueArtifacts(messageSummary) ||
+        MDKCompactXPCSummaryContainsInterestingQueueArtifacts(replySummary)) {
+        interesting = YES;
+    }
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            MDKActiveSCKTraceState[counterKey] =
+                @([MDKActiveSCKTraceState[counterKey] unsignedIntegerValue] + 1);
+            overallEventCount = [MDKActiveSCKTraceState[@"xpcConnectionInterposeEventCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"xpcConnectionInterposeEventCount"] = @(overallEventCount);
+            if (service != nil) {
+                NSMutableDictionary<NSString *, NSNumber *> *histogram = MDKActiveSCKTraceState[@"xpcConnectionServiceHistogram"];
+                histogram[service] = @([histogram[service] unsignedIntegerValue] + 1);
+            }
+            shouldRecord = interesting || overallEventCount <= 32;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    NSMutableDictionary<NSString *, id> *payload = [@{
+        @"serviceName": service ?: [NSNull null],
+        @"flags": @(flags),
+        @"connection": connectionSummary ?: @{},
+        @"message": messageSummary ?: @{},
+        @"reply": replySummary ?: @{},
+        @"interesting": @(interesting),
         @"wrapperSequenceID": MDKCurrentVideoQueueWrapperSequence() > 0 ? @(MDKCurrentVideoQueueWrapperSequence()) : [NSNull null],
         @"wrapperDepth": @(MDKCurrentVideoQueueWrapperSequenceDepth()),
     } mutableCopy];
@@ -4484,6 +4567,10 @@ extern "C" ssize_t MDKInterposedWriteNoCancel(int fd, const void *buffer, size_t
 extern "C" int MDKInterposedPipe(int fds[2]);
 extern "C" IOSurfaceRef MDKInterposedIOSurfaceLookupFromMachPort(mach_port_t port);
 extern "C" mach_port_t MDKInterposedIOSurfaceCreateMachPort(IOSurfaceRef surface);
+extern "C" xpc_connection_t MDKInterposedXPCConnectionCreateMachService(const char *name, dispatch_queue_t targetq, std::uint64_t flags);
+extern "C" void MDKInterposedXPCConnectionSendMessage(xpc_connection_t connection, xpc_object_t message);
+extern "C" void MDKInterposedXPCConnectionSendMessageWithReply(xpc_connection_t connection, xpc_object_t message, dispatch_queue_t replyq, xpc_handler_t handler);
+extern "C" xpc_object_t MDKInterposedXPCConnectionSendMessageWithReplySync(xpc_connection_t connection, xpc_object_t message);
 extern "C" xpc_object_t MDKInterposedXPCPipeCreate(const char *name, std::uint64_t flags);
 extern "C" int MDKInterposedXPCPipeSimpleRoutine(xpc_object_t pipe, xpc_object_t message, xpc_object_t *reply);
 extern "C" int MDKInterposedXPCFDDup(xpc_object_t object);
@@ -5063,6 +5150,104 @@ static void MDKInstallIOSurfaceMachPortInterposes(void) {
     });
 }
 
+static void MDKInstallXPCConnectionInterposes(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        using MDKDyldDynamicInterposeFn = void (*)(const mach_header *, const MDKDyldInterposeTuple[], size_t);
+
+        MDKSetSCKTraceStateValue(@"xpcConnectionInterposeAttempted", @YES);
+        auto dynamicInterpose =
+            reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "dyld_dynamic_interpose"));
+        if (dynamicInterpose == nullptr) {
+            dynamicInterpose =
+                reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "_dyld_dynamic_interpose"));
+        }
+        MDKSetSCKTraceStateValue(@"xpcConnectionInterposeDyldAvailable", @(dynamicInterpose != nullptr));
+        if (dynamicInterpose == nullptr) {
+            return;
+        }
+
+        MDKOriginalXPCConnectionCreateMachService =
+            reinterpret_cast<MDKXPCConnectionCreateMachServiceFn>(dlsym(RTLD_DEFAULT, "xpc_connection_create_mach_service"));
+        MDKOriginalXPCConnectionSendMessage =
+            reinterpret_cast<MDKXPCConnectionSendMessageFn>(dlsym(RTLD_DEFAULT, "xpc_connection_send_message"));
+        MDKOriginalXPCConnectionSendMessageWithReply =
+            reinterpret_cast<MDKXPCConnectionSendMessageWithReplyFn>(dlsym(RTLD_DEFAULT, "xpc_connection_send_message_with_reply"));
+        MDKOriginalXPCConnectionSendMessageWithReplySync =
+            reinterpret_cast<MDKXPCConnectionSendMessageWithReplySyncFn>(dlsym(RTLD_DEFAULT, "xpc_connection_send_message_with_reply_sync"));
+        MDKSetSCKTraceStateValue(@"xpcConnectionCreateMachServiceSymbolAvailable", @(MDKOriginalXPCConnectionCreateMachService != nullptr));
+        MDKSetSCKTraceStateValue(@"xpcConnectionSendMessageSymbolAvailable", @(MDKOriginalXPCConnectionSendMessage != nullptr));
+        MDKSetSCKTraceStateValue(@"xpcConnectionSendMessageWithReplySymbolAvailable", @(MDKOriginalXPCConnectionSendMessageWithReply != nullptr));
+        MDKSetSCKTraceStateValue(@"xpcConnectionSendMessageWithReplySyncSymbolAvailable", @(MDKOriginalXPCConnectionSendMessageWithReplySync != nullptr));
+        if (MDKOriginalXPCConnectionCreateMachService == nullptr &&
+            MDKOriginalXPCConnectionSendMessage == nullptr &&
+            MDKOriginalXPCConnectionSendMessageWithReply == nullptr &&
+            MDKOriginalXPCConnectionSendMessageWithReplySync == nullptr) {
+            MDKAppendSCKTraceNote(@"No xpc_connection send/create symbols were available, so xpc connection interpose stayed disabled.");
+            return;
+        }
+
+        MDKDyldInterposeTuple interposes[4] = {};
+        size_t interposeCount = 0;
+        if (MDKOriginalXPCConnectionCreateMachService != nullptr) {
+            interposes[interposeCount++] = {
+                reinterpret_cast<const void *>(&MDKInterposedXPCConnectionCreateMachService),
+                reinterpret_cast<const void *>(MDKOriginalXPCConnectionCreateMachService),
+            };
+        }
+        if (MDKOriginalXPCConnectionSendMessage != nullptr) {
+            interposes[interposeCount++] = {
+                reinterpret_cast<const void *>(&MDKInterposedXPCConnectionSendMessage),
+                reinterpret_cast<const void *>(MDKOriginalXPCConnectionSendMessage),
+            };
+        }
+        if (MDKOriginalXPCConnectionSendMessageWithReply != nullptr) {
+            interposes[interposeCount++] = {
+                reinterpret_cast<const void *>(&MDKInterposedXPCConnectionSendMessageWithReply),
+                reinterpret_cast<const void *>(MDKOriginalXPCConnectionSendMessageWithReply),
+            };
+        }
+        if (MDKOriginalXPCConnectionSendMessageWithReplySync != nullptr) {
+            interposes[interposeCount++] = {
+                reinterpret_cast<const void *>(&MDKInterposedXPCConnectionSendMessageWithReplySync),
+                reinterpret_cast<const void *>(MDKOriginalXPCConnectionSendMessageWithReplySync),
+            };
+        }
+
+        NSUInteger installedImageCount = 0;
+        const mach_header *screenCaptureKitHeader =
+            MDKFindLoadedImageHeader("/System/Library/Frameworks/ScreenCaptureKit.framework/");
+        if (screenCaptureKitHeader != nullptr) {
+            dynamicInterpose(screenCaptureKitHeader, interposes, interposeCount);
+            installedImageCount += 1;
+        }
+        const mach_header *cmCaptureHeader =
+            MDKFindLoadedImageHeader("/System/Library/PrivateFrameworks/CMCapture.framework/");
+        if (cmCaptureHeader != nullptr) {
+            dynamicInterpose(cmCaptureHeader, interposes, interposeCount);
+            installedImageCount += 1;
+        }
+        const mach_header *libxpcHeader =
+            MDKFindLoadedImageHeader("/usr/lib/system/libxpc.dylib");
+        if (libxpcHeader != nullptr) {
+            dynamicInterpose(libxpcHeader, interposes, interposeCount);
+            installedImageCount += 1;
+        }
+
+        MDKSetSCKTraceStateValue(@"xpcConnectionInterposeInstalledImageCount", @(installedImageCount));
+        MDKSetSCKTraceStateValue(@"xpcConnectionInterposeInstalledSymbolCount", @(interposeCount));
+        MDKSetSCKTraceStateValue(@"xpcConnectionInterposeInstalled", @(installedImageCount > 0));
+        if (installedImageCount == 0) {
+            MDKAppendSCKTraceNote(@"ScreenCaptureKit, CMCapture, and libxpc were absent from the loaded image list, so xpc connection interpose stayed disabled.");
+            return;
+        }
+
+        MDKAppendSCKTraceNote([NSString stringWithFormat:@"Installed xpc connection interpose on %lu image(s) using %lu symbol(s).",
+                               (unsigned long)installedImageCount,
+                               (unsigned long)interposeCount]);
+    });
+}
+
 static void (*MDKResolveOriginalFigRemoteQueueReceiverSetHandler(void))(void *, dispatch_queue_t, id) {
     static void (*original)(void *, dispatch_queue_t, id) = nullptr;
     static dispatch_once_t onceToken;
@@ -5390,6 +5575,44 @@ extern "C" mach_port_t MDKInterposedIOSurfaceCreateMachPort(IOSurfaceRef surface
     const mach_port_t port = MDKOriginalIOSurfaceCreateMachPort(surface);
     MDKRecordIOSurfaceMachPortEvent(@"iosurface-create-mach-port", port, surface);
     return port;
+}
+
+extern "C" xpc_connection_t MDKInterposedXPCConnectionCreateMachService(const char *name, dispatch_queue_t targetq, std::uint64_t flags) {
+    if (MDKOriginalXPCConnectionCreateMachService == nullptr) {
+        return nullptr;
+    }
+
+    xpc_connection_t connection = MDKOriginalXPCConnectionCreateMachService(name, targetq, flags);
+    MDKRecordXPCConnectionInterposeEvent(@"xpc-connection-create-mach-service", connection, name, flags, nullptr, nullptr);
+    return connection;
+}
+
+extern "C" void MDKInterposedXPCConnectionSendMessage(xpc_connection_t connection, xpc_object_t message) {
+    if (MDKOriginalXPCConnectionSendMessage == nullptr) {
+        return;
+    }
+
+    MDKRecordXPCConnectionInterposeEvent(@"xpc-connection-send-message", connection, nullptr, 0, message, nullptr);
+    MDKOriginalXPCConnectionSendMessage(connection, message);
+}
+
+extern "C" void MDKInterposedXPCConnectionSendMessageWithReply(xpc_connection_t connection, xpc_object_t message, dispatch_queue_t replyq, xpc_handler_t handler) {
+    if (MDKOriginalXPCConnectionSendMessageWithReply == nullptr) {
+        return;
+    }
+
+    MDKRecordXPCConnectionInterposeEvent(@"xpc-connection-send-message-with-reply", connection, nullptr, 0, message, nullptr);
+    MDKOriginalXPCConnectionSendMessageWithReply(connection, message, replyq, handler);
+}
+
+extern "C" xpc_object_t MDKInterposedXPCConnectionSendMessageWithReplySync(xpc_connection_t connection, xpc_object_t message) {
+    if (MDKOriginalXPCConnectionSendMessageWithReplySync == nullptr) {
+        return nullptr;
+    }
+
+    xpc_object_t reply = MDKOriginalXPCConnectionSendMessageWithReplySync(connection, message);
+    MDKRecordXPCConnectionInterposeEvent(@"xpc-connection-send-message-with-reply-sync", connection, nullptr, 0, message, reply);
+    return reply;
 }
 
 extern "C" int MDKInterposedXPCFDDup(xpc_object_t object) {
@@ -5969,6 +6192,7 @@ static void MDKInstallSCKProxyTraceHooks(void) {
         MDKInstallFIFOWriteInterposes();
         MDKInstallPipeInterposes();
         MDKInstallIOSurfaceMachPortInterposes();
+        MDKInstallXPCConnectionInterposes();
         MDKInstallXPCPipeInterposes();
         MDKInstallXPCFDInterposes();
         Class daemonProxyClass = NSClassFromString(@"RPDaemonProxy");
@@ -9207,6 +9431,20 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             @"iosurface-create-mach-port",
         ]]
     );
+    NSDictionary<NSString *, id> *xpcConnectionCreateCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"xpc-connection-create-mach-service",
+        ]]
+    );
+    NSDictionary<NSString *, id> *xpcConnectionSendCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"xpc-connection-send-message",
+            @"xpc-connection-send-message-with-reply",
+            @"xpc-connection-send-message-with-reply-sync",
+        ]]
+    );
     NSDictionary<NSString *, id> *surfaceTransportHandleMessageCadenceSummary = MDKCopyTraceEventCadenceSummary(
         traceEvents,
         [NSSet setWithArray:@[
@@ -9511,6 +9749,17 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"ioSurfaceCreateMachPortEventCount=%@", MDKDescribeTraceValue(ioSurfaceCreateCadenceSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"ioSurfaceCreateMachPortDeltaHistogram=%@", MDKDescribeTraceValue(ioSurfaceCreateCadenceSummary[@"deltaHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"ioSurfaceCreateMachPortCadenceClassification=%@", MDKDescribeTraceValue(ioSurfaceCreateCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcConnectionInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"xpcConnectionInterposeAttempted"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcConnectionInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"xpcConnectionInterposeInstalled"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcConnectionInterposeInstalledImageCount=%@", MDKDescribeTraceValue(snapshot[@"xpcConnectionInterposeInstalledImageCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcConnectionInterposeInstalledSymbolCount=%@", MDKDescribeTraceValue(snapshot[@"xpcConnectionInterposeInstalledSymbolCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcConnectionCreateMachServiceEventCount=%@", MDKDescribeTraceValue(xpcConnectionCreateCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcConnectionCreateMachServiceDeltaHistogram=%@", MDKDescribeTraceValue(xpcConnectionCreateCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcConnectionCreateMachServiceCadenceClassification=%@", MDKDescribeTraceValue(xpcConnectionCreateCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcConnectionSendEventCount=%@", MDKDescribeTraceValue(xpcConnectionSendCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcConnectionSendDeltaHistogram=%@", MDKDescribeTraceValue(xpcConnectionSendCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcConnectionSendCadenceClassification=%@", MDKDescribeTraceValue(xpcConnectionSendCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"xpcConnectionServiceHistogram=%@", MDKDescribeTraceValue(snapshot[@"xpcConnectionServiceHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeAttempted"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalled"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalledImageCount=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalledImageCount"])]];

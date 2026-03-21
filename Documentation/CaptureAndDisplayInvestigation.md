@@ -1025,3 +1025,23 @@ Interpretation:
   remaining actionable direction is now overwhelmingly cross-process:
   - the broker path in `replayd`
   - or another non-imported/private handoff path below `CMCapture` that the host only sees after the queue is live
+
+Follow-up passive trace after interposing `xpc_connection_create_mach_service` and send APIs:
+
+- `xpcConnectionInterposeAttempted=1`
+- `xpcConnectionInterposeInstalled=1`
+- `xpcConnectionInterposeInstalledImageCount=3`
+- `xpcConnectionCreateMachServiceEventCount=0`
+- `xpcConnectionSendEventCount=0`
+- `xpcConnectionServiceHistogram={}`
+
+Interpretation:
+
+- the host process is not surfacing the broker path through imported `xpc_connection_*` calls either,
+  at least not through ordinary dyld-based interpose on `ScreenCaptureKit`, `CMCapture`, or `libxpc`
+- by this point the host-side reverse-engineering picture is highly consistent: the live queue handoff is
+  not visible through imported fd duplication, xpc transport, pipe creation, mach-port conversion, or
+  xpc connection setup from the host process
+- that leaves the next practical reverse-engineering step overwhelmingly cross-process:
+  - inspect `replayd` as the broker / producer
+  - or attach lower than host-side imported stubs, because the host is only seeing the queue after it is already live
