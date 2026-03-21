@@ -1420,6 +1420,10 @@ Interpretation:
     - `kCGDisplayStreamMinimumFrameTime`
     - `kCGDisplayStreamQueueDepth`
     - `kCGDisplayStreamShowCursor`
+  - the current `--request-120-like` shorthand now maps to:
+    - `minimumFrameTime=1/240`
+    - `queueDepth=8`
+    - `showCursor=false`
   - latest reproducible `AW2725Q` results:
     - baseline properties (`queueDepth=3`, no minimum-frame-time request):
       - `observedFrameRate=93.45`
@@ -1460,6 +1464,10 @@ Interpretation:
         - `observedFrameRate=93.69`
         - `cadenceClassification=coalesced-or-mixed`
         - `intervalHistogram={"4.2ms":29,"8.3ms":69,"12.5ms":57,"16.7ms":24,"20.8ms":9}`
+      - `--minimum-frame-time 1/240 --queue-depth 8` over a longer `5s` window:
+        - `observedFrameRate=95.63`
+        - `cadenceClassification=120hz-like`
+        - `intervalHistogram={"4.2ms":70,"8.3ms":288,"12.5ms":44,"16.7ms":23,"20.8ms":25,"25.0ms":16,"29.2ms":7,"33.3ms":2,"54.2ms":1,"58.3ms":2}`
   - host-only tuning matrix now exists to compare a fixed candidate set without manually running each configuration:
     - command:
       - `MacDisplayKitHost --experimental-skylight-displaystream-tuning-matrix-display auto --sample-duration 2 --json`
@@ -1483,5 +1491,7 @@ Interpretation:
       still mixes `4.2ms`, `8.3ms`, and slower buckets rather than collapsing to a pure `8.3ms` band
     - the explicit `minimumFrameTime=1/120` request is currently counterproductive on this panel and lowers throughput,
       while `queueDepth=8` and especially `minimumFrameTime=1/240` with `queueDepth=8` produce materially better results
+    - because of that, the `--request-120-like` shorthand has been retuned away from `1/120` and now requests
+      the better `1/240 + queueDepth=8` combination
     - that shifts the next optimization target from `SCStream` tuning to raw `SkyLight` display-stream property tuning
       and lower-level `SLContentStream` / `CGYDisplayStreamFrameAvailable` exploration

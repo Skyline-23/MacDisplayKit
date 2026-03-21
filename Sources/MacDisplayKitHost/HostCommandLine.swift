@@ -449,7 +449,7 @@ enum MDKHostCommandLine {
                 let result: MDKSkyLightDisplayStreamBenchmarkResult
                 if minimumFrameTimeOverride != nil || queueDepthOverride != nil || showCursor {
                     let resolvedMinimumFrameTime = minimumFrameTimeOverride
-                        ?? (request120LikeProperties ? (1.0 / 120.0) : 0.0)
+                        ?? (request120LikeProperties ? (1.0 / 240.0) : 0.0)
                     let resolvedQueueDepth = queueDepthOverride
                         ?? (request120LikeProperties ? 8 : 3)
                     result = try controller.benchmarkSkyLightDisplayStream(

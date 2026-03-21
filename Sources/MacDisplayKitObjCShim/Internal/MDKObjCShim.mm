@@ -12548,6 +12548,9 @@ static NSString *MDKDescribeDisplayStreamFrameStatus(CGDisplayStreamFrameStatus 
     }
 }
 
+static constexpr double MDKSLDisplayStreamTunedMinimumFrameTime = 1.0 / 240.0;
+static constexpr NSInteger MDKSLDisplayStreamTunedQueueDepth = 8;
+
 static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBenchmarkPayload(
     NSUInteger displayID,
     NSTimeInterval sampleDuration,
@@ -12731,8 +12734,8 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
         @"completeFrameCount": @(completeFrameCount),
         @"observedFrameRate": @(elapsed > 0.0 ? static_cast<double>(completeFrameCount) / elapsed : 0.0),
         @"requested120LikeProperties": @(
-            requestedMinimumFrameTime >= ((1.0 / 120.0) - 0.000001) &&
-            requestedQueueDepth >= 8 &&
+            requestedMinimumFrameTime >= (MDKSLDisplayStreamTunedMinimumFrameTime - 0.000001) &&
+            requestedQueueDepth >= MDKSLDisplayStreamTunedQueueDepth &&
             requestedShowCursor == NO
         ),
         @"requestedMinimumFrameTime": @(requestedMinimumFrameTime),
@@ -12775,8 +12778,8 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightDisplayStreamBenchm
     return MDKCreateSkyLightDisplayStreamBenchmarkPayload(
         displayID,
         sampleDuration,
-        request120LikeProperties ? (1.0 / 120.0) : 0.0,
-        request120LikeProperties ? 8 : 3,
+        request120LikeProperties ? MDKSLDisplayStreamTunedMinimumFrameTime : 0.0,
+        request120LikeProperties ? MDKSLDisplayStreamTunedQueueDepth : 3,
         NO,
         error
     );
