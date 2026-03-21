@@ -847,3 +847,24 @@ Interpretation:
 - together with the failed `rqReceiverSetSource` interpose, the next practical reverse-engineering
   target is now the fd-backed dispatch-source scheduling boundary and its read/drain path rather
   than the later CMCapture or ScreenCaptureKit local blocks
+
+Follow-up passive trace after interposing public libdispatch read-source APIs:
+
+- note: `Installed dispatch read-source interpose on 2 image(s).`
+- observed `dispatch-read-source-create` events: `0`
+- observed `dispatch-read-source-set-event-handler` events: `0`
+- observed `dispatch-read-source-set-event-handler-f` events: `0`
+
+Interpretation:
+
+- the ScreenCaptureKit/CMCapture path visible in this host process does not currently register the
+  video fifo source through imported `dispatch_source_create` / `dispatch_source_set_event_handler*`
+  call sites in the interposed images
+- because the interpose is active on both `ScreenCaptureKit` and `CMCapture`, the remaining likely
+  explanations are:
+  - the source is created through a lower libdispatch-internal path that bypasses those public
+    import stubs
+  - the source/handler is created before the currently observable handshake window and only reused
+    during capture
+  - the higher-signal next hop is the fifo producer/write side rather than public read-source
+    registration

@@ -769,7 +769,13 @@ struct MDKFigRemoteQueueMessage {
 
 using MDKFigRemoteQueueReceiverHandlerBlock = void (^)(int, MDKFigRemoteQueueMessage *, void *);
 using MDKRQReceiverSetSourceBlockInvokeFn = void (*)(void *);
+using MDKDispatchSourceCreateFn = dispatch_source_t (*)(dispatch_source_type_t, uintptr_t, unsigned long, dispatch_queue_t);
+using MDKDispatchSourceSetEventHandlerFn = void (*)(dispatch_source_t, dispatch_block_t);
+using MDKDispatchSourceSetEventHandlerFFn = void (*)(dispatch_source_t, dispatch_function_t);
 static MDKRQReceiverSetSourceBlockInvokeFn MDKOriginalRQReceiverSetSourceBlockInvoke = nullptr;
+static MDKDispatchSourceCreateFn MDKOriginalDispatchSourceCreate = nullptr;
+static MDKDispatchSourceSetEventHandlerFn MDKOriginalDispatchSourceSetEventHandler = nullptr;
+static MDKDispatchSourceSetEventHandlerFFn MDKOriginalDispatchSourceSetEventHandlerF = nullptr;
 
 static void MDKRecordSCKTraceEvent(NSString *kind, NSDictionary<NSString *, id> *payload);
 static NSDictionary<NSString *, id> *MDKSummarizeSampleBuffer(CMSampleBufferRef sampleBuffer);
@@ -3124,6 +3130,70 @@ static void MDKRecordRQReceiverSetSourceInvokeBoundaryEvent(
     MDKRecordSCKTraceEvent(kind, payload);
 }
 
+static NSDictionary<NSString *, id> * _Nullable MDKCopyDispatchReadSourceMetadata(dispatch_source_t source) {
+    if (source == nil) {
+        return nil;
+    }
+
+    NSDictionary<NSString *, id> *sourceSummary = MDKDescribeShallowPointerPointee((__bridge const void *) source);
+    NSDictionary<NSString *, id> *objectSummary =
+        [sourceSummary[@"object"] isKindOfClass:[NSDictionary class]] ? sourceSummary[@"object"] : nil;
+    if (objectSummary == nil) {
+        return nil;
+    }
+
+    NSString *fileType =
+        [objectSummary[@"dispatchSourceHandleFileType"] isKindOfClass:[NSString class]] ? objectSummary[@"dispatchSourceHandleFileType"] : nil;
+    NSArray<NSDictionary<NSString *, id> *> *dispatchSourceWords =
+        [objectSummary[@"dispatchSourceWords"] isKindOfClass:[NSArray class]] ? objectSummary[@"dispatchSourceWords"] : nil;
+    NSDictionary<NSString *, id> *typeWord = dispatchSourceWords.count > 11 ? dispatchSourceWords[11] : nil;
+    NSDictionary<NSString *, id> *typeWordPointee =
+        [typeWord[@"pointee"] isKindOfClass:[NSDictionary class]] ? typeWord[@"pointee"] : nil;
+    NSDictionary<NSString *, id> *typeWord0CodePointer =
+        [typeWordPointee[@"word0CodePointer"] isKindOfClass:[NSDictionary class]] ? typeWordPointee[@"word0CodePointer"] : nil;
+    NSString *typeSymbol =
+        [typeWord0CodePointer[@"symbolName"] isKindOfClass:[NSString class]] ? typeWord0CodePointer[@"symbolName"] : nil;
+    if ((fileType == nil || ![fileType isEqualToString:@"fifo"]) &&
+        (typeSymbol == nil || ![typeSymbol isEqualToString:@"_dispatch_source_type_read"])) {
+        return nil;
+    }
+
+    NSDictionary<NSString *, id> *queueWord = dispatchSourceWords.count > 3 ? dispatchSourceWords[3] : nil;
+    NSDictionary<NSString *, id> *queueWordPointee =
+        [queueWord[@"pointee"] isKindOfClass:[NSDictionary class]] ? queueWord[@"pointee"] : nil;
+    NSDictionary<NSString *, id> *queueWordObject =
+        [queueWordPointee[@"object"] isKindOfClass:[NSDictionary class]] ? queueWordPointee[@"object"] : nil;
+    NSString *targetQueueDescription =
+        [queueWordObject[@"description"] isKindOfClass:[NSString class]] ? queueWordObject[@"description"] : nil;
+    NSString *targetQueueClassName =
+        [queueWordObject[@"className"] isKindOfClass:[NSString class]] ? queueWordObject[@"className"] : nil;
+
+    return @{
+        @"source": MDKSummarizePointerValue((__bridge const void *) source),
+        @"handle": objectSummary[@"dispatchSourceHandle"] ?: [NSNull null],
+        @"fileType": fileType ?: [NSNull null],
+        @"typeSymbol": typeSymbol ?: [NSNull null],
+        @"targetQueueClassName": targetQueueClassName ?: [NSNull null],
+        @"targetQueueDescription": targetQueueDescription ?: [NSNull null],
+    };
+}
+
+static void MDKRecordDispatchReadSourceInterposeEvent(NSString *kind, NSDictionary<NSString *, id> *payload) {
+    BOOL shouldRecord = NO;
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            NSUInteger eventCount = [MDKActiveSCKTraceState[@"dispatchReadSourceInterposeEventCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"dispatchReadSourceInterposeEventCount"] = @(eventCount);
+            shouldRecord = eventCount <= 64;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    MDKRecordSCKTraceEvent(kind, payload);
+}
+
 static void MDKRecordVideoQueueWrapperCallbackEvent(
     uint64_t sequenceID,
     NSUInteger wrapperDepth,
@@ -3549,6 +3619,9 @@ static void MDKRescanNestedVideoQueueBlockIfPossible(id stream, NSString *reason
 extern "C" void MDKInterposedFigRemoteQueueReceiverSetHandler(void *receiver, dispatch_queue_t queue, id handler);
 extern "C" int MDKInterposedFigRemoteQueueReceiverDequeue(void *receiver, MDKFigRemoteQueueMessage *message);
 extern "C" int MDKInterposedFigRemoteQueueReceiverUnsetHandler(void *receiver);
+extern "C" dispatch_source_t MDKInterposedDispatchSourceCreate(dispatch_source_type_t type, uintptr_t handle, unsigned long mask, dispatch_queue_t queue);
+extern "C" void MDKInterposedDispatchSourceSetEventHandler(dispatch_source_t source, dispatch_block_t handler);
+extern "C" void MDKInterposedDispatchSourceSetEventHandlerF(dispatch_source_t source, dispatch_function_t handler);
 
 static void MDKInstallRuntimeFigRemoteQueueReceiverInterposes(void) {
     static dispatch_once_t onceToken;
@@ -3610,6 +3683,71 @@ static void MDKInstallRuntimeFigRemoteQueueReceiverInterposes(void) {
 
         MDKSetSCKTraceStateValue(@"figRemoteQueueReceiverInterposeInstalled", @YES);
         MDKAppendSCKTraceNote([NSString stringWithFormat:@"Installed FigRemoteQueueReceiver runtime interpose on %lu image(s).", (unsigned long)installedImageCount]);
+    });
+}
+
+static void MDKInstallDispatchReadSourceInterposes(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        using MDKDyldDynamicInterposeFn = void (*)(const mach_header *, const MDKDyldInterposeTuple[], size_t);
+
+        MDKSetSCKTraceStateValue(@"dispatchReadSourceInterposeAttempted", @YES);
+        MDKEnsureCaptureImageLoaded("/System/Library/PrivateFrameworks/CMCapture.framework/CMCapture");
+        auto dynamicInterpose =
+            reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "dyld_dynamic_interpose"));
+        if (dynamicInterpose == nullptr) {
+            dynamicInterpose =
+                reinterpret_cast<MDKDyldDynamicInterposeFn>(dlsym(RTLD_DEFAULT, "_dyld_dynamic_interpose"));
+        }
+        MDKSetSCKTraceStateValue(@"dispatchReadSourceInterposeDyldAvailable", @(dynamicInterpose != nullptr));
+        if (dynamicInterpose == nullptr) {
+            return;
+        }
+
+        MDKOriginalDispatchSourceCreate =
+            reinterpret_cast<MDKDispatchSourceCreateFn>(dlsym(RTLD_DEFAULT, "dispatch_source_create"));
+        MDKOriginalDispatchSourceSetEventHandler =
+            reinterpret_cast<MDKDispatchSourceSetEventHandlerFn>(dlsym(RTLD_DEFAULT, "dispatch_source_set_event_handler"));
+        MDKOriginalDispatchSourceSetEventHandlerF =
+            reinterpret_cast<MDKDispatchSourceSetEventHandlerFFn>(dlsym(RTLD_DEFAULT, "dispatch_source_set_event_handler_f"));
+        MDKSetSCKTraceStateValue(@"dispatchReadSourceInterposeCreateSymbolAvailable", @(MDKOriginalDispatchSourceCreate != nullptr));
+        MDKSetSCKTraceStateValue(@"dispatchReadSourceInterposeSetEventHandlerSymbolAvailable", @(MDKOriginalDispatchSourceSetEventHandler != nullptr));
+        MDKSetSCKTraceStateValue(@"dispatchReadSourceInterposeSetEventHandlerFSymbolAvailable", @(MDKOriginalDispatchSourceSetEventHandlerF != nullptr));
+        if (MDKOriginalDispatchSourceCreate == nullptr ||
+            MDKOriginalDispatchSourceSetEventHandler == nullptr ||
+            MDKOriginalDispatchSourceSetEventHandlerF == nullptr) {
+            MDKAppendSCKTraceNote(@"One or more libdispatch read-source symbols were unavailable, so dispatch-source interpose stayed disabled.");
+            return;
+        }
+
+        const MDKDyldInterposeTuple interposes[] = {
+            { reinterpret_cast<const void *>(&MDKInterposedDispatchSourceCreate), reinterpret_cast<const void *>(MDKOriginalDispatchSourceCreate) },
+            { reinterpret_cast<const void *>(&MDKInterposedDispatchSourceSetEventHandler), reinterpret_cast<const void *>(MDKOriginalDispatchSourceSetEventHandler) },
+            { reinterpret_cast<const void *>(&MDKInterposedDispatchSourceSetEventHandlerF), reinterpret_cast<const void *>(MDKOriginalDispatchSourceSetEventHandlerF) },
+        };
+
+        NSUInteger installedImageCount = 0;
+        const mach_header *screenCaptureKitHeader =
+            MDKFindLoadedImageHeader("/System/Library/Frameworks/ScreenCaptureKit.framework/");
+        if (screenCaptureKitHeader != nullptr) {
+            dynamicInterpose(screenCaptureKitHeader, interposes, sizeof(interposes) / sizeof(interposes[0]));
+            installedImageCount += 1;
+        }
+        const mach_header *cmCaptureHeader =
+            MDKFindLoadedImageHeader("/System/Library/PrivateFrameworks/CMCapture.framework/");
+        if (cmCaptureHeader != nullptr) {
+            dynamicInterpose(cmCaptureHeader, interposes, sizeof(interposes) / sizeof(interposes[0]));
+            installedImageCount += 1;
+        }
+
+        MDKSetSCKTraceStateValue(@"dispatchReadSourceInterposeInstalledImageCount", @(installedImageCount));
+        MDKSetSCKTraceStateValue(@"dispatchReadSourceInterposeInstalled", @(installedImageCount > 0));
+        if (installedImageCount == 0) {
+            MDKAppendSCKTraceNote(@"Neither ScreenCaptureKit nor CMCapture appeared in the loaded image list, so dispatch-source interpose stayed disabled.");
+            return;
+        }
+
+        MDKAppendSCKTraceNote([NSString stringWithFormat:@"Installed dispatch read-source interpose on %lu image(s).", (unsigned long) installedImageCount]);
     });
 }
 
@@ -3752,6 +3890,87 @@ extern "C" int MDKInterposedFigRemoteQueueReceiverUnsetHandler(void *receiver) {
     }
 
     return original(receiver);
+}
+
+extern "C" dispatch_source_t MDKInterposedDispatchSourceCreate(
+    dispatch_source_type_t type,
+    uintptr_t handle,
+    unsigned long mask,
+    dispatch_queue_t queue
+) {
+    if (MDKOriginalDispatchSourceCreate == nullptr) {
+        return nil;
+    }
+
+    dispatch_source_t source = MDKOriginalDispatchSourceCreate(type, handle, mask, queue);
+    NSDictionary<NSString *, id> *typePointer = MDKDescribeCodePointer(type);
+    NSString *typeSymbol =
+        [typePointer[@"symbolName"] isKindOfClass:[NSString class]] ? typePointer[@"symbolName"] : nil;
+    if (typeSymbol != nil && [typeSymbol isEqualToString:@"_dispatch_source_type_read"]) {
+        NSString *queueLabel = queue != nil ? ([NSString stringWithUTF8String:dispatch_queue_get_label(queue)] ?: @"") : @"";
+        MDKRecordDispatchReadSourceInterposeEvent(
+            @"dispatch-read-source-create",
+            @{
+                @"source": MDKSummarizePointerValue((__bridge const void *) source),
+                @"type": typePointer,
+                @"handle": @(handle),
+                @"mask": @(mask),
+                @"queue": MDKSummarizeObject(queue),
+                @"queueLabel": queueLabel,
+            }
+        );
+    }
+
+    return source;
+}
+
+extern "C" void MDKInterposedDispatchSourceSetEventHandler(dispatch_source_t source, dispatch_block_t handler) {
+    if (MDKOriginalDispatchSourceSetEventHandler == nullptr) {
+        return;
+    }
+
+    NSDictionary<NSString *, id> *sourceMetadata = MDKCopyDispatchReadSourceMetadata(source);
+    if (sourceMetadata != nil) {
+        NSDictionary<NSString *, id> *handlerSummary = handler != nil ? MDKDescribeBlockLiteralObject(handler) : @{ @"present": @NO };
+        NSDictionary<NSString *, id> *handlerInvoke =
+            [handlerSummary[@"invoke"] isKindOfClass:[NSDictionary class]] ? handlerSummary[@"invoke"] : nil;
+        NSString *handlerInvokeSymbol =
+            [handlerInvoke[@"symbolName"] isKindOfClass:[NSString class]] ? handlerInvoke[@"symbolName"] : nil;
+        MDKRecordDispatchReadSourceInterposeEvent(
+            @"dispatch-read-source-set-event-handler",
+            @{
+                @"dispatchSource": sourceMetadata,
+                @"handler": handlerSummary,
+                @"handlerInvokeSymbol": handlerInvokeSymbol ?: [NSNull null],
+            }
+        );
+    }
+
+    MDKOriginalDispatchSourceSetEventHandler(source, handler);
+}
+
+extern "C" void MDKInterposedDispatchSourceSetEventHandlerF(dispatch_source_t source, dispatch_function_t handler) {
+    if (MDKOriginalDispatchSourceSetEventHandlerF == nullptr) {
+        return;
+    }
+
+    NSDictionary<NSString *, id> *sourceMetadata = MDKCopyDispatchReadSourceMetadata(source);
+    if (sourceMetadata != nil) {
+        NSDictionary<NSString *, id> *handlerPointer =
+            handler != nullptr ? MDKDescribeCodePointer(reinterpret_cast<const void *>(handler)) : @{ @"present": @NO };
+        NSString *handlerSymbol =
+            [handlerPointer[@"symbolName"] isKindOfClass:[NSString class]] ? handlerPointer[@"symbolName"] : nil;
+        MDKRecordDispatchReadSourceInterposeEvent(
+            @"dispatch-read-source-set-event-handler-f",
+            @{
+                @"dispatchSource": sourceMetadata,
+                @"handler": handlerPointer,
+                @"handlerSymbol": handlerSymbol ?: [NSNull null],
+            }
+        );
+    }
+
+    MDKOriginalDispatchSourceSetEventHandlerF(source, handler);
 }
 
 static void MDKSwizzledRPIOSurfaceSet(id self, SEL _cmd, IOSurfaceRef surface) {
@@ -4262,6 +4481,7 @@ static void MDKInstallSCKProxyTraceHooks(void) {
         dlopen("/System/Library/Frameworks/IOSurface.framework/IOSurface", RTLD_NOW | RTLD_GLOBAL);
         dlopen("/System/Library/PrivateFrameworks/CMCapture.framework/CMCapture", RTLD_NOW | RTLD_GLOBAL);
         MDKInstallRuntimeFigRemoteQueueReceiverInterposes();
+        MDKInstallDispatchReadSourceInterposes();
         Class daemonProxyClass = NSClassFromString(@"RPDaemonProxy");
         if (daemonProxyClass == Nil) {
             return;
@@ -5223,6 +5443,23 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         timeout = 2.0;
     }
 
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(static_cast<CGDirectDisplayID>(displayID));
+    if (mode == nil) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:10
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: @"Unable to resolve the current display mode for the ScreenCaptureKit handshake trace."
+                                     }];
+        }
+        return nil;
+    }
+
+    const NSUInteger width = std::max(static_cast<NSUInteger>(CGDisplayModeGetPixelWidth(mode)), static_cast<NSUInteger>(1));
+    const NSUInteger height = std::max(static_cast<NSUInteger>(CGDisplayModeGetPixelHeight(mode)), static_cast<NSUInteger>(1));
+    CFRelease(mode);
+
+    MDKResetSCKTraceState(displayID, timeout);
     MDKInstallSCKProxyTraceHooks();
     if (MDKOriginalProxyCoreGraphics == nullptr ||
         MDKOriginalStartRemoteQueue == nullptr ||
@@ -5251,24 +5488,6 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         }
         return nil;
     }
-
-    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(static_cast<CGDirectDisplayID>(displayID));
-    if (mode == nil) {
-        if (error != nullptr) {
-            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
-                                         code:10
-                                     userInfo:@{
-                                         NSLocalizedDescriptionKey: @"Unable to resolve the current display mode for the ScreenCaptureKit handshake trace."
-                                     }];
-        }
-        return nil;
-    }
-
-    const NSUInteger width = std::max(static_cast<NSUInteger>(CGDisplayModeGetPixelWidth(mode)), static_cast<NSUInteger>(1));
-    const NSUInteger height = std::max(static_cast<NSUInteger>(CGDisplayModeGetPixelHeight(mode)), static_cast<NSUInteger>(1));
-    CFRelease(mode);
-
-    MDKResetSCKTraceState(displayID, timeout);
     @synchronized(MDKActiveSCKTraceLock) {
         MDKActiveSCKAllowPrivateQueueProbes = includePrivateQueueProbes;
         MDKActiveSCKAllowVideoQueueWrapperProbe = YES;
