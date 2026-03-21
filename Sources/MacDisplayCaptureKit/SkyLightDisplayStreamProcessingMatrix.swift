@@ -126,7 +126,7 @@ public enum MDKSkyLightDisplayStreamProcessingMatrix {
             "The none processing mode is kept as a raw control and is not eligible for default winner selection.",
             "AV1 modes stay opt-in because VideoToolbox hardware availability is host-specific.",
             "ProRes Proxy remains experimental and is excluded from the default ranking set.",
-            "Ranking order: meets120LikeTarget, cadence classification, effective output frame rate, processed frame ratio, then complete-frame count."
+            "Ranking order: realtime floor >= 60 fps, meets120LikeTarget, cadence classification, effective output frame rate, processed frame ratio, then complete-frame count."
         ]
         if let bestIndex,
            evaluations.indices.contains(bestIndex),
@@ -168,8 +168,9 @@ public enum MDKSkyLightDisplayStreamProcessingMatrix {
 
     private static func score(
         _ result: MDKSkyLightDisplayStreamProcessingBenchmarkResult
-    ) -> (Int, Int, Double, Double, UInt64) {
+    ) -> (Int, Int, Int, Double, Double, UInt64) {
         (
+            result.meetsRealtimeFloor ? 1 : 0,
             result.meets120LikeTarget ? 1 : 0,
             cadenceRank(result.cadenceClassification),
             result.effectiveOutputFrameRate,

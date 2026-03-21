@@ -5,6 +5,8 @@ import Foundation
 import MacDisplayKitObjCShim
 
 public struct MDKSkyLightDisplayStreamProcessingBenchmarkResult: Codable, Equatable, Sendable {
+    public static let realtimeFloorFrameRate: Double = 60.0
+
     public let displayID: UInt32
     public let status: Int32
     public let stopStatus: Int32
@@ -43,6 +45,10 @@ public struct MDKSkyLightDisplayStreamProcessingBenchmarkResult: Codable, Equata
 
     public var effectiveOutputFrameRate: Double {
         completedOutputFrameRate ?? processedFrameRate
+    }
+
+    public var meetsRealtimeFloor: Bool {
+        effectiveOutputFrameRate >= Self.realtimeFloorFrameRate
     }
 
     public var meets120LikeTarget: Bool {

@@ -52,6 +52,80 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertTrue(MDKSkyLightDisplayStreamProcessingMatrix.optInProcessingModes.contains(.videoToolboxEncodeProResProxyExperimental))
     }
 
+    func testRawTuningMatrixPrefersRealtimeFloorBeforeCadenceClass() {
+        let belowFloorCandidate = MDKSkyLightDisplayStreamTuningEvaluation(
+            candidate: MDKSkyLightDisplayStreamTuningCandidate(
+                identifier: "below-floor",
+                minimumFrameTime: 1.0 / 240.0,
+                queueDepth: 8,
+                showCursor: false
+            ),
+            result: MDKSkyLightDisplayStreamBenchmarkResult(
+                displayID: 2,
+                status: 0,
+                stopStatus: 0,
+                sampleDuration: 1.0,
+                callbackCount: 55,
+                completeFrameCount: 55,
+                observedFrameRate: 55.0,
+                requested120LikeProperties: true,
+                requestedMinimumFrameTime: 1.0 / 240.0,
+                requestedQueueDepth: 8,
+                requestedShowCursor: false,
+                appliedPropertyCount: 3,
+                surfaceWidth: 5120,
+                surfaceHeight: 2880,
+                pixelFormat: kCVPixelFormatType_32BGRA,
+                intervalCount: 54,
+                minIntervalMilliseconds: 8.333,
+                maxIntervalMilliseconds: 20.0,
+                intervalHistogram: ["8.3ms": 40],
+                cadenceClassification: "120hz-like",
+                frameStatusHistogram: ["frame-complete": 55],
+                notes: []
+            )
+        )
+        let aboveFloorCandidate = MDKSkyLightDisplayStreamTuningEvaluation(
+            candidate: MDKSkyLightDisplayStreamTuningCandidate(
+                identifier: "above-floor",
+                minimumFrameTime: 0,
+                queueDepth: 3,
+                showCursor: false
+            ),
+            result: MDKSkyLightDisplayStreamBenchmarkResult(
+                displayID: 2,
+                status: 0,
+                stopStatus: 0,
+                sampleDuration: 1.0,
+                callbackCount: 61,
+                completeFrameCount: 61,
+                observedFrameRate: 61.0,
+                requested120LikeProperties: false,
+                requestedMinimumFrameTime: 0,
+                requestedQueueDepth: 3,
+                requestedShowCursor: false,
+                appliedPropertyCount: 3,
+                surfaceWidth: 5120,
+                surfaceHeight: 2880,
+                pixelFormat: kCVPixelFormatType_32BGRA,
+                intervalCount: 60,
+                minIntervalMilliseconds: 16.667,
+                maxIntervalMilliseconds: 17.0,
+                intervalHistogram: ["16.7ms": 60],
+                cadenceClassification: "60hz-like",
+                frameStatusHistogram: ["frame-complete": 61],
+                notes: []
+            )
+        )
+
+        XCTAssertEqual(
+            MDKSkyLightDisplayStreamTuningMatrix.bestEvaluationIndex(
+                for: [belowFloorCandidate, aboveFloorCandidate]
+            ),
+            1
+        )
+    }
+
     func testPrivateCaptureCapabilitiesModelHardwareSurfaceAndExtendedRangeHints() {
         let capabilities = MDKPrivateCaptureCapabilities(
             desktopCaptureAvailable: false,
@@ -666,6 +740,116 @@ final class MacDisplayKitTests: XCTestCase {
         let data = try JSONEncoder().encode(report)
         let decoded = try JSONDecoder().decode(MDKSkyLightDisplayStreamProcessingMatrixReport.self, from: data)
         XCTAssertEqual(decoded, report)
+    }
+
+    func testProcessingMatrixPrefersRealtimeFloorBefore120LikeWishcasting() {
+        let belowFloor = MDKSkyLightDisplayStreamProcessingBenchmarkResult(
+            displayID: 2,
+            status: 0,
+            stopStatus: 0,
+            processingMode: .videoToolboxEncodeDownscale2x,
+            videoEncoderCodec: .hevc,
+            sampleDuration: 2.0,
+            callbackCount: 110,
+            completeFrameCount: 110,
+            observedFrameRate: 55.0,
+            processedFrameCount: 110,
+            processingFailureCount: 0,
+            processingErrorHistogram: [:],
+            processedFrameRate: 55.0,
+            processedFrameRatio: 1.0,
+            outputCallbackCount: 110,
+            completedOutputFrameCount: 110,
+            completedOutputFrameRate: 55.0,
+            completedOutputFrameRatio: 1.0,
+            outputCallbackStatusHistogram: ["noErr": 110],
+            outputCallbackLatencyHistogram: [:],
+            minOutputCallbackLatencyMilliseconds: 5.0,
+            maxOutputCallbackLatencyMilliseconds: 9.0,
+            requestedMinimumFrameTime: 1.0 / 240.0,
+            requestedQueueDepth: 8,
+            requestedShowCursor: false,
+            surfaceWidth: 5120,
+            surfaceHeight: 2880,
+            pixelFormat: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            intervalCount: 109,
+            minIntervalMilliseconds: 8.333,
+            maxIntervalMilliseconds: 20.0,
+            intervalHistogram: ["8.3ms": 80],
+            cadenceClassification: "120hz-like",
+            frameStatusHistogram: ["frame-complete": 110],
+            notes: []
+        )
+        let aboveFloor = MDKSkyLightDisplayStreamProcessingBenchmarkResult(
+            displayID: 2,
+            status: 0,
+            stopStatus: 0,
+            processingMode: .videoToolboxEncodeProResProxyExperimental,
+            videoEncoderCodec: .proResProxy,
+            sampleDuration: 2.0,
+            callbackCount: 122,
+            completeFrameCount: 122,
+            observedFrameRate: 61.0,
+            processedFrameCount: 122,
+            processingFailureCount: 0,
+            processingErrorHistogram: [:],
+            processedFrameRate: 61.0,
+            processedFrameRatio: 1.0,
+            outputCallbackCount: 122,
+            completedOutputFrameCount: 122,
+            completedOutputFrameRate: 61.0,
+            completedOutputFrameRatio: 1.0,
+            outputCallbackStatusHistogram: ["noErr": 122],
+            outputCallbackLatencyHistogram: [:],
+            minOutputCallbackLatencyMilliseconds: 7.0,
+            maxOutputCallbackLatencyMilliseconds: 10.0,
+            requestedMinimumFrameTime: 0,
+            requestedQueueDepth: 3,
+            requestedShowCursor: false,
+            surfaceWidth: 5120,
+            surfaceHeight: 2880,
+            pixelFormat: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            intervalCount: 121,
+            minIntervalMilliseconds: 16.667,
+            maxIntervalMilliseconds: 17.0,
+            intervalHistogram: ["16.7ms": 121],
+            cadenceClassification: "60hz-like",
+            frameStatusHistogram: ["frame-complete": 122],
+            notes: []
+        )
+
+        let evaluations = [
+            MDKSkyLightDisplayStreamProcessingMatrixEvaluation(
+                candidate: MDKSkyLightDisplayStreamProcessingMatrixCandidate(
+                    identifier: "below-floor",
+                    processingMode: .videoToolboxEncodeDownscale2x,
+                    tuningCandidate: MDKSkyLightDisplayStreamTuningCandidate(
+                        identifier: "min-frame-240hz-q8",
+                        minimumFrameTime: 1.0 / 240.0,
+                        queueDepth: 8,
+                        showCursor: false
+                    )
+                ),
+                result: belowFloor,
+                errorDescription: nil
+            ),
+            MDKSkyLightDisplayStreamProcessingMatrixEvaluation(
+                candidate: MDKSkyLightDisplayStreamProcessingMatrixCandidate(
+                    identifier: "above-floor",
+                    processingMode: .videoToolboxEncodeProResProxyExperimental,
+                    tuningCandidate: MDKSkyLightDisplayStreamTuningCandidate(
+                        identifier: "baseline-q3",
+                        minimumFrameTime: 0,
+                        queueDepth: 3,
+                        showCursor: false
+                    )
+                ),
+                result: aboveFloor,
+                errorDescription: nil
+            )
+        ]
+
+        XCTAssertEqual(MDKSkyLightDisplayStreamProcessingMatrix.bestEvaluationIndex(for: evaluations), 1)
     }
 
     func testSkyLightDisplayStreamProcessingBenchmarkMarks120LikeTarget() {

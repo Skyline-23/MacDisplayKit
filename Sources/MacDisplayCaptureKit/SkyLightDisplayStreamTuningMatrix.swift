@@ -115,8 +115,13 @@ public enum MDKSkyLightDisplayStreamTuningMatrix {
 
     private static func score(
         _ result: MDKSkyLightDisplayStreamBenchmarkResult
-    ) -> (Int, Double, UInt64) {
-        (cadenceRank(result.cadenceClassification), result.observedFrameRate, result.completeFrameCount)
+    ) -> (Int, Int, Double, UInt64) {
+        (
+            result.meetsRealtimeFloor ? 1 : 0,
+            cadenceRank(result.cadenceClassification),
+            result.observedFrameRate,
+            result.completeFrameCount
+        )
     }
 
     private static func cadenceRank(_ cadenceClassification: String) -> Int {

@@ -208,7 +208,7 @@ final class MDKHostBenchmarkController {
         var notes = [
             "Evaluates a fixed set of raw SkyLight SLDisplayStream property combinations on the same display.",
             "Each candidate runs in a fresh child process to avoid in-process stream state contaminating later measurements.",
-            "Ranking order: cadence classification, observed frame rate, then complete-frame count."
+            "Ranking order: realtime floor >= 60 fps, cadence classification, observed frame rate, then complete-frame count."
         ]
         if let bestIndex,
            evaluations.indices.contains(bestIndex) {

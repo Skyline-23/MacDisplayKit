@@ -2,6 +2,8 @@ import Foundation
 import MacDisplayKitObjCShim
 
 public struct MDKSkyLightDisplayStreamBenchmarkResult: Codable, Equatable, Sendable {
+    public static let realtimeFloorFrameRate: Double = 60.0
+
     public let displayID: UInt32
     public let status: Int32
     public let stopStatus: Int32
@@ -24,6 +26,10 @@ public struct MDKSkyLightDisplayStreamBenchmarkResult: Codable, Equatable, Senda
     public let cadenceClassification: String
     public let frameStatusHistogram: [String: Int]
     public let notes: [String]
+
+    public var meetsRealtimeFloor: Bool {
+        observedFrameRate >= Self.realtimeFloorFrameRate
+    }
 
     public init(
         displayID: UInt32,
