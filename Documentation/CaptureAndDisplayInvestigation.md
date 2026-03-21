@@ -1773,3 +1773,5 @@ Interpretation:
     - the best current full-output queue depth is `q2`, not the earlier `q1` shorthand and not the older `q3` default
     - Apollo-facing defaults should therefore use `q2`, while the framework still exposes the full tuning surface for callers that want to override it explicitly
     - multi-candidate auto-tuning remains useful as a diagnostic tool, but a long sweep can perturb host load enough that the fixed `q2` default is safer for the first production integration
+    - encoder frame-rate hints must stay decoupled from raw `minimumFrameTime`; on this host, `q2 + minFrameTime=1/240` dropped both `HEVC` and `ProRes Proxy` to roughly `62 fps` before the fix, and even after restoring the encoder hint to `120` the same raw request still only reached about `78 fps`
+    - the practical production default is therefore `baseline-q2` with `minimumFrameTime=0`, while `request-120-like` remains an experimental raw-stream diagnostic, not the framework's first-choice production preset

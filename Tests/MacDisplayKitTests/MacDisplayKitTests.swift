@@ -582,6 +582,20 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(configuration.resolvedQueueDepth, 2)
     }
 
+    func testProcessingBenchmarkDefaultsEncoderHintTo120EvenFor240HzRawRequests() {
+        let derivedHint = MDKSkyLightDisplayStreamProcessingBenchmark.resolvedTargetFrameRateHint(
+            targetFrameRate: nil,
+            requestedMinimumFrameTime: 1.0 / 240.0
+        )
+        let explicitHint = MDKSkyLightDisplayStreamProcessingBenchmark.resolvedTargetFrameRateHint(
+            targetFrameRate: 144,
+            requestedMinimumFrameTime: 0
+        )
+
+        XCTAssertEqual(derivedHint, 120)
+        XCTAssertEqual(explicitHint, 144)
+    }
+
     func testTuningAdvisorPrefersLowerQueueDepthForProRes() {
         let candidates = MDKSkyLightDisplayStreamTuningAdvisor.recommendedCandidates(
             for: .videoToolboxEncodeProResProxyExperimental

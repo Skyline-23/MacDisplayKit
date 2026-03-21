@@ -352,6 +352,17 @@ private final class MDKSkyLightDisplayStreamProcessingRecorder {
 }
 
 public enum MDKSkyLightDisplayStreamProcessingBenchmark {
+    static func resolvedTargetFrameRateHint(
+        targetFrameRate: Int?,
+        requestedMinimumFrameTime: Double
+    ) -> Int {
+        if let targetFrameRate {
+            return max(targetFrameRate, 1)
+        }
+        _ = requestedMinimumFrameTime
+        return 120
+    }
+
     public static func run(
         displayID: UInt32,
         sampleDuration: TimeInterval,
@@ -386,15 +397,10 @@ public enum MDKSkyLightDisplayStreamProcessingBenchmark {
         let requestedMinimumFrameTime = max(minimumFrameTime, 0)
         let requestedQueueDepth = max(queueDepth, 1)
         let recorder = MDKSkyLightDisplayStreamProcessingRecorder()
-        let targetFrameRate: Int = {
-            if let targetFrameRate {
-                return max(targetFrameRate, 1)
-            }
-            if requestedMinimumFrameTime > 0 {
-                return max(Int((1.0 / requestedMinimumFrameTime).rounded()), 1)
-            }
-            return 120
-        }()
+        let targetFrameRate = resolvedTargetFrameRateHint(
+            targetFrameRate: targetFrameRate,
+            requestedMinimumFrameTime: requestedMinimumFrameTime
+        )
         let processor = try MDKCaptureFrameProcessingFactory.make(
             processingMode: processingMode,
             targetFrameRate: targetFrameRate
