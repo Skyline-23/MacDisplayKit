@@ -17,9 +17,15 @@ enum MDKHostBenchmarkFormatter {
         lines.append(
             "  - \(report.systemCallTable.schema): rows=\(report.systemCallTable.rowCount) bytes=\(report.systemCallTable.byteCount) path=\(report.systemCallTable.outputPath)"
         )
+        if !report.systemCallTable.hotSymbolHistogram.isEmpty {
+            lines.append("    hotSymbols: \(report.systemCallTable.hotSymbolHistogram)")
+        }
         lines.append(
             "  - \(report.timeSampleTable.schema): rows=\(report.timeSampleTable.rowCount) bytes=\(report.timeSampleTable.byteCount) path=\(report.timeSampleTable.outputPath)"
         )
+        if !report.timeSampleTable.hotSymbolHistogram.isEmpty {
+            lines.append("    hotSymbols: \(report.timeSampleTable.hotSymbolHistogram)")
+        }
         lines.append("Unified log: lines=\(report.unifiedLog.lineCount) matched=\(report.unifiedLog.matchedLineCount) path=\(report.unifiedLog.outputPath)")
         if let enqueueFailures = report.unifiedLog.enqueueFailureSummary {
             lines.append(

@@ -77,6 +77,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
     public let byteCount: Int
     public let rowCount: Int
     public let containsRows: Bool
+    public let hotSymbolHistogram: [String: Int]
     public let excerpt: [String]
 
     public init(
@@ -85,6 +86,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
         byteCount: Int,
         rowCount: Int,
         containsRows: Bool,
+        hotSymbolHistogram: [String: Int],
         excerpt: [String]
     ) {
         self.schema = schema
@@ -92,6 +94,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
         self.byteCount = byteCount
         self.rowCount = rowCount
         self.containsRows = containsRows
+        self.hotSymbolHistogram = hotSymbolHistogram
         self.excerpt = excerpt
     }
 }
@@ -122,6 +125,26 @@ public struct MDKReplaydUnifiedLogArtifact: Codable, Equatable, Sendable {
 }
 
 public enum MDKReplaydXctraceArtifactParser {
+    private struct HotSymbolPattern {
+        let name: String
+        let expression: String
+    }
+
+    private static let hotSymbolPatterns: [HotSymbolPattern] = [
+        HotSymbolPattern(name: "rqSenderHandleDequeue", expression: #"rqSenderHandleDequeue"#),
+        HotSymbolPattern(
+            name: "FigRemoteQueueSenderResetIfFullAndEnqueueSequence",
+            expression: #"FigRemoteQueueSenderResetIfFullAndEnqueueSequence"#
+        ),
+        HotSymbolPattern(name: "roEnqueueSampleBuffer", expression: #"roEnqueueSampleBuffer"#),
+        HotSymbolPattern(name: "roEnqueue", expression: #"name=\"roEnqueue\""#),
+        HotSymbolPattern(
+            name: "CGYDisplayStreamFrameAvailable",
+            expression: #"CGYDisplayStreamNotification_server|_CGYDisplayStreamFrameAvailable"#
+        ),
+        HotSymbolPattern(name: "SLContentStream", expression: #"SLContentStream"#)
+    ]
+
     private static let logTimestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -156,6 +179,7 @@ public enum MDKReplaydXctraceArtifactParser {
             .prefix(8)
             .map(String.init)
         let rowCount = exportText.components(separatedBy: "<row").count - 1
+        let hotSymbolHistogram = summarizeHotSymbols(in: exportText)
 
         return MDKReplaydXctraceTableArtifact(
             schema: schema,
@@ -163,6 +187,7 @@ public enum MDKReplaydXctraceArtifactParser {
             byteCount: exportText.lengthOfBytes(using: .utf8),
             rowCount: max(0, rowCount),
             containsRows: rowCount > 0,
+            hotSymbolHistogram: hotSymbolHistogram,
             excerpt: excerpt
         )
     }
@@ -370,5 +395,20 @@ public enum MDKReplaydXctraceArtifactParser {
         default:
             return "unknown"
         }
+    }
+
+    private static func summarizeHotSymbols(in exportText: String) -> [String: Int] {
+        var histogram: [String: Int] = [:]
+        for pattern in hotSymbolPatterns {
+            guard let expression = try? NSRegularExpression(pattern: pattern.expression) else {
+                continue
+            }
+            let range = NSRange(exportText.startIndex..<exportText.endIndex, in: exportText)
+            let count = expression.numberOfMatches(in: exportText, range: range)
+            if count > 0 {
+                histogram[pattern.name] = count
+            }
+        }
+        return histogram
     }
 }

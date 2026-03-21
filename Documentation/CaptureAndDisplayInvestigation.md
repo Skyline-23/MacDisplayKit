@@ -1249,6 +1249,10 @@ Interpretation:
     - `xctrace` row export succeeded on this run:
       - `syscall rowCount=3664`
       - `time-sample rowCount=66`
+    - a follow-up `3`-second paired run with hot-symbol parsing showed:
+      - `systemCall hotSymbolHistogram={"CGYDisplayStreamFrameAvailable":9,"SLContentStream":1,"roEnqueue":1,"roEnqueueSampleBuffer":3}`
+      - `timeSample hotSymbolHistogram={}`
+      - the same run still logged `261` enqueue failures, all `messageKind=generic-enqueue-error`
     - replayd unified log emitted repeated producer-side enqueue failures:
       - `_SCRemoteQueue_Enqueue:217 ... err=-19641 opType=3 Error occurred when enqueuing data`
       - the new parser can now summarize those failures directly from the host artifact:
@@ -1271,6 +1275,9 @@ Interpretation:
   - interpretation of that paired run:
     - this is the first artifact-backed signal that the brokered producer path is not merely slow;
       it is hitting `_SCRemoteQueue_Enqueue` failures while the host-side passive trace remains `60hz-like`
+    - the hot-symbol parser closes one more gap:
+      `opType=3` failures occur in the same paired window where replayd syscall backtraces include
+      `roEnqueueSampleBuffer`, which ties the live failure stream directly to sample-buffer producer traffic
     - all observed failures in the latest run came from a single replayd callsite offset (`senderProgramCounter=766532`)
       rather than from multiple producer sites
     - static arm64e disassembly of `/usr/libexec/replayd` narrows that offset to the enqueue-error logger region:

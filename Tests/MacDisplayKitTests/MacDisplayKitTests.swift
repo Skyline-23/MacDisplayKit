@@ -808,8 +808,20 @@ final class MacDisplayKitTests: XCTestCase {
         <trace-query-result>
           <node xpath='//trace-toc[1]/run[1]/data[1]/table[2]'>
             <schema name="syscall"/>
-            <row><sample-time id="1">1</sample-time></row>
-            <row><sample-time id="2">2</sample-time></row>
+            <row>
+              <sample-time id="1">1</sample-time>
+              <backtrace>
+                <frame name="FigRemoteQueueSenderResetIfFullAndEnqueueSequence"/>
+                <frame name="roEnqueueSampleBuffer"/>
+              </backtrace>
+            </row>
+            <row>
+              <sample-time id="2">2</sample-time>
+              <backtrace>
+                <frame name="rqSenderHandleDequeue"/>
+                <frame name="SLContentStream"/>
+              </backtrace>
+            </row>
           </node>
         </trace-query-result>
         """
@@ -824,6 +836,10 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(summary.outputPath, "/tmp/syscall.xml")
         XCTAssertEqual(summary.rowCount, 2)
         XCTAssertTrue(summary.containsRows)
+        XCTAssertEqual(summary.hotSymbolHistogram["FigRemoteQueueSenderResetIfFullAndEnqueueSequence"], 1)
+        XCTAssertEqual(summary.hotSymbolHistogram["roEnqueueSampleBuffer"], 1)
+        XCTAssertEqual(summary.hotSymbolHistogram["rqSenderHandleDequeue"], 1)
+        XCTAssertEqual(summary.hotSymbolHistogram["SLContentStream"], 1)
         XCTAssertFalse(summary.excerpt.isEmpty)
     }
 

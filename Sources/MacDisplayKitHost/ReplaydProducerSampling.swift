@@ -233,6 +233,21 @@ private actor MDKReplaydXctraceCoordinator {
                 "xctrace exported replayd rows: syscall=\(systemCallTable.rowCount) time-sample=\(timeSampleTable.rowCount)."
             )
         }
+        if !systemCallTable.hotSymbolHistogram.isEmpty {
+            notes.append(
+                "replayd syscall backtraces hit producer symbols \(systemCallTable.hotSymbolHistogram)."
+            )
+        }
+        if
+            let enqueueFailures = unifiedLog.enqueueFailureSummary,
+            enqueueFailures.operationHistogram.count == 1,
+            enqueueFailures.operationHistogram["3"] != nil,
+            systemCallTable.hotSymbolHistogram["roEnqueueSampleBuffer"] != nil
+        {
+            notes.append(
+                "opType=3 enqueue failures coincided with replayd syscall backtraces through roEnqueueSampleBuffer, tying the live failures to sample-buffer producer traffic."
+            )
+        }
         if unifiedLog.matchedLineCount == 0 {
             notes.append("replayd unified log did not emit matching capture markers in the requested window.")
         }
