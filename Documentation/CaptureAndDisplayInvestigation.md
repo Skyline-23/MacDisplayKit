@@ -1078,3 +1078,23 @@ Interpretation:
 - the next practical reverse-engineering step is therefore no longer another host-side imported stub; it is:
   - `replayd` cross-process observation / disassembly around `SCContentSharingSessionService`
   - or lower Mach/MIG receiver state inside `CMCapture` once the remote queue has already been connected
+
+Follow-up passive trace after swizzling `NSXPCConnection` setup in the host process:
+
+- `nsxpcInitMachServiceEventCount=1`
+- `nsxpcInitListenerEndpointEventCount=0`
+- `nsxpcResumeEventCount=1`
+- `nsxpcSetRemoteObjectInterfaceEventCount=1`
+- `nsxpcSetExportedInterfaceEventCount=1`
+- `nsxpcServiceHistogram={"com.apple.replayd":1}`
+
+Interpretation:
+
+- the host process still does not expose the broker handoff through imported `xpc_connection_create_from_endpoint`,
+  `xpc_endpoint_create`, `xpc_connection_set_non_launching`, or `xpc_mach_send_*`
+- but the Objective-C layer *does* show a concrete client connection being created against `com.apple.replayd`
+- that is the first direct host-side confirmation that the passive `SCStream` capture path is brokered through
+  `replayd`, even though the lower imported C shims stay dark
+- this shifts the next reverse-engineering target from generic host-side imported stubs to two sharper paths:
+  - `NSXPCConnection` / interface wiring around the `com.apple.replayd` client in the host
+  - `replayd` itself, especially `SCContentSharingSessionService` and the session creation / reply path

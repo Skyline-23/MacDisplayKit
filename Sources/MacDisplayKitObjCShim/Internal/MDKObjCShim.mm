@@ -856,6 +856,7 @@ static void MDKUpdateSCKSampleBufferDiagnostics(CMSampleBufferRef sampleBuffer);
 static BOOL MDKPrimeSCRemoteQueueWrapperIfPossible(id remoteQueue);
 static BOOL MDKWrapVideoReceiveQueueCallbackIfPossible(id stream);
 static NSDictionary<NSString *, id> * _Nullable MDKCopyDispatchReadSourceMetadata(dispatch_source_t source);
+static void MDKRecordNSXPCConnectionEvent(NSString *kind, id connection, NSString *serviceName, id object, NSXPCInterface *interface);
 static NSString *MDKBucketMilliseconds(double milliseconds);
 static void MDKIncrementMutableHistogram(NSMutableDictionary<NSString *, NSNumber *> *histogram, NSString *bucket);
 static NSString *MDKClassifyCadenceHistogram(NSDictionary<NSString *, NSNumber *> *histogram, NSUInteger deltaCount);
@@ -1031,6 +1032,10 @@ using MDKBWNodeHandleMessageFn = void (*)(id, SEL, id, id);
 using MDKFigSetSinkNodeFn = void (*)(id, SEL, id);
 using MDKSCRemoteQueueSetRemoteQueueFn = void (*)(id, SEL, id);
 using MDKSCRemoteQueueSetQueueTypeFn = void (*)(id, SEL, unsigned char);
+using MDKNSXPCInitWithMachServiceNameFn = id (*)(id, SEL, NSString *, NSXPCConnectionOptions);
+using MDKNSXPCInitWithListenerEndpointFn = id (*)(id, SEL, NSXPCListenerEndpoint *);
+using MDKNSXPCResumeFn = void (*)(id, SEL);
+using MDKNSXPCSetInterfaceFn = void (*)(id, SEL, NSXPCInterface *);
 using MDKVideoReceiveQueueCallbackBlock = void (^)(int, MDKFigRemoteQueueMessage *, void *);
 using MDKVideoReceiveQueueBlockInvokeFn = void (*)(void *, int, MDKFigRemoteQueueMessage *, void *);
 using MDKVideoQueueNestedBlockInvokeFn = void (*)(void *, int, void *, void *);
@@ -1057,6 +1062,11 @@ static MDKManagerUpdateClientOutputTypeFn MDKOriginalManagerUpdateClientOutputTy
 static MDKManagerStreamUpdateWithFilterFn MDKOriginalManagerStreamUpdateWithFilter = nullptr;
 static MDKManagerStreamUpdateWithFilterFn MDKOriginalManagerStreamDidRequestUpdateFilter = nullptr;
 static MDKManagerStreamOutputEffectDidStartFn MDKOriginalManagerStreamOutputEffectDidStart = nullptr;
+static MDKNSXPCInitWithMachServiceNameFn MDKOriginalNSXPCInitWithMachServiceName = nullptr;
+static MDKNSXPCInitWithListenerEndpointFn MDKOriginalNSXPCInitWithListenerEndpoint = nullptr;
+static MDKNSXPCResumeFn MDKOriginalNSXPCResume = nullptr;
+static MDKNSXPCSetInterfaceFn MDKOriginalNSXPCSetRemoteObjectInterface = nullptr;
+static MDKNSXPCSetInterfaceFn MDKOriginalNSXPCSetExportedInterface = nullptr;
 static MDKRPIOSurfaceSetFn MDKOriginalRPIOSurfaceSet = nullptr;
 static MDKRPIOSurfaceGetFn MDKOriginalRPIOSurfaceGet = nullptr;
 static MDKCaptureHandlerWithSampleFn MDKOriginalDaemonCaptureHandlerWithSample = nullptr;
@@ -2113,6 +2123,13 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"xpcMachSendCreateEventCount": @0,
             @"xpcMachSendCopyRightEventCount": @0,
             @"xpcBrokerInterposeEventCount": @0,
+            @"nsxpcInitMachServiceEventCount": @0,
+            @"nsxpcInitListenerEndpointEventCount": @0,
+            @"nsxpcResumeEventCount": @0,
+            @"nsxpcSetRemoteObjectInterfaceEventCount": @0,
+            @"nsxpcSetExportedInterfaceEventCount": @0,
+            @"nsxpcConnectionEventCount": @0,
+            @"nsxpcServiceHistogram": [NSMutableDictionary dictionary],
             @"xpcPipeCreateEventCount": @0,
             @"xpcPipeSimpleRoutineEventCount": @0,
             @"xpcPipeInterposeEventCount": @0,
@@ -2746,6 +2763,53 @@ static NSDictionary<NSString *, id> *MDKMakeTraceStep(
     return step;
 }
 
+static id MDKSwizzledNSXPCConnectionInitWithMachServiceName(id self, SEL _cmd, NSString *serviceName, NSXPCConnectionOptions options) {
+    if (MDKOriginalNSXPCInitWithMachServiceName == nullptr) {
+        return self;
+    }
+
+    id connection = MDKOriginalNSXPCInitWithMachServiceName(self, _cmd, serviceName, options);
+    MDKRecordNSXPCConnectionEvent(@"nsxpc-init-mach-service", connection, serviceName, nil, nil);
+    return connection;
+}
+
+static id MDKSwizzledNSXPCConnectionInitWithListenerEndpoint(id self, SEL _cmd, NSXPCListenerEndpoint *endpoint) {
+    if (MDKOriginalNSXPCInitWithListenerEndpoint == nullptr) {
+        return self;
+    }
+
+    id connection = MDKOriginalNSXPCInitWithListenerEndpoint(self, _cmd, endpoint);
+    MDKRecordNSXPCConnectionEvent(@"nsxpc-init-listener-endpoint", connection, nil, endpoint, nil);
+    return connection;
+}
+
+static void MDKSwizzledNSXPCConnectionResume(id self, SEL _cmd) {
+    if (MDKOriginalNSXPCResume == nullptr) {
+        return;
+    }
+
+    MDKRecordNSXPCConnectionEvent(@"nsxpc-resume", self, nil, nil, nil);
+    MDKOriginalNSXPCResume(self, _cmd);
+}
+
+static void MDKSwizzledNSXPCConnectionSetRemoteObjectInterface(id self, SEL _cmd, NSXPCInterface *interface) {
+    if (MDKOriginalNSXPCSetRemoteObjectInterface == nullptr) {
+        return;
+    }
+
+    MDKRecordNSXPCConnectionEvent(@"nsxpc-set-remote-object-interface", self, nil, nil, interface);
+    MDKOriginalNSXPCSetRemoteObjectInterface(self, _cmd, interface);
+}
+
+static void MDKSwizzledNSXPCConnectionSetExportedInterface(id self, SEL _cmd, NSXPCInterface *interface) {
+    if (MDKOriginalNSXPCSetExportedInterface == nullptr) {
+        return;
+    }
+
+    MDKRecordNSXPCConnectionEvent(@"nsxpc-set-exported-interface", self, nil, nil, interface);
+    MDKOriginalNSXPCSetExportedInterface(self, _cmd, interface);
+}
+
 static void MDKSwizzledProxyCoreGraphics(
     id self,
     SEL _cmd,
@@ -3272,6 +3336,64 @@ static void MDKRecordXPCBrokerInterposeEvent(
         @"connection": connectionSummary ?: @{},
         @"object": objectSummary ?: @{},
         @"port": @(port),
+        @"interesting": @(interesting),
+        @"wrapperSequenceID": MDKCurrentVideoQueueWrapperSequence() > 0 ? @(MDKCurrentVideoQueueWrapperSequence()) : [NSNull null],
+        @"wrapperDepth": @(MDKCurrentVideoQueueWrapperSequenceDepth()),
+    } mutableCopy];
+    if (overallEventCount <= 8) {
+        payload[@"backtrace"] = MDKCopyBacktraceFrames(10, 3);
+    }
+    MDKRecordSCKTraceEvent(kind, payload);
+}
+
+static void MDKRecordNSXPCConnectionEvent(
+    NSString *kind,
+    id connection,
+    NSString *serviceName,
+    id object,
+    NSXPCInterface *interface
+) {
+    NSString *resolvedServiceName = serviceName;
+    if (resolvedServiceName.length == 0) {
+        resolvedServiceName = nil;
+    }
+    const BOOL interesting = MDKStringContainsInterestingBrokerName(resolvedServiceName);
+
+    BOOL shouldRecord = NO;
+    NSUInteger overallEventCount = 0;
+    NSString *counterKey = @"nsxpcInitMachServiceEventCount";
+    if ([kind isEqualToString:@"nsxpc-init-listener-endpoint"]) {
+        counterKey = @"nsxpcInitListenerEndpointEventCount";
+    } else if ([kind isEqualToString:@"nsxpc-resume"]) {
+        counterKey = @"nsxpcResumeEventCount";
+    } else if ([kind isEqualToString:@"nsxpc-set-remote-object-interface"]) {
+        counterKey = @"nsxpcSetRemoteObjectInterfaceEventCount";
+    } else if ([kind isEqualToString:@"nsxpc-set-exported-interface"]) {
+        counterKey = @"nsxpcSetExportedInterfaceEventCount";
+    }
+
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            MDKActiveSCKTraceState[counterKey] =
+                @([MDKActiveSCKTraceState[counterKey] unsignedIntegerValue] + 1);
+            overallEventCount = [MDKActiveSCKTraceState[@"nsxpcConnectionEventCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"nsxpcConnectionEventCount"] = @(overallEventCount);
+            if (resolvedServiceName != nil) {
+                NSMutableDictionary<NSString *, NSNumber *> *histogram = MDKActiveSCKTraceState[@"nsxpcServiceHistogram"];
+                histogram[resolvedServiceName] = @([histogram[resolvedServiceName] unsignedIntegerValue] + 1);
+            }
+            shouldRecord = interesting || overallEventCount <= 48;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    NSMutableDictionary<NSString *, id> *payload = [@{
+        @"connection": MDKSummarizeObject(connection),
+        @"serviceName": resolvedServiceName ?: [NSNull null],
+        @"object": object != nil ? MDKSummarizeObject(object) : @{},
+        @"interface": interface != nil ? MDKSummarizeObject(interface) : @{},
         @"interesting": @(interesting),
         @"wrapperSequenceID": MDKCurrentVideoQueueWrapperSequence() > 0 ? @(MDKCurrentVideoQueueWrapperSequence()) : [NSNull null],
         @"wrapperDepth": @(MDKCurrentVideoQueueWrapperSequenceDepth()),
@@ -6634,6 +6756,73 @@ static void MDKInstallSCKProxyTraceHooks(void) {
         MDKInstallXPCBrokerInterposes();
         MDKInstallXPCPipeInterposes();
         MDKInstallXPCFDInterposes();
+        Class nsxpcConnectionClass = NSClassFromString(@"NSXPCConnection");
+        if (nsxpcConnectionClass != Nil) {
+            Method initWithMachServiceNameMethod = class_getInstanceMethod(
+                nsxpcConnectionClass,
+                sel_registerName("initWithMachServiceName:options:")
+            );
+            if (initWithMachServiceNameMethod != nullptr) {
+                MDKOriginalNSXPCInitWithMachServiceName =
+                    reinterpret_cast<MDKNSXPCInitWithMachServiceNameFn>(method_getImplementation(initWithMachServiceNameMethod));
+                method_setImplementation(
+                    initWithMachServiceNameMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledNSXPCConnectionInitWithMachServiceName)
+                );
+            }
+
+            Method initWithListenerEndpointMethod = class_getInstanceMethod(
+                nsxpcConnectionClass,
+                sel_registerName("initWithListenerEndpoint:")
+            );
+            if (initWithListenerEndpointMethod != nullptr) {
+                MDKOriginalNSXPCInitWithListenerEndpoint =
+                    reinterpret_cast<MDKNSXPCInitWithListenerEndpointFn>(method_getImplementation(initWithListenerEndpointMethod));
+                method_setImplementation(
+                    initWithListenerEndpointMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledNSXPCConnectionInitWithListenerEndpoint)
+                );
+            }
+
+            Method resumeMethod = class_getInstanceMethod(
+                nsxpcConnectionClass,
+                sel_registerName("resume")
+            );
+            if (resumeMethod != nullptr) {
+                MDKOriginalNSXPCResume =
+                    reinterpret_cast<MDKNSXPCResumeFn>(method_getImplementation(resumeMethod));
+                method_setImplementation(
+                    resumeMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledNSXPCConnectionResume)
+                );
+            }
+
+            Method setRemoteObjectInterfaceMethod = class_getInstanceMethod(
+                nsxpcConnectionClass,
+                sel_registerName("setRemoteObjectInterface:")
+            );
+            if (setRemoteObjectInterfaceMethod != nullptr) {
+                MDKOriginalNSXPCSetRemoteObjectInterface =
+                    reinterpret_cast<MDKNSXPCSetInterfaceFn>(method_getImplementation(setRemoteObjectInterfaceMethod));
+                method_setImplementation(
+                    setRemoteObjectInterfaceMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledNSXPCConnectionSetRemoteObjectInterface)
+                );
+            }
+
+            Method setExportedInterfaceMethod = class_getInstanceMethod(
+                nsxpcConnectionClass,
+                sel_registerName("setExportedInterface:")
+            );
+            if (setExportedInterfaceMethod != nullptr) {
+                MDKOriginalNSXPCSetExportedInterface =
+                    reinterpret_cast<MDKNSXPCSetInterfaceFn>(method_getImplementation(setExportedInterfaceMethod));
+                method_setImplementation(
+                    setExportedInterfaceMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledNSXPCConnectionSetExportedInterface)
+                );
+            }
+        }
         Class daemonProxyClass = NSClassFromString(@"RPDaemonProxy");
         if (daemonProxyClass == Nil) {
             return;
@@ -9926,6 +10115,36 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             @"xpc-mach-send-copy-right",
         ]]
     );
+    NSDictionary<NSString *, id> *nsxpcInitMachServiceCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"nsxpc-init-mach-service",
+        ]]
+    );
+    NSDictionary<NSString *, id> *nsxpcInitListenerEndpointCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"nsxpc-init-listener-endpoint",
+        ]]
+    );
+    NSDictionary<NSString *, id> *nsxpcResumeCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"nsxpc-resume",
+        ]]
+    );
+    NSDictionary<NSString *, id> *nsxpcSetRemoteObjectInterfaceCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"nsxpc-set-remote-object-interface",
+        ]]
+    );
+    NSDictionary<NSString *, id> *nsxpcSetExportedInterfaceCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"nsxpc-set-exported-interface",
+        ]]
+    );
     NSDictionary<NSString *, id> *surfaceTransportHandleMessageCadenceSummary = MDKCopyTraceEventCadenceSummary(
         traceEvents,
         [NSSet setWithArray:@[
@@ -10271,6 +10490,22 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"xpcMachSendCopyRightEventCount=%@", MDKDescribeTraceValue(xpcMachSendCopyRightCadenceSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcMachSendCopyRightDeltaHistogram=%@", MDKDescribeTraceValue(xpcMachSendCopyRightCadenceSummary[@"deltaHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcMachSendCopyRightCadenceClassification=%@", MDKDescribeTraceValue(xpcMachSendCopyRightCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcInitMachServiceEventCount=%@", MDKDescribeTraceValue(nsxpcInitMachServiceCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcInitMachServiceDeltaHistogram=%@", MDKDescribeTraceValue(nsxpcInitMachServiceCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcInitMachServiceCadenceClassification=%@", MDKDescribeTraceValue(nsxpcInitMachServiceCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcInitListenerEndpointEventCount=%@", MDKDescribeTraceValue(nsxpcInitListenerEndpointCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcInitListenerEndpointDeltaHistogram=%@", MDKDescribeTraceValue(nsxpcInitListenerEndpointCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcInitListenerEndpointCadenceClassification=%@", MDKDescribeTraceValue(nsxpcInitListenerEndpointCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcResumeEventCount=%@", MDKDescribeTraceValue(nsxpcResumeCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcResumeDeltaHistogram=%@", MDKDescribeTraceValue(nsxpcResumeCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcResumeCadenceClassification=%@", MDKDescribeTraceValue(nsxpcResumeCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcSetRemoteObjectInterfaceEventCount=%@", MDKDescribeTraceValue(nsxpcSetRemoteObjectInterfaceCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcSetRemoteObjectInterfaceDeltaHistogram=%@", MDKDescribeTraceValue(nsxpcSetRemoteObjectInterfaceCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcSetRemoteObjectInterfaceCadenceClassification=%@", MDKDescribeTraceValue(nsxpcSetRemoteObjectInterfaceCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcSetExportedInterfaceEventCount=%@", MDKDescribeTraceValue(nsxpcSetExportedInterfaceCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcSetExportedInterfaceDeltaHistogram=%@", MDKDescribeTraceValue(nsxpcSetExportedInterfaceCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcSetExportedInterfaceCadenceClassification=%@", MDKDescribeTraceValue(nsxpcSetExportedInterfaceCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcServiceHistogram=%@", MDKDescribeTraceValue(snapshot[@"nsxpcServiceHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeAttempted"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalled"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalledImageCount=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalledImageCount"])]];
