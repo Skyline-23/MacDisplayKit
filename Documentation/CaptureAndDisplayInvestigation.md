@@ -808,3 +808,22 @@ Interpretation:
 - in practical terms, the remaining ceiling is now best modeled as `dispatch source scheduling ->
   CMCapture wrapper block -> SCStream nested block -> public sample`, with the first stage still
   unproven and the latter three already observed as `60hz-like` or sub-millisecond handoffs
+
+Follow-up passive trace after decoding the live `OS_dispatch_source` object via libdispatch APIs:
+
+- `videoReceiveQueueWrapperSlot32PointeeWord6ObjectClassName=OS_dispatch_source`
+- `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceHandle=3`
+- `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceMask=0`
+- `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceData=2`
+- `videoReceiveQueueWrapperSlot32PointeeWord6DispatchSourceCancelled=0`
+- `rqReceiverSetSourceInvokeEntryEventCount=0`
+
+Interpretation:
+
+- the upstream wakeup object for the video receive path is not a mach-receive source; the live
+  dispatch source currently reports `handle=3`, which is consistent with an fd-backed source
+- `mask=0` and `data=2` mean the wakeup side is still opaque, but the source is active rather than
+  cancelled and is almost certainly sitting in front of the already-confirmed wrapper block
+- together with the failed `rqReceiverSetSource` interpose, the next practical reverse-engineering
+  target is now the fd-backed dispatch-source scheduling boundary rather than the later CMCapture or
+  ScreenCaptureKit local blocks
