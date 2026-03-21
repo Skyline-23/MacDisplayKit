@@ -2,12 +2,14 @@ import Foundation
 
 enum MDKCaptureFrameProcessingFactory {
     static func make(
-        processingMode: MDKCaptureBenchmarkProcessingMode
+        processingMode: MDKCaptureBenchmarkProcessingMode,
+        targetFrameRate: Int = 120
     ) throws -> any MDKCaptureFrameProcessing {
         if let codec = processingMode.videoEncoderCodec {
             return MDKVideoToolboxEncodingProcessor(
                 codec: codec,
-                preprocessStrategy: processingMode.videoPreprocessStrategy
+                preprocessStrategy: processingMode.videoPreprocessStrategy,
+                targetFrameRate: targetFrameRate
             )
         }
 

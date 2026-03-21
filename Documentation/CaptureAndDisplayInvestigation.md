@@ -1754,3 +1754,22 @@ Interpretation:
     - the `VT` staging pool still allows up to `128` inflight staged slots, but the pool's minimum-buffer count is now capped at `12` to avoid overstating pressure on `CVPixelBufferPool`
   - current interpretation:
     - this does not yet eliminate the `HEVC` source slowdown under current system load, but it keeps the safe detached-staging design and removes one obvious per-frame setup cost while avoiding the slot-exhaustion regression seen when the total inflight slot cap itself was lowered
+- 2026-03-21 the framework defaults and tuning advisor now track output-oriented winners instead of stale raw-only assumptions
+  - implementation changes:
+    - `MDKSkyLightDisplayStreamConfiguration.panelNative()` now defaults to `baseline-q2` instead of the old `request-120-like` shorthand
+    - `HEVC/H.264` and `ProRes Proxy` tuning advisors now prioritize `q2` ahead of `q1`
+    - host-side `--auto-tune-raw` for processing modes now benchmarks the actual processing candidates and selects the winner from `effectiveOutputFrameRate`/stall behavior instead of carrying over a raw-only winner
+    - the staged `CVPixelBuffer` wrapper is created before the Metal completion handler closes over it, so the completion path no longer captures the whole staging slot object
+  - current direct measurements on the host:
+    - explicit `HEVC x420`:
+      - `q1` -> `completedOutputFrameRate≈104.51`
+      - `q2` -> `completedOutputFrameRate≈129.78`
+      - `q3` -> `completedOutputFrameRate≈127.22`
+    - explicit `ProRes Proxy BGRA`:
+      - `q1` -> `completedOutputFrameRate≈105.40`
+      - `q2` -> `completedOutputFrameRate≈127.67`
+      - `q3` -> `completedOutputFrameRate≈97.64`
+  - current interpretation:
+    - the best current full-output queue depth is `q2`, not the earlier `q1` shorthand and not the older `q3` default
+    - Apollo-facing defaults should therefore use `q2`, while the framework still exposes the full tuning surface for callers that want to override it explicitly
+    - multi-candidate auto-tuning remains useful as a diagnostic tool, but a long sweep can perturb host load enough that the fixed `q2` default is safer for the first production integration

@@ -380,12 +380,25 @@ public enum MDKSkyLightDisplayStreamProcessingBenchmark {
         outputWidth: Int? = nil,
         outputHeight: Int? = nil,
         pixelFormat: UInt32? = nil,
+        targetFrameRate: Int? = nil,
         processingMode: MDKCaptureBenchmarkProcessingMode
     ) throws -> MDKSkyLightDisplayStreamProcessingBenchmarkResult {
         let requestedMinimumFrameTime = max(minimumFrameTime, 0)
         let requestedQueueDepth = max(queueDepth, 1)
         let recorder = MDKSkyLightDisplayStreamProcessingRecorder()
-        let processor = try MDKCaptureFrameProcessingFactory.make(processingMode: processingMode)
+        let targetFrameRate: Int = {
+            if let targetFrameRate {
+                return max(targetFrameRate, 1)
+            }
+            if requestedMinimumFrameTime > 0 {
+                return max(Int((1.0 / requestedMinimumFrameTime).rounded()), 1)
+            }
+            return 120
+        }()
+        let processor = try MDKCaptureFrameProcessingFactory.make(
+            processingMode: processingMode,
+            targetFrameRate: targetFrameRate
+        )
         let resolvedPixelFormat: OSType = OSType(pixelFormat ?? kCVPixelFormatType_32BGRA)
         let resolvedOutputWidth = UInt(max(outputWidth ?? 0, 0))
         let resolvedOutputHeight = UInt(max(outputHeight ?? 0, 0))

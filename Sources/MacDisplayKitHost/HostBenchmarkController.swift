@@ -186,6 +186,7 @@ final class MDKHostBenchmarkController {
         outputWidth: Int? = nil,
         outputHeight: Int? = nil,
         pixelFormat: UInt32? = nil,
+        targetFrameRate: Int? = nil,
         processingMode: MDKCaptureBenchmarkProcessingMode
     ) throws -> MDKSkyLightDisplayStreamProcessingBenchmarkResult {
         let resolvedPixelFormat = pixelFormat ?? processingMode.preferredCapturePixelFormat
@@ -198,6 +199,7 @@ final class MDKHostBenchmarkController {
             outputWidth: outputWidth,
             outputHeight: outputHeight,
             pixelFormat: resolvedPixelFormat,
+            targetFrameRate: targetFrameRate,
             processingMode: processingMode
         )
         .appendingNotes(captureRelevantProcessLoadNotes())
@@ -213,45 +215,56 @@ final class MDKHostBenchmarkController {
         processingMode: MDKCaptureBenchmarkProcessingMode
     ) throws -> MDKSkyLightDisplayStreamProcessingBenchmarkResult {
         let resolvedPixelFormat = pixelFormat ?? processingMode.preferredCapturePixelFormat
-        let candidateSet = MDKSkyLightDisplayStreamTuningAdvisor.recommendedCandidates(for: processingMode)
-        let tuningReport = try benchmarkSkyLightDisplayStreamTuningMatrix(
-            displayID: displayID,
-            sampleDuration: sampleDuration,
-            useMetalStimulus: useMetalStimulus,
-            candidates: candidateSet,
-            pixelFormat: resolvedPixelFormat
-        )
+        let candidateSet = MDKSkyLightDisplayStreamTuningAdvisor
+            .recommendedCandidates(for: processingMode)
+            .map { tuningCandidate in
+                MDKSkyLightDisplayStreamProcessingMatrixCandidate(
+                    identifier: "\(processingMode.rawValue)/\(tuningCandidate.identifier)",
+                    processingMode: processingMode,
+                    tuningCandidate: tuningCandidate
+                )
+            }
 
-        guard let bestEvaluation = tuningReport.bestEvaluation else {
+        let evaluations = candidateSet.map { candidate in
+            do {
+                return MDKSkyLightDisplayStreamProcessingMatrixEvaluation(
+                    candidate: candidate,
+                    result: try runSkyLightDisplayStreamProcessingBenchmarkInSubprocess(
+                        displayID: displayID,
+                        sampleDuration: sampleDuration,
+                        useMetalStimulus: useMetalStimulus,
+                        candidate: candidate,
+                        outputWidth: outputWidth,
+                        outputHeight: outputHeight,
+                        pixelFormat: resolvedPixelFormat
+                    ),
+                    errorDescription: nil
+                )
+            } catch {
+                return MDKSkyLightDisplayStreamProcessingMatrixEvaluation(
+                    candidate: candidate,
+                    result: nil,
+                    errorDescription: (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                )
+            }
+        }
+
+        guard let bestIndex = MDKSkyLightDisplayStreamProcessingMatrix.bestEvaluationIndex(for: evaluations),
+              evaluations.indices.contains(bestIndex),
+              let bestResult = evaluations[bestIndex].result else {
             throw NSError(
                 domain: "MacDisplayKitHost",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "No raw SkyLight tuning candidate succeeded for \(processingMode.rawValue)."]
+                userInfo: [NSLocalizedDescriptionKey: "No raw SkyLight processing candidate succeeded for \(processingMode.rawValue)."]
             )
         }
+        let bestCandidate = evaluations[bestIndex].candidate
 
-        let configuration = MDKSkyLightDisplayStreamConfiguration(
-            tuning: bestEvaluation.candidate,
-            outputWidth: outputWidth,
-            outputHeight: outputHeight,
-            pixelFormat: resolvedPixelFormat
-        )
-
-        return try benchmarkSkyLightDisplayStreamProcessing(
-            displayID: displayID,
-            sampleDuration: sampleDuration,
-            minimumFrameTime: configuration.resolvedMinimumFrameTime,
-            queueDepth: configuration.resolvedQueueDepth,
-            showCursor: configuration.tuning.showCursor,
-            outputWidth: configuration.resolvedOutputWidth == 0 ? nil : configuration.resolvedOutputWidth,
-            outputHeight: configuration.resolvedOutputHeight == 0 ? nil : configuration.resolvedOutputHeight,
-            pixelFormat: configuration.resolvedPixelFormatOverride == 0 ? nil : configuration.resolvedPixelFormatOverride,
-            processingMode: processingMode
-        )
+        return bestResult
         .appendingNotes([
-            "autoTunedRawCandidate=\(bestEvaluation.candidate.identifier)",
-            "autoTunedRawObservedFrameRate=\(String(format: "%.2f", bestEvaluation.result.observedFrameRate))",
-            "autoTunedRawCadence=\(bestEvaluation.result.cadenceClassification)"
+            "autoTunedProcessingCandidate=\(bestCandidate.tuningCandidate.identifier)",
+            "autoTunedProcessingOutputFrameRate=\(String(format: "%.2f", bestResult.effectiveOutputFrameRate))",
+            "autoTunedProcessingCadence=\(bestResult.cadenceClassification)"
         ])
     }
 
@@ -412,7 +425,10 @@ final class MDKHostBenchmarkController {
         displayID: UInt32,
         sampleDuration: TimeInterval,
         useMetalStimulus: Bool,
-        candidate: MDKSkyLightDisplayStreamProcessingMatrixCandidate
+        candidate: MDKSkyLightDisplayStreamProcessingMatrixCandidate,
+        outputWidth: Int? = nil,
+        outputHeight: Int? = nil,
+        pixelFormat: UInt32? = nil
     ) throws -> MDKSkyLightDisplayStreamProcessingBenchmarkResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
@@ -432,6 +448,18 @@ final class MDKHostBenchmarkController {
         ]
         if candidate.tuningCandidate.showCursor {
             arguments.append("--show-cursor")
+        }
+        if let outputWidth {
+            arguments.append("--surface-width")
+            arguments.append(String(outputWidth))
+        }
+        if let outputHeight {
+            arguments.append("--surface-height")
+            arguments.append(String(outputHeight))
+        }
+        if let pixelFormat {
+            arguments.append("--pixel-format")
+            arguments.append(Self.pixelFormatAlias(for: pixelFormat))
         }
         if useMetalStimulus {
             arguments.append("--with-metal-stimulus")

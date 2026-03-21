@@ -19,7 +19,7 @@ public struct MDKSkyLightDisplayStreamConfiguration: Codable, Equatable, Sendabl
     }
 
     public static func panelNative(
-        tuning: MDKSkyLightDisplayStreamTuningCandidate = MDKSkyLightDisplayStreamTuningMatrix.request120LikeCandidate,
+        tuning: MDKSkyLightDisplayStreamTuningCandidate = MDKSkyLightDisplayStreamTuningMatrix.baselineQueue2Candidate,
         pixelFormat: UInt32? = nil
     ) -> Self {
         Self(

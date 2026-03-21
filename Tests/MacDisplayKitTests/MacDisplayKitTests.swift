@@ -574,12 +574,20 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(configuration.resolvedPixelFormatOverride, kCVPixelFormatType_32BGRA)
     }
 
+    func testSkyLightConfigurationPanelNativeDefaultsToBaselineQ2() {
+        let configuration = MDKSkyLightDisplayStreamConfiguration.panelNative()
+
+        XCTAssertEqual(configuration.tuning.identifier, "baseline-q2")
+        XCTAssertEqual(configuration.resolvedMinimumFrameTime, 0)
+        XCTAssertEqual(configuration.resolvedQueueDepth, 2)
+    }
+
     func testTuningAdvisorPrefersLowerQueueDepthForProRes() {
         let candidates = MDKSkyLightDisplayStreamTuningAdvisor.recommendedCandidates(
             for: .videoToolboxEncodeProResProxyExperimental
         )
 
-        XCTAssertEqual(candidates.map(\.identifier), ["baseline-q1", "baseline-q2", "baseline-q3"])
+        XCTAssertEqual(candidates.map(\.identifier), ["baseline-q2", "baseline-q1", "baseline-q3"])
     }
 
     func testTuningAdvisorKeeps120LikeCandidateForHEVC() {
@@ -587,8 +595,10 @@ final class MacDisplayKitTests: XCTestCase {
             for: .videoToolboxEncode
         )
 
-        XCTAssertEqual(candidates.first?.identifier, "min-frame-240hz-q1")
+        XCTAssertEqual(candidates.first?.identifier, "baseline-q2")
+        XCTAssertEqual(candidates.dropFirst().first?.identifier, "baseline-q3")
         XCTAssertTrue(candidates.contains(where: { $0.identifier == "baseline-q1" }))
+        XCTAssertTrue(candidates.contains(where: { $0.identifier == "min-frame-240hz-q1" }))
         XCTAssertTrue(candidates.contains(where: { $0.identifier == "baseline-q4" }))
     }
 

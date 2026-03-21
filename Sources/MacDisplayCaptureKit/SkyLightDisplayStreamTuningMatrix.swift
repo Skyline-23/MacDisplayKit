@@ -190,8 +190,8 @@ public enum MDKSkyLightDisplayStreamTuningAdvisor {
         switch processingMode {
         case .videoToolboxEncodeProResProxyExperimental:
             return [
-                MDKSkyLightDisplayStreamTuningMatrix.baselineQueue1Candidate,
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue2Candidate,
+                MDKSkyLightDisplayStreamTuningMatrix.baselineQueue1Candidate,
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue3Candidate
             ]
         case .videoToolboxEncode,
@@ -199,10 +199,10 @@ public enum MDKSkyLightDisplayStreamTuningAdvisor {
              .videoToolboxEncodeH264,
              .videoToolboxEncodeH264Downscale2x:
             return [
-                MDKSkyLightDisplayStreamTuningMatrix.request120LikeCandidate,
-                MDKSkyLightDisplayStreamTuningMatrix.baselineQueue1Candidate,
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue2Candidate,
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue3Candidate,
+                MDKSkyLightDisplayStreamTuningMatrix.baselineQueue1Candidate,
+                MDKSkyLightDisplayStreamTuningMatrix.request120LikeCandidate,
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue4Candidate
             ]
         case .none, .metalBind, .metalCopy:
