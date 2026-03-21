@@ -1,5 +1,6 @@
 import XCTest
 import CoreVideo
+import VideoToolbox
 @testable import MacDisplayKit
 @testable import MacDisplayCaptureKit
 
@@ -32,6 +33,26 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(target, SIMD2(2560, 1440))
     }
 
+    func testSkyLightPixelFormatAliasesMapToExpectedCoreVideoFormats() {
+        XCTAssertEqual(MDKSkyLightDisplayStreamPixelFormat.bgra.pixelFormat, kCVPixelFormatType_32BGRA)
+        XCTAssertEqual(
+            MDKSkyLightDisplayStreamPixelFormat.biPlanar420VideoRange.pixelFormat,
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        )
+        XCTAssertEqual(
+            MDKSkyLightDisplayStreamPixelFormat.biPlanar420FullRange.pixelFormat,
+            kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        )
+        XCTAssertEqual(
+            MDKSkyLightDisplayStreamPixelFormat.biPlanar42010VideoRange.pixelFormat,
+            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        )
+        XCTAssertEqual(
+            MDKSkyLightDisplayStreamPixelFormat.biPlanar42010FullRange.pixelFormat,
+            kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+        )
+    }
+
     func testDownscaleProcessingModesExposeCodecAndPreprocessStrategy() {
         XCTAssertEqual(MDKCaptureBenchmarkProcessingMode.videoToolboxEncodeDownscale2x.videoEncoderCodec, .hevc)
         XCTAssertEqual(MDKCaptureBenchmarkProcessingMode.videoToolboxEncodeDownscale2x.videoPreprocessStrategy, .downscale2x)
@@ -44,11 +65,34 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertTrue(MDKCaptureBenchmarkProcessingMode.videoToolboxEncodeProResProxyExperimental.isExperimental)
     }
 
+    func testHEVCUsesMain10ProfileForTenBitBiPlanarInputs() {
+        XCTAssertEqual(
+            MDKVideoEncoderCodec.hevc.defaultProfileLevel(for: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange),
+            kVTProfileLevel_HEVC_Main10_AutoLevel
+        )
+        XCTAssertEqual(
+            MDKVideoEncoderCodec.hevc.defaultProfileLevel(for: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+            kVTProfileLevel_HEVC_Main_AutoLevel
+        )
+    }
+
+    func testCodecPreferredInputPixelFormatsFavorEncoderFriendlyTargets() {
+        XCTAssertEqual(
+            MDKVideoEncoderCodec.hevc.preferredInputPixelFormat(for: kCVPixelFormatType_32BGRA),
+            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        )
+        XCTAssertEqual(
+            MDKVideoEncoderCodec.h264.preferredInputPixelFormat(for: kCVPixelFormatType_32BGRA),
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        )
+        XCTAssertEqual(
+            MDKVideoEncoderCodec.proResProxy.preferredInputPixelFormat(for: kCVPixelFormatType_32BGRA),
+            kCVPixelFormatType_32BGRA
+        )
+    }
+
     func testDefaultRawProcessingMatrixKeepsOptInCodecsOutOfBand() {
-        XCTAssertFalse(MDKSkyLightDisplayStreamProcessingMatrix.defaultProcessingModes.contains(.videoToolboxEncodeAV1))
-        XCTAssertFalse(MDKSkyLightDisplayStreamProcessingMatrix.defaultProcessingModes.contains(.videoToolboxEncodeAV1Downscale2x))
         XCTAssertFalse(MDKSkyLightDisplayStreamProcessingMatrix.defaultProcessingModes.contains(.videoToolboxEncodeProResProxyExperimental))
-        XCTAssertTrue(MDKSkyLightDisplayStreamProcessingMatrix.optInProcessingModes.contains(.videoToolboxEncodeAV1))
         XCTAssertTrue(MDKSkyLightDisplayStreamProcessingMatrix.optInProcessingModes.contains(.videoToolboxEncodeProResProxyExperimental))
     }
 

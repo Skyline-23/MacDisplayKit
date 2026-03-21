@@ -160,7 +160,8 @@ final class MDKHostBenchmarkController {
         queueDepth: Int,
         showCursor: Bool,
         outputWidth: Int? = nil,
-        outputHeight: Int? = nil
+        outputHeight: Int? = nil,
+        pixelFormat: UInt32? = nil
     ) throws -> MDKSkyLightDisplayStreamBenchmarkResult {
         try MDKSkyLightDisplayStreamBenchmark.run(
             displayID: displayID,
@@ -169,7 +170,8 @@ final class MDKHostBenchmarkController {
             queueDepth: queueDepth,
             showCursor: showCursor,
             outputWidth: outputWidth,
-            outputHeight: outputHeight
+            outputHeight: outputHeight,
+            pixelFormat: pixelFormat
         )
         .appendingNotes(captureRelevantProcessLoadNotes())
     }
@@ -182,6 +184,7 @@ final class MDKHostBenchmarkController {
         showCursor: Bool,
         outputWidth: Int? = nil,
         outputHeight: Int? = nil,
+        pixelFormat: UInt32? = nil,
         processingMode: MDKCaptureBenchmarkProcessingMode
     ) throws -> MDKSkyLightDisplayStreamProcessingBenchmarkResult {
         try MDKSkyLightDisplayStreamProcessingBenchmark.run(
@@ -192,6 +195,7 @@ final class MDKHostBenchmarkController {
             showCursor: showCursor,
             outputWidth: outputWidth,
             outputHeight: outputHeight,
+            pixelFormat: pixelFormat,
             processingMode: processingMode
         )
     }

@@ -295,15 +295,14 @@ public enum MDKSkyLightDisplayStreamProcessingBenchmark {
         showCursor: Bool,
         outputWidth: Int? = nil,
         outputHeight: Int? = nil,
+        pixelFormat: UInt32? = nil,
         processingMode: MDKCaptureBenchmarkProcessingMode
     ) throws -> MDKSkyLightDisplayStreamProcessingBenchmarkResult {
         let requestedMinimumFrameTime = max(minimumFrameTime, 0)
         let requestedQueueDepth = max(queueDepth, 1)
         let recorder = MDKSkyLightDisplayStreamProcessingRecorder()
         let processor = try MDKCaptureFrameProcessingFactory.make(processingMode: processingMode)
-        let pixelFormat: OSType = processingMode.videoEncoderCodec != nil
-            ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-            : kCVPixelFormatType_32BGRA
+        let resolvedPixelFormat: OSType = OSType(pixelFormat ?? kCVPixelFormatType_32BGRA)
         let resolvedOutputWidth = UInt(max(outputWidth ?? 0, 0))
         let resolvedOutputHeight = UInt(max(outputHeight ?? 0, 0))
 
@@ -314,7 +313,7 @@ public enum MDKSkyLightDisplayStreamProcessingBenchmark {
             showCursor: showCursor,
             outputWidth: resolvedOutputWidth,
             outputHeight: resolvedOutputHeight,
-            pixelFormat: pixelFormat
+            pixelFormat: resolvedPixelFormat
         ) { status, displayTime, frameSurface in
             recorder.record(
                 status: status,
@@ -341,7 +340,7 @@ public enum MDKSkyLightDisplayStreamProcessingBenchmark {
             requestedMinimumFrameTime: requestedMinimumFrameTime,
             requestedQueueDepth: requestedQueueDepth,
             requestedShowCursor: showCursor,
-            requestedPixelFormat: pixelFormat,
+            requestedPixelFormat: UInt32(resolvedPixelFormat),
             processingSummary: processingSummary
         )
     }

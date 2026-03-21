@@ -30,6 +30,7 @@ private enum MDKHostCLICommand {
         queueDepthOverride: Int?,
         surfaceWidthOverride: Int?,
         surfaceHeightOverride: Int?,
+        pixelFormatOverride: UInt32?,
         processingMode: MDKCaptureBenchmarkProcessingMode?,
         showCursor: Bool,
         json: Bool,
@@ -448,6 +449,7 @@ enum MDKHostCommandLine {
             let queueDepthOverride,
             let surfaceWidthOverride,
             let surfaceHeightOverride,
+            let pixelFormatOverride,
             let processingMode,
             let showCursor,
             let json,
@@ -464,6 +466,7 @@ enum MDKHostCommandLine {
                     queueDepthOverride != nil ||
                     surfaceWidthOverride != nil ||
                     surfaceHeightOverride != nil ||
+                    pixelFormatOverride != nil ||
                     showCursor {
                     let resolvedMinimumFrameTime = minimumFrameTimeOverride
                         ?? (request120LikeProperties ? request120LikeCandidate.minimumFrameTime : 0.0)
@@ -478,6 +481,7 @@ enum MDKHostCommandLine {
                             showCursor: showCursor,
                             outputWidth: surfaceWidthOverride,
                             outputHeight: surfaceHeightOverride,
+                            pixelFormat: pixelFormatOverride,
                             processingMode: processingMode
                         )
                         if json {
@@ -497,10 +501,11 @@ enum MDKHostCommandLine {
                         sampleDuration: sampleDuration,
                         minimumFrameTime: resolvedMinimumFrameTime,
                         queueDepth: resolvedQueueDepth,
-                        showCursor: showCursor,
-                        outputWidth: surfaceWidthOverride,
-                        outputHeight: surfaceHeightOverride
-                    )
+                            showCursor: showCursor,
+                            outputWidth: surfaceWidthOverride,
+                            outputHeight: surfaceHeightOverride,
+                            pixelFormat: pixelFormatOverride
+                        )
                 } else {
                     if let processingMode {
                         let processingResult = try controller.benchmarkSkyLightDisplayStreamProcessing(
@@ -511,6 +516,7 @@ enum MDKHostCommandLine {
                             showCursor: false,
                             outputWidth: surfaceWidthOverride,
                             outputHeight: surfaceHeightOverride,
+                            pixelFormat: pixelFormatOverride,
                             processingMode: processingMode
                         )
                         if json {
@@ -844,16 +850,17 @@ enum MDKHostCommandLine {
         ) {
             return .skyLightDisplayStreamBenchmark(
                 displayID: displayID,
-                sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
-                request120LikeProperties: tokens.contains("--request-120-like"),
-                minimumFrameTimeOverride: parseMinimumFrameTime(tokens: tokens),
-                queueDepthOverride: parseQueueDepth(tokens: tokens),
-                surfaceWidthOverride: parseSurfaceDimension(flag: "--surface-width", tokens: tokens),
-                surfaceHeightOverride: parseSurfaceDimension(flag: "--surface-height", tokens: tokens),
-                processingMode: parseProcessingMode(tokens: tokens),
-                showCursor: tokens.contains("--show-cursor"),
-                json: tokens.contains("--json"),
-                useMetalStimulus: tokens.contains("--with-metal-stimulus")
+                            sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
+                            request120LikeProperties: tokens.contains("--request-120-like"),
+                            minimumFrameTimeOverride: parseMinimumFrameTime(tokens: tokens),
+                            queueDepthOverride: parseQueueDepth(tokens: tokens),
+                            surfaceWidthOverride: parseSurfaceDimension(flag: "--surface-width", tokens: tokens),
+                            surfaceHeightOverride: parseSurfaceDimension(flag: "--surface-height", tokens: tokens),
+                            pixelFormatOverride: parseSkyLightPixelFormat(tokens: tokens),
+                            processingMode: parseProcessingMode(tokens: tokens),
+                            showCursor: tokens.contains("--show-cursor"),
+                            json: tokens.contains("--json"),
+                            useMetalStimulus: tokens.contains("--with-metal-stimulus")
             )
         }
 
@@ -961,6 +968,25 @@ enum MDKHostCommandLine {
         }
 
         return value
+    }
+
+    private static func parseSkyLightPixelFormat(tokens: [String]) -> UInt32? {
+        guard let index = tokens.firstIndex(of: "--pixel-format"),
+              tokens.indices.contains(index + 1) else {
+            return nil
+        }
+
+        let token = tokens[index + 1].lowercased()
+        if let namedFormat = MDKSkyLightDisplayStreamPixelFormat(rawValue: token) {
+            return namedFormat.pixelFormat
+        }
+
+        if token.hasPrefix("0x"),
+           let value = UInt32(token.dropFirst(2), radix: 16) {
+            return value
+        }
+
+        return UInt32(token)
     }
 
     private static func parseQueueDepth(tokens: [String]) -> Int? {

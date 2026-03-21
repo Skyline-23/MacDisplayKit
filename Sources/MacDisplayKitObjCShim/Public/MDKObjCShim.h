@@ -100,6 +100,7 @@ FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightD
     BOOL showCursor,
     NSUInteger outputWidth,
     NSUInteger outputHeight,
+    uint32_t pixelFormat,
     NSError * _Nullable * _Nullable error
 );
 FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoTraceScreenCaptureKitProxyHandshake(

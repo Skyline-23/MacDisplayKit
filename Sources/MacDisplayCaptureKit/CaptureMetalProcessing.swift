@@ -8,8 +8,6 @@ public enum MDKCaptureBenchmarkProcessingMode: String, CaseIterable, Codable, Se
     case videoToolboxEncodeDownscale2x = "vt-encode-downscale-2x"
     case videoToolboxEncodeH264 = "vt-encode-h264"
     case videoToolboxEncodeH264Downscale2x = "vt-encode-h264-downscale-2x"
-    case videoToolboxEncodeAV1 = "vt-encode-av1"
-    case videoToolboxEncodeAV1Downscale2x = "vt-encode-av1-downscale-2x"
     case videoToolboxEncodeProResProxyExperimental = "vt-encode-prores-proxy-experimental"
 
     public var localizedName: String {
@@ -28,10 +26,6 @@ public enum MDKCaptureBenchmarkProcessingMode: String, CaseIterable, Codable, Se
             return "vt-encode-h264"
         case .videoToolboxEncodeH264Downscale2x:
             return "vt-encode-h264-downscale-2x"
-        case .videoToolboxEncodeAV1:
-            return "vt-encode-av1"
-        case .videoToolboxEncodeAV1Downscale2x:
-            return "vt-encode-av1-downscale-2x"
         case .videoToolboxEncodeProResProxyExperimental:
             return "vt-encode-prores-proxy-experimental"
         }
@@ -45,8 +39,6 @@ public enum MDKCaptureBenchmarkProcessingMode: String, CaseIterable, Codable, Se
             return .hevc
         case .videoToolboxEncodeH264, .videoToolboxEncodeH264Downscale2x:
             return .h264
-        case .videoToolboxEncodeAV1, .videoToolboxEncodeAV1Downscale2x:
-            return .av1
         case .videoToolboxEncodeProResProxyExperimental:
             return .proResProxy
         }
@@ -55,8 +47,7 @@ public enum MDKCaptureBenchmarkProcessingMode: String, CaseIterable, Codable, Se
     var videoPreprocessStrategy: MDKVideoPreprocessStrategy {
         switch self {
         case .videoToolboxEncodeDownscale2x,
-             .videoToolboxEncodeH264Downscale2x,
-             .videoToolboxEncodeAV1Downscale2x:
+             .videoToolboxEncodeH264Downscale2x:
             return .downscale2x
         default:
             return .none

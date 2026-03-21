@@ -21,6 +21,7 @@ public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
     case stagingSurfaceUnavailable
     case stagingTextureBindingFailed(plane: Int)
     case stagingSlotUnavailable
+    case conversionRequiresMetal(sourcePixelFormat: UInt32, targetPixelFormat: UInt32)
 
     public var errorDescription: String? {
         switch self {
@@ -52,6 +53,12 @@ public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
             return "Unable to bind staged plane \(plane) into a Metal texture."
         case .stagingSlotUnavailable:
             return "No staged encoder slot is currently available."
+        case .conversionRequiresMetal(let sourcePixelFormat, let targetPixelFormat):
+            return String(
+                format: "Converting source pixel format 0x%08X into encoder input 0x%08X requires Metal staging.",
+                sourcePixelFormat,
+                targetPixelFormat
+            )
         }
     }
 }
@@ -122,6 +129,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let device: (any MTLDevice)?
     private let commandQueue: (any MTLCommandQueue)?
     private let scaler: MDKMetalBilinearScaler?
+    private let colorConverter: MDKMetalBGRAToYCbCrConverter?
     private let maxInflightStagingSlots: Int
 
     private var compressionSession: VTCompressionSession?
@@ -145,10 +153,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var outputCallbackLatencyHistogram: [String: Int] = [:]
     private var minOutputCallbackLatencyMilliseconds: Double?
     private var maxOutputCallbackLatencyMilliseconds: Double?
+    private var submittedFrameCount: UInt64 = 0
     private var usingHardwareAcceleratedEncoder: Bool?
     private var encoderPixelBufferPoolIsShared: Bool?
     private var recommendedParallelizationLimit: Int?
     private var sessionConfigurationNotes: [String] = []
+    private let colorConverterInitializationErrorDescription: String?
+    private let outputDrainGroup = DispatchGroup()
     private let encodeQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode")
 
     public init(
@@ -162,6 +173,18 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.device = device
         self.commandQueue = device?.makeCommandQueue()
         self.scaler = device.map { MDKMetalBilinearScaler(device: $0) }
+        if let device {
+            do {
+                self.colorConverter = try MDKMetalBGRAToYCbCrConverter(device: device)
+                self.colorConverterInitializationErrorDescription = nil
+            } catch {
+                self.colorConverter = nil
+                self.colorConverterInitializationErrorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            }
+        } else {
+            self.colorConverter = nil
+            self.colorConverterInitializationErrorDescription = "Metal device unavailable."
+        }
         self.maxInflightStagingSlots = max(maxInflightStagingSlots, 1)
     }
 
@@ -202,8 +225,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             if let compressionSession {
                 VTCompressionSessionCompleteFrames(compressionSession, untilPresentationTimeStamp: .invalid)
             }
+            let outputDrainWaitStatus = outputDrainGroup.wait(timeout: .now() + 1.5)
             let outputSummary = outputQueue.sync {
                 (
+                    submittedFrameCount,
                     outputCallbackCount,
                     completedOutputFrameCount,
                     outputCallbackStatusHistogram,
@@ -216,43 +241,54 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 processedFrameCount: processedFrameCount,
                 processingFailureCount: processingFailureCount,
                 processingErrorHistogram: processingErrorHistogram,
-                outputCallbackCount: outputSummary.0,
-                completedOutputFrameCount: outputSummary.1,
-                outputCallbackStatusHistogram: outputSummary.2,
-                outputCallbackLatencyHistogram: outputSummary.3,
-                minOutputCallbackLatencyMilliseconds: outputSummary.4,
-                maxOutputCallbackLatencyMilliseconds: outputSummary.5,
+                outputCallbackCount: outputSummary.1,
+                completedOutputFrameCount: outputSummary.2,
+                outputCallbackStatusHistogram: outputSummary.3,
+                outputCallbackLatencyHistogram: outputSummary.4,
+                minOutputCallbackLatencyMilliseconds: outputSummary.5,
+                maxOutputCallbackLatencyMilliseconds: outputSummary.6,
                 notes: [
                     "videoToolboxSubmitMode=async-queue",
                     "videoToolboxOutputCallback=non-nil",
                     "videoToolboxCodec=\(codec.rawValue)",
                     "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
                     "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "metal-staging-pool")",
+                    "videoToolboxColorConversionMode=\(sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) ? "custom" : "passthrough")",
                     "videoToolboxMaxInflightStagingSlots=\(maxInflightStagingSlots)",
+                    "videoToolboxSubmittedFrameCount=\(outputSummary.0)",
+                    "videoToolboxOutputDrainWait=\(outputDrainWaitStatus == .success ? "success" : "timeout")",
                     "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
                     "videoToolboxPixelBufferPoolIsShared=\(describeHardwareAcceleration(encoderPixelBufferPoolIsShared))",
                     "videoToolboxRecommendedParallelizationLimit=\(recommendedParallelizationLimit.map(String.init) ?? "unknown")",
                     "videoToolboxPixelBufferCacheSize=\(pixelBufferCache.count)"
-                ] + sessionConfigurationNotes
+                ] + (colorConverterInitializationErrorDescription.map { ["videoToolboxColorConverterInitError=\($0)"] } ?? [])
+                  + sessionConfigurationNotes
             )
         }
     }
 
     private func encode(frame: MDKCaptureFrame) throws {
+        let targetPixelFormat = codec.preferredInputPixelFormat(for: frame.pixelFormat)
         let outputDimensions = preprocessStrategy.outputDimensions(
             sourceWidth: frame.width,
             sourceHeight: frame.height,
-            pixelFormat: frame.pixelFormat
+            pixelFormat: targetPixelFormat
         )
         try ensureCompressionSession(
             width: outputDimensions.x,
             height: outputDimensions.y,
-            pixelFormat: frame.pixelFormat
+            pixelFormat: targetPixelFormat
         )
 
         if let commandQueue {
-            try stageAndEncode(frame: frame, commandQueue: commandQueue)
+            try stageAndEncode(frame: frame, targetPixelFormat: targetPixelFormat, commandQueue: commandQueue)
         } else {
+            guard frame.pixelFormat == targetPixelFormat else {
+                throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
+                    sourcePixelFormat: frame.pixelFormat,
+                    targetPixelFormat: targetPixelFormat
+                )
+            }
             try encodeDirect(frame: frame)
         }
     }
@@ -268,6 +304,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
     private func stageAndEncode(
         frame: MDKCaptureFrame,
+        targetPixelFormat: UInt32,
         commandQueue: any MTLCommandQueue
     ) throws {
         guard let device else {
@@ -285,12 +322,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let outputDimensions = preprocessStrategy.outputDimensions(
             sourceWidth: frame.width,
             sourceHeight: frame.height,
-            pixelFormat: frame.pixelFormat
+            pixelFormat: targetPixelFormat
         )
         let slot = try acquireStagingSlot(
             width: outputDimensions.x,
             height: outputDimensions.y,
-            pixelFormat: frame.pixelFormat,
+            pixelFormat: targetPixelFormat,
             device: device
         )
         let slotIdentifier = slot.identifier
@@ -302,7 +339,30 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let presentationTimeStamp = CMTime(value: frameIndex, timescale: 120)
         frameIndex += 1
 
-        if requiresScaling(sourceTextures: sourceTextures, destinationTextures: slot.textures) {
+        if frame.pixelFormat != targetPixelFormat {
+            guard let colorConverter else {
+                releaseStagingSlot(identifier: slotIdentifier)
+                throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
+                    sourcePixelFormat: frame.pixelFormat,
+                    targetPixelFormat: targetPixelFormat
+                )
+            }
+            if !sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) {
+                sessionConfigurationNotes.append(
+                    String(
+                        format: "videoToolboxColorConversion=0x%08X->0x%08X",
+                        frame.pixelFormat,
+                        targetPixelFormat
+                    )
+                )
+            }
+            try colorConverter.encode(
+                commandBuffer: commandBuffer,
+                sourceTextures: sourceTextures,
+                destinationTextures: slot.textures,
+                destinationPixelFormat: targetPixelFormat
+            )
+        } else if requiresScaling(sourceTextures: sourceTextures, destinationTextures: slot.textures) {
             guard let scaler else {
                 releaseStagingSlot(identifier: slotIdentifier)
                 throw MDKVideoToolboxProcessingError.scalerUnavailable
@@ -390,6 +450,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             )
         )
 
+        outputDrainGroup.enter()
+
         let status = VTCompressionSessionEncodeFrame(
             compressionSession,
             imageBuffer: imageBuffer,
@@ -400,9 +462,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             infoFlagsOut: nil
         )
         guard status == noErr else {
+            outputDrainGroup.leave()
             submissionToken.release()
             throw MDKVideoToolboxProcessingError.encodeFailed(status: status)
         }
+        submittedFrameCount += 1
     }
 
     private func ensureCompressionSession(
@@ -480,8 +544,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         if codec.supportsReferenceBufferCount {
             setSessionProperty(session, key: kVTCompressionPropertyKey_ReferenceBufferCount, value: NSNumber(value: codec.referenceBufferCount), label: "ReferenceBufferCount")
         }
-        if let profileLevel = codec.defaultProfileLevel {
+        if let profileLevel = codec.defaultProfileLevel(for: pixelFormat) {
             setSessionProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: profileLevel, label: "ProfileLevel")
+            sessionConfigurationNotes.append("videoToolboxConfiguredProfileLevel=\(profileLevel)")
         }
         let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(session)
         guard prepareStatus == noErr else {
@@ -492,6 +557,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         compressionSession = session
         activeDimensions = SIMD2(width, height)
         activePixelFormat = pixelFormat
+        sessionConfigurationNotes.append(String(format: "videoToolboxEncoderInputPixelFormat=0x%08X", pixelFormat))
         sessionConfigurationNotes.append("videoToolboxEncodedWidth=\(width)")
         sessionConfigurationNotes.append("videoToolboxEncodedHeight=\(height)")
         if codec.supportsAverageBitRate {
@@ -729,6 +795,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         frameIndex = 0
         sessionConfigurationNotes.removeAll(keepingCapacity: true)
         outputQueue.sync {
+            submittedFrameCount = 0
             outputCallbackCount = 0
             completedOutputFrameCount = 0
             outputCallbackStatusHistogram = [:]
@@ -776,6 +843,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             if outputCompleted {
                 completedOutputFrameCount += 1
             }
+            outputDrainGroup.leave()
         }
     }
 

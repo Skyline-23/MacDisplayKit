@@ -1507,7 +1507,6 @@ Interpretation:
     - `metal-copy`
     - `vt-encode`
     - `vt-encode-h264`
-    - `vt-encode-av1`
   - current ranking order is:
     - `meets120LikeTarget`
     - cadence classification
@@ -1582,15 +1581,11 @@ Interpretation:
       - `completedOutputFrameRate≈37.85`
       - `videoToolboxUsingHardwareEncoder=unknown`
       - latency range `294.050ms..688.547ms`
-    - `vt-encode-av1`
-      - `processingFailureCount=115`
-      - `VTCompressionSessionCreate(...) -> OSStatus -12908`
-      - no encoder output callbacks were observed on this host
   - current interpretation:
     - the benchmark can now distinguish `submit accepted` from `encoder drained`
     - the current raw bottleneck is real encoder throughput, not missing output callbacks
     - `H.264` is materially faster than current `HEVC` settings on this host at `5120x2880 420v`
-    - `AV1` needs explicit capability probing or a different runtime configuration before it can join the default matrix
+    - unsupported hardware-only codecs are no longer exposed as supported processing modes in `MacDisplayKit`
 - 2026-03-21 the raw VT path now stages frames through a Metal-backed IOSurface pool before encode submit
   - the reason for the experiment was source-surface coupling:
     - direct raw `vt-encode` was still encoding the original `SLDisplayStream` IOSurfaces
@@ -1613,10 +1608,9 @@ Interpretation:
     - new processing modes:
       - `vt-encode-downscale-2x`
       - `vt-encode-h264-downscale-2x`
-      - `vt-encode-av1-downscale-2x`
       - `vt-encode-prores-proxy-experimental`
     - encoder target dimensions are now derived from the preprocess strategy instead of always matching the source `IOSurface`
-    - `AV1` remains opt-in only; it is no longer part of the default processing matrix on hosts without a usable hardware engine
+    - unsupported hardware-only codecs have been removed from the runtime processing matrix
     - `ProRes Proxy` is now exposed as an experimental, non-default processing mode
     - `H.264` now requests `kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel`
     - the staged encoder pool now starts from `kVTCompressionPropertyKey_VideoEncoderPixelBufferAttributes` when available, instead of using only generic `CVPixelBuffer` attributes
@@ -1687,3 +1681,26 @@ Interpretation:
     - using panel-native dimensions is the correct default policy for a generic display kit
     - but the present `~37 fps` ceiling is not explained by the `3840 vs 5120` choice alone
     - the dominant current limiter remains host compositor/color-management load, not just the stream's destination dimensions
+- 2026-03-21 the custom `BGRA -> Metal -> x420 -> HEVC Main10` path is now the default raw `vt-encode` fast path, and the output-drain accounting bug is fixed
+  - implementation changes:
+    - raw `SLDisplayStream` processing benchmarks now default to `32BGRA` source frames instead of pre-requesting bi-planar input
+    - `MDKVideoToolboxEncodingProcessor` now asks each codec for its preferred encoder input format
+    - `HEVC` therefore stages raw `BGRA` through the custom Metal converter into `x420` before `VTCompressionSessionEncodeFrame(...)`
+    - the `dispatch_group` output-drain accounting was reordered so `enter()` always happens before `VTCompressionSessionEncodeFrame(...)`, with a compensating `leave()` on synchronous submit failure
+  - current direct measurement on the host:
+    - command:
+      - `MacDisplayKitHost --experimental-skylight-displaystream-benchmark-display auto --sample-duration 2 --minimum-frame-time 0 --queue-depth 3 --processing-mode vt-encode --json`
+    - result:
+      - `observedFrameRate≈128.68`
+      - `processedFrameRate≈128.68`
+      - `completedOutputFrameRate≈122.30`
+      - `completedOutputFrameCount=249`
+      - `completedOutputFrameRatio≈0.95`
+      - `cadenceClassification=120hz-like`
+      - `videoToolboxColorConversionMode=custom`
+      - `videoToolboxColorConversion=0x42475241->0x78343230`
+      - `videoToolboxEncoderInputPixelFormat=0x78343230`
+      - `videoToolboxOutputDrainWait=success`
+  - current interpretation:
+    - the old `~8 fps` `HEVC` result was no longer representative after the custom Metal color conversion and corrected output-drain accounting
+    - raw `HEVC Main10` on the panel-native `3840x2160` path is now finally in the `4K120HDR` target range

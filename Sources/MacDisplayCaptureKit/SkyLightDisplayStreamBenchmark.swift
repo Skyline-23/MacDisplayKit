@@ -1,5 +1,29 @@
+import CoreVideo
 import Foundation
 import MacDisplayKitObjCShim
+
+public enum MDKSkyLightDisplayStreamPixelFormat: String, CaseIterable, Codable, Sendable {
+    case bgra
+    case biPlanar420VideoRange = "420v"
+    case biPlanar420FullRange = "420f"
+    case biPlanar42010VideoRange = "x420"
+    case biPlanar42010FullRange = "xf20"
+
+    public var pixelFormat: UInt32 {
+        switch self {
+        case .bgra:
+            return kCVPixelFormatType_32BGRA
+        case .biPlanar420VideoRange:
+            return kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        case .biPlanar420FullRange:
+            return kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        case .biPlanar42010VideoRange:
+            return kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        case .biPlanar42010FullRange:
+            return kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+        }
+    }
+}
 
 public struct MDKSkyLightDisplayStreamBenchmarkResult: Codable, Equatable, Sendable {
     public static let realtimeFloorFrameRate: Double = 60.0
@@ -222,7 +246,8 @@ public enum MDKSkyLightDisplayStreamBenchmark {
         queueDepth: Int,
         showCursor: Bool,
         outputWidth: Int? = nil,
-        outputHeight: Int? = nil
+        outputHeight: Int? = nil,
+        pixelFormat: UInt32? = nil
     ) throws -> MDKSkyLightDisplayStreamBenchmarkResult {
         var nsError: NSError?
         let resolvedOutputWidth = UInt(max(outputWidth ?? 0, 0))
@@ -235,6 +260,7 @@ public enum MDKSkyLightDisplayStreamBenchmark {
             showCursor,
             resolvedOutputWidth,
             resolvedOutputHeight,
+            pixelFormat ?? 0,
             &nsError
         ) else {
             if let nsError {

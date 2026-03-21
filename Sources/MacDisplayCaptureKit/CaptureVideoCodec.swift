@@ -47,7 +47,6 @@ public enum MDKVideoPreprocessStrategy: String, CaseIterable, Codable, Sendable 
 public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
     case h264
     case hevc
-    case av1
     case proResProxy
 
     var codecType: CMVideoCodecType {
@@ -56,8 +55,6 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
             return kCMVideoCodecType_H264
         case .hevc:
             return kCMVideoCodecType_HEVC
-        case .av1:
-            return kCMVideoCodecType_AV1
         case .proResProxy:
             return kCMVideoCodecType_AppleProRes422Proxy
         }
@@ -67,13 +64,44 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         rawValue
     }
 
-    var defaultProfileLevel: CFString? {
+    func preferredInputPixelFormat(for sourcePixelFormat: UInt32) -> UInt32 {
+        switch self {
+        case .hevc:
+            switch sourcePixelFormat {
+            case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                 kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+                 kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                 kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
+                return sourcePixelFormat
+            default:
+                return kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            }
+        case .h264:
+            switch sourcePixelFormat {
+            case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                 kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
+                return sourcePixelFormat
+            default:
+                return kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            }
+        case .proResProxy:
+            return sourcePixelFormat
+        }
+    }
+
+    func defaultProfileLevel(for pixelFormat: UInt32) -> CFString? {
         switch self {
         case .h264:
             return kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel
         case .hevc:
-            return kVTProfileLevel_HEVC_Main_AutoLevel
-        case .av1, .proResProxy:
+            switch pixelFormat {
+            case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                 kCVPixelFormatType_420YpCbCr10BiPlanarFullRange:
+                return kVTProfileLevel_HEVC_Main10_AutoLevel
+            default:
+                return kVTProfileLevel_HEVC_Main_AutoLevel
+            }
+        case .proResProxy:
             return nil
         }
     }
@@ -82,7 +110,7 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         switch self {
         case .h264:
             return true
-        case .hevc, .av1, .proResProxy:
+        case .hevc, .proResProxy:
             return false
         }
     }
@@ -98,8 +126,6 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
             return min(max(pixelsPerSecond / 12, 20_000_000), 60_000_000)
         case .hevc:
             return min(max(pixelsPerSecond / 20, 12_000_000), 36_000_000)
-        case .av1:
-            return min(max(pixelsPerSecond / 24, 10_000_000), 32_000_000)
         case .proResProxy:
             return min(max(pixelsPerSecond / 5, 40_000_000), 140_000_000)
         }
@@ -127,8 +153,6 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
             return 0.42
         case .hevc:
             return 0.36
-        case .av1:
-            return 0.34
         case .proResProxy:
             return 0.30
         }
@@ -140,8 +164,6 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
             return 1
         case .hevc:
             return 2
-        case .av1:
-            return 2
         case .proResProxy:
             return 0
         }
@@ -151,7 +173,7 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         switch self {
         case .proResProxy:
             return false
-        case .h264, .hevc, .av1:
+        case .h264, .hevc:
             return true
         }
     }
@@ -160,7 +182,7 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         switch self {
         case .proResProxy:
             return false
-        case .h264, .hevc, .av1:
+        case .h264, .hevc:
             return true
         }
     }
@@ -169,7 +191,7 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         switch self {
         case .h264, .hevc:
             return true
-        case .av1, .proResProxy:
+        case .proResProxy:
             return false
         }
     }
@@ -178,7 +200,7 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         switch self {
         case .proResProxy:
             return false
-        case .h264, .hevc, .av1:
+        case .h264, .hevc:
             return true
         }
     }

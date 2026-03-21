@@ -12791,6 +12791,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
     BOOL showCursor,
     NSUInteger outputWidth,
     NSUInteger outputHeight,
+    uint32_t pixelFormat,
     NSError * _Nullable * _Nullable error
 ) {
     using MDKSLDisplayStreamCreateWithDispatchQueueFn = CGDisplayStreamRef (*)(
@@ -12868,12 +12869,15 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
     __block size_t surfaceHeight = 0;
     __block OSType surfacePixelFormat = 0;
     __block BOOL sawSurface = NO;
+    const OSType requestedPixelFormat = pixelFormat != 0
+        ? static_cast<OSType>(pixelFormat)
+        : kCVPixelFormatType_32BGRA;
 
     CGDisplayStreamRef stream = createSymbol(
         static_cast<CGDirectDisplayID>(displayID),
         width,
         height,
-        static_cast<int32_t>(kCVPixelFormatType_32BGRA),
+        static_cast<int32_t>(requestedPixelFormat),
         streamPropertiesRef,
         queue,
         ^(CGDisplayStreamFrameStatus status,
@@ -12964,6 +12968,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
     [notes addObject:[NSString stringWithFormat:@"requestedMinimumFrameTime=%.6f", requestedMinimumFrameTime]];
     [notes addObject:[NSString stringWithFormat:@"requestedQueueDepth=%ld", static_cast<long>(requestedQueueDepth)]];
     [notes addObject:[NSString stringWithFormat:@"requestedShowCursor=%@", requestedShowCursor ? @"true" : @"false"]];
+    [notes addObject:[NSString stringWithFormat:@"requestedPixelFormat=0x%08X", requestedPixelFormat]];
     if (outputWidth > 0 && outputHeight > 0) {
         [notes addObject:[NSString stringWithFormat:@"requestedOutputDimensions=%lux%lu", static_cast<unsigned long>(outputWidth), static_cast<unsigned long>(outputHeight)]];
     } else {
@@ -12997,7 +13002,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
         @"appliedPropertyCount": @(appliedPropertyCount),
         @"surfaceWidth": @(surfaceWidth > 0 ? surfaceWidth : width),
         @"surfaceHeight": @(surfaceHeight > 0 ? surfaceHeight : height),
-        @"pixelFormat": @(static_cast<std::uint32_t>(surfacePixelFormat != 0 ? surfacePixelFormat : kCVPixelFormatType_32BGRA)),
+        @"pixelFormat": @(static_cast<std::uint32_t>(surfacePixelFormat != 0 ? surfacePixelFormat : requestedPixelFormat)),
         @"intervalCount": @(intervals.count),
         @"stallCountOver16Milliseconds": @(stallCountOver16Milliseconds),
         @"stallCountOver33Milliseconds": @(stallCountOver33Milliseconds),
@@ -13042,6 +13047,7 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightDisplayStreamBenchm
         NO,
         0,
         0,
+        0,
         error
     );
 }
@@ -13054,6 +13060,7 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightDisplayStreamBenchm
     BOOL showCursor,
     NSUInteger outputWidth,
     NSUInteger outputHeight,
+    uint32_t pixelFormat,
     NSError * _Nullable * _Nullable error
 ) {
     return MDKCreateSkyLightDisplayStreamBenchmarkPayload(
@@ -13064,6 +13071,7 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoSkyLightDisplayStreamBenchm
         showCursor,
         outputWidth,
         outputHeight,
+        pixelFormat,
         error
     );
 }
