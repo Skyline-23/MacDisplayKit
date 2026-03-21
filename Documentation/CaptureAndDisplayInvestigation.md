@@ -975,3 +975,19 @@ Interpretation:
   - `CMCapture`'s xpc request/reply transport (`xpc_pipe_create`, `xpc_pipe_simpleroutine`)
   - local `pipe` creation / duplication in the capture stack
   - the cross-process producer (`replayd`) that brokers those pipe-backed queue endpoints
+
+Follow-up passive trace after interposing `xpc_pipe_create` / `xpc_pipe_simpleroutine`:
+
+- `xpcPipeInterposeAttempted=1`
+- `xpcPipeInterposeInstalled=1`
+- `xpcPipeInterposeInstalledImageCount=3`
+- `xpcPipeCreateEventCount=0`
+- `xpcPipeSimpleRoutineEventCount=0`
+
+Interpretation:
+
+- even the xpc pipe transport layer that `CMCapture` imports is not surfacing through ordinary host-side
+  dyld interposition during the passive trace window
+- that pushes the remaining live handoff candidates down to two sharper buckets:
+  - local `pipe` creation / duplication inside the host capture stack
+  - cross-process brokering (`replayd` or another producer) before the host ever sees those queue endpoints
