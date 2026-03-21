@@ -1253,6 +1253,11 @@ Interpretation:
       - `systemCall hotSymbolHistogram={"CGYDisplayStreamFrameAvailable":9,"SLContentStream":1,"roEnqueue":1,"roEnqueueSampleBuffer":3}`
       - `timeSample hotSymbolHistogram={}`
       - the same run still logged `261` enqueue failures, all `messageKind=generic-enqueue-error`
+    - after adding syscall-row cadence parsing, paired runs showed:
+      - `rqSenderHandleDequeue` rows are sampled too sparsely to be useful and collapse into sub-millisecond bursts
+      - `roEnqueueSampleBuffer` rows remain `coalesced-or-mixed` rather than `120hz-like`
+      - a `6`-second run still only surfaced `4` sampled `roEnqueueSampleBuffer` rows with `140ms`, `173ms`, and `418ms` gaps
+      - the same `6`-second run still logged `393` enqueue failures with `60hz-like` spacing
     - replayd unified log emitted repeated producer-side enqueue failures:
       - `_SCRemoteQueue_Enqueue:217 ... err=-19641 opType=3 Error occurred when enqueuing data`
       - the new parser can now summarize those failures directly from the host artifact:
@@ -1278,6 +1283,8 @@ Interpretation:
     - the hot-symbol parser closes one more gap:
       `opType=3` failures occur in the same paired window where replayd syscall backtraces include
       `roEnqueueSampleBuffer`, which ties the live failure stream directly to sample-buffer producer traffic
+    - but the syscall-row cadence parser also shows that the exported `roEnqueueSampleBuffer` rows are too sparse and bursty
+      to claim a true `120-like` producer cadence from `xctrace` alone
     - all observed failures in the latest run came from a single replayd callsite offset (`senderProgramCounter=766532`)
       rather than from multiple producer sites
     - static arm64e disassembly of `/usr/libexec/replayd` narrows that offset to the enqueue-error logger region:

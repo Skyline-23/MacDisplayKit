@@ -78,6 +78,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
     public let rowCount: Int
     public let containsRows: Bool
     public let hotSymbolHistogram: [String: Int]
+    public let hotSymbolCadenceSummaries: [MDKReplaydXctraceHotSymbolCadenceSummary]
     public let excerpt: [String]
 
     public init(
@@ -87,6 +88,7 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
         rowCount: Int,
         containsRows: Bool,
         hotSymbolHistogram: [String: Int],
+        hotSymbolCadenceSummaries: [MDKReplaydXctraceHotSymbolCadenceSummary],
         excerpt: [String]
     ) {
         self.schema = schema
@@ -95,7 +97,33 @@ public struct MDKReplaydXctraceTableArtifact: Codable, Equatable, Sendable {
         self.rowCount = rowCount
         self.containsRows = containsRows
         self.hotSymbolHistogram = hotSymbolHistogram
+        self.hotSymbolCadenceSummaries = hotSymbolCadenceSummaries
         self.excerpt = excerpt
+    }
+}
+
+public struct MDKReplaydXctraceHotSymbolCadenceSummary: Codable, Equatable, Sendable {
+    public let symbolName: String
+    public let eventCount: Int
+    public let minIntervalMilliseconds: Double?
+    public let maxIntervalMilliseconds: Double?
+    public let intervalHistogram: [String: Int]
+    public let cadenceClassification: String
+
+    public init(
+        symbolName: String,
+        eventCount: Int,
+        minIntervalMilliseconds: Double?,
+        maxIntervalMilliseconds: Double?,
+        intervalHistogram: [String: Int],
+        cadenceClassification: String
+    ) {
+        self.symbolName = symbolName
+        self.eventCount = eventCount
+        self.minIntervalMilliseconds = minIntervalMilliseconds
+        self.maxIntervalMilliseconds = maxIntervalMilliseconds
+        self.intervalHistogram = intervalHistogram
+        self.cadenceClassification = cadenceClassification
     }
 }
 
@@ -168,6 +196,12 @@ public enum MDKReplaydXctraceArtifactParser {
     private static let imageOffsetExpression = try? NSRegularExpression(
         pattern: #""imageOffset":(\d+)"#
     )
+    private static let rowExpression = try? NSRegularExpression(
+        pattern: #"(?s)<row>(.*?)</row>"#
+    )
+    private static let rowStartTimeExpression = try? NSRegularExpression(
+        pattern: #"<start-time[^>]*>(\d+)</start-time>|<sample-time[^>]*>(\d+)</sample-time>"#
+    )
 
     public static func summarizeTableArtifact(
         schema: String,
@@ -180,6 +214,7 @@ public enum MDKReplaydXctraceArtifactParser {
             .map(String.init)
         let rowCount = exportText.components(separatedBy: "<row").count - 1
         let hotSymbolHistogram = summarizeHotSymbols(in: exportText)
+        let hotSymbolCadenceSummaries = summarizeHotSymbolCadences(in: exportText)
 
         return MDKReplaydXctraceTableArtifact(
             schema: schema,
@@ -188,6 +223,7 @@ public enum MDKReplaydXctraceArtifactParser {
             rowCount: max(0, rowCount),
             containsRows: rowCount > 0,
             hotSymbolHistogram: hotSymbolHistogram,
+            hotSymbolCadenceSummaries: hotSymbolCadenceSummaries,
             excerpt: excerpt
         )
     }
@@ -410,5 +446,84 @@ public enum MDKReplaydXctraceArtifactParser {
             }
         }
         return histogram
+    }
+
+    private static func summarizeHotSymbolCadences(
+        in exportText: String
+    ) -> [MDKReplaydXctraceHotSymbolCadenceSummary] {
+        guard
+            let rowExpression,
+            let rowStartTimeExpression
+        else {
+            return []
+        }
+
+        let exportRange = NSRange(exportText.startIndex..<exportText.endIndex, in: exportText)
+        let rowMatches = rowExpression.matches(in: exportText, range: exportRange)
+        guard !rowMatches.isEmpty else {
+            return []
+        }
+
+        var symbolTimestamps: [String: [Double]] = [:]
+
+        for rowMatch in rowMatches {
+            guard
+                let rowRange = Range(rowMatch.range(at: 1), in: exportText)
+            else {
+                continue
+            }
+            let rowText = String(exportText[rowRange])
+            guard let timestamp = parseRowTimestamp(rowText, using: rowStartTimeExpression) else {
+                continue
+            }
+
+            for pattern in hotSymbolPatterns {
+                guard let expression = try? NSRegularExpression(pattern: pattern.expression) else {
+                    continue
+                }
+                let rowTextRange = NSRange(rowText.startIndex..<rowText.endIndex, in: rowText)
+                if expression.firstMatch(in: rowText, range: rowTextRange) != nil {
+                    symbolTimestamps[pattern.name, default: []].append(timestamp)
+                }
+            }
+        }
+
+        return hotSymbolPatterns.compactMap { pattern in
+            guard let timestamps = symbolTimestamps[pattern.name], !timestamps.isEmpty else {
+                return nil
+            }
+            let sorted = timestamps.sorted()
+            let intervals = zip(sorted, sorted.dropFirst()).map { ($1 - $0) / 1_000_000.0 }
+            return MDKReplaydXctraceHotSymbolCadenceSummary(
+                symbolName: pattern.name,
+                eventCount: sorted.count,
+                minIntervalMilliseconds: intervals.min(),
+                maxIntervalMilliseconds: intervals.max(),
+                intervalHistogram: histogram(for: intervals),
+                cadenceClassification: classifyCadence(intervals)
+            )
+        }
+    }
+
+    private static func parseRowTimestamp(
+        _ rowText: String,
+        using expression: NSRegularExpression
+    ) -> Double? {
+        guard
+            let match = expression.firstMatch(
+                in: rowText,
+                range: NSRange(rowText.startIndex..<rowText.endIndex, in: rowText)
+            )
+        else {
+            return nil
+        }
+
+        for index in 1..<match.numberOfRanges {
+            if let value = captureGroup(at: index, from: match, in: rowText),
+               let timestamp = Double(value) {
+                return timestamp
+            }
+        }
+        return nil
     }
 }

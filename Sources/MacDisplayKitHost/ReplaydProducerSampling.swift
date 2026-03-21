@@ -238,6 +238,11 @@ private actor MDKReplaydXctraceCoordinator {
                 "replayd syscall backtraces hit producer symbols \(systemCallTable.hotSymbolHistogram)."
             )
         }
+        if let roEnqueueSampleBufferCadence = systemCallTable.hotSymbolCadenceSummaries.first(where: { $0.symbolName == "roEnqueueSampleBuffer" }) {
+            notes.append(
+                "replayd syscall backtraces classified roEnqueueSampleBuffer cadence as \(roEnqueueSampleBufferCadence.cadenceClassification) over \(roEnqueueSampleBufferCadence.eventCount) sampled rows."
+            )
+        }
         if
             let enqueueFailures = unifiedLog.enqueueFailureSummary,
             enqueueFailures.operationHistogram.count == 1,

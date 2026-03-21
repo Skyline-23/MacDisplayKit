@@ -802,7 +802,7 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(summary.indicatorSummaries[0].nonzeroWindowCount, 1)
     }
 
-    func testReplaydXctraceArtifactParserCountsExportRows() {
+    func testReplaydXctraceArtifactParserCountsExportRows() throws {
         let xml = """
         <?xml version="1.0"?>
         <trace-query-result>
@@ -816,7 +816,19 @@ final class MacDisplayKitTests: XCTestCase {
               </backtrace>
             </row>
             <row>
-              <sample-time id="2">2</sample-time>
+              <sample-time id="2">8333334</sample-time>
+              <backtrace>
+                <frame name="roEnqueueSampleBuffer"/>
+              </backtrace>
+            </row>
+            <row>
+              <sample-time id="3">16666667</sample-time>
+              <backtrace>
+                <frame name="roEnqueueSampleBuffer"/>
+              </backtrace>
+            </row>
+            <row>
+              <sample-time id="4">25000001</sample-time>
               <backtrace>
                 <frame name="rqSenderHandleDequeue"/>
                 <frame name="SLContentStream"/>
@@ -834,12 +846,17 @@ final class MacDisplayKitTests: XCTestCase {
 
         XCTAssertEqual(summary.schema, "syscall")
         XCTAssertEqual(summary.outputPath, "/tmp/syscall.xml")
-        XCTAssertEqual(summary.rowCount, 2)
+        XCTAssertEqual(summary.rowCount, 4)
         XCTAssertTrue(summary.containsRows)
         XCTAssertEqual(summary.hotSymbolHistogram["FigRemoteQueueSenderResetIfFullAndEnqueueSequence"], 1)
-        XCTAssertEqual(summary.hotSymbolHistogram["roEnqueueSampleBuffer"], 1)
+        XCTAssertEqual(summary.hotSymbolHistogram["roEnqueueSampleBuffer"], 3)
         XCTAssertEqual(summary.hotSymbolHistogram["rqSenderHandleDequeue"], 1)
         XCTAssertEqual(summary.hotSymbolHistogram["SLContentStream"], 1)
+        let sampleBufferCadence = try XCTUnwrap(
+            summary.hotSymbolCadenceSummaries.first(where: { $0.symbolName == "roEnqueueSampleBuffer" })
+        )
+        XCTAssertEqual(sampleBufferCadence.eventCount, 3)
+        XCTAssertEqual(sampleBufferCadence.cadenceClassification, "120hz-like")
         XCTAssertFalse(summary.excerpt.isEmpty)
     }
 

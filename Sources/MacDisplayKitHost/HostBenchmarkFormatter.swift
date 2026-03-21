@@ -20,11 +20,25 @@ enum MDKHostBenchmarkFormatter {
         if !report.systemCallTable.hotSymbolHistogram.isEmpty {
             lines.append("    hotSymbols: \(report.systemCallTable.hotSymbolHistogram)")
         }
+        if !report.systemCallTable.hotSymbolCadenceSummaries.isEmpty {
+            for summary in report.systemCallTable.hotSymbolCadenceSummaries {
+                lines.append(
+                    "    cadence[\(summary.symbolName)]: count=\(summary.eventCount) class=\(summary.cadenceClassification) histogram=\(summary.intervalHistogram)"
+                )
+            }
+        }
         lines.append(
             "  - \(report.timeSampleTable.schema): rows=\(report.timeSampleTable.rowCount) bytes=\(report.timeSampleTable.byteCount) path=\(report.timeSampleTable.outputPath)"
         )
         if !report.timeSampleTable.hotSymbolHistogram.isEmpty {
             lines.append("    hotSymbols: \(report.timeSampleTable.hotSymbolHistogram)")
+        }
+        if !report.timeSampleTable.hotSymbolCadenceSummaries.isEmpty {
+            for summary in report.timeSampleTable.hotSymbolCadenceSummaries {
+                lines.append(
+                    "    cadence[\(summary.symbolName)]: count=\(summary.eventCount) class=\(summary.cadenceClassification) histogram=\(summary.intervalHistogram)"
+                )
+            }
         }
         lines.append("Unified log: lines=\(report.unifiedLog.lineCount) matched=\(report.unifiedLog.matchedLineCount) path=\(report.unifiedLog.outputPath)")
         if let enqueueFailures = report.unifiedLog.enqueueFailureSummary {
