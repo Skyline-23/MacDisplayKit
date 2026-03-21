@@ -1090,6 +1090,12 @@ Follow-up passive trace after swizzling `NSXPCConnection` setup in the host proc
 - `firstNSXPCMachServiceName=com.apple.replayd`
 - `firstNSXPCRemoteObjectInterface={"className":"NSXPCInterface","present":true,"protocolName":"RPDaemonProtocol"}`
 - `firstNSXPCExportedInterface={"className":"NSXPCInterface","present":true,"protocolName":"RPClientProtocol"}`
+- `nsxpcRemoteObjectProxyEventCount=0`
+- `nsxpcRemoteObjectProxyWithErrorHandlerEventCount=3`
+- `nsxpcSynchronousRemoteObjectProxyWithErrorHandlerEventCount=0`
+- `firstNSXPCRemoteObjectProxy=<null>`
+- `firstNSXPCRemoteObjectProxyWithErrorHandler={"className":"__NSXPCInterfaceProxy_RPDaemonProtocol","present":true}`
+- `firstNSXPCSynchronousRemoteObjectProxyWithErrorHandler=<null>`
 
 Interpretation:
 
@@ -1098,9 +1104,12 @@ Interpretation:
 - but the Objective-C layer *does* show a concrete client connection being created against `com.apple.replayd`
 - the first remote interface is now concretely identifiable as `RPDaemonProtocol`
 - the first exported interface is now concretely identifiable as `RPClientProtocol`
+- the host does not request a plain `remoteObjectProxy`, but it *does* request a
+  `remoteObjectProxyWithErrorHandler:` object three times during a healthy passive trace
+- the first returned proxy is a concrete `__NSXPCInterfaceProxy_RPDaemonProtocol` instance
 - that is the first direct host-side confirmation that the passive `SCStream` capture path is brokered through
   `replayd`, even though the lower imported C shims stay dark
 - this shifts the next reverse-engineering target from generic host-side imported stubs to two sharper paths:
-  - `NSXPCConnection` proxy acquisition around the `com.apple.replayd` client in the host
-  - `RPDaemonProxy` itself, especially connection binding and invocation handling
+  - `__NSXPCInterfaceProxy_RPDaemonProtocol` invocation flow
+  - `RPDaemonProtocol` contract wiring on `NSXPCInterface`
   - `replayd` itself, especially `SCContentSharingSessionService` and the session creation / reply path

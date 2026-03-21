@@ -1036,6 +1036,8 @@ using MDKNSXPCInitWithMachServiceNameFn = id (*)(id, SEL, NSString *, NSXPCConne
 using MDKNSXPCInitWithListenerEndpointFn = id (*)(id, SEL, NSXPCListenerEndpoint *);
 using MDKNSXPCResumeFn = void (*)(id, SEL);
 using MDKNSXPCSetInterfaceFn = void (*)(id, SEL, NSXPCInterface *);
+using MDKNSXPCRemoteObjectProxyFn = id (*)(id, SEL);
+using MDKNSXPCRemoteObjectProxyWithErrorHandlerFn = id (*)(id, SEL, id);
 using MDKVideoReceiveQueueCallbackBlock = void (^)(int, MDKFigRemoteQueueMessage *, void *);
 using MDKVideoReceiveQueueBlockInvokeFn = void (*)(void *, int, MDKFigRemoteQueueMessage *, void *);
 using MDKVideoQueueNestedBlockInvokeFn = void (*)(void *, int, void *, void *);
@@ -1067,6 +1069,9 @@ static MDKNSXPCInitWithListenerEndpointFn MDKOriginalNSXPCInitWithListenerEndpoi
 static MDKNSXPCResumeFn MDKOriginalNSXPCResume = nullptr;
 static MDKNSXPCSetInterfaceFn MDKOriginalNSXPCSetRemoteObjectInterface = nullptr;
 static MDKNSXPCSetInterfaceFn MDKOriginalNSXPCSetExportedInterface = nullptr;
+static MDKNSXPCRemoteObjectProxyFn MDKOriginalNSXPCRemoteObjectProxy = nullptr;
+static MDKNSXPCRemoteObjectProxyWithErrorHandlerFn MDKOriginalNSXPCRemoteObjectProxyWithErrorHandler = nullptr;
+static MDKNSXPCRemoteObjectProxyWithErrorHandlerFn MDKOriginalNSXPCSynchronousRemoteObjectProxyWithErrorHandler = nullptr;
 static MDKRPIOSurfaceSetFn MDKOriginalRPIOSurfaceSet = nullptr;
 static MDKRPIOSurfaceGetFn MDKOriginalRPIOSurfaceGet = nullptr;
 static MDKCaptureHandlerWithSampleFn MDKOriginalDaemonCaptureHandlerWithSample = nullptr;
@@ -2175,6 +2180,9 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"nsxpcResumeEventCount": @0,
             @"nsxpcSetRemoteObjectInterfaceEventCount": @0,
             @"nsxpcSetExportedInterfaceEventCount": @0,
+            @"nsxpcRemoteObjectProxyEventCount": @0,
+            @"nsxpcRemoteObjectProxyWithErrorHandlerEventCount": @0,
+            @"nsxpcSynchronousRemoteObjectProxyWithErrorHandlerEventCount": @0,
             @"nsxpcConnectionEventCount": @0,
             @"nsxpcServiceHistogram": [NSMutableDictionary dictionary],
             @"xpcPipeCreateEventCount": @0,
@@ -2857,6 +2865,36 @@ static void MDKSwizzledNSXPCConnectionSetExportedInterface(id self, SEL _cmd, NS
     MDKOriginalNSXPCSetExportedInterface(self, _cmd, interface);
 }
 
+static id MDKSwizzledNSXPCConnectionRemoteObjectProxy(id self, SEL _cmd) {
+    if (MDKOriginalNSXPCRemoteObjectProxy == nullptr) {
+        return nil;
+    }
+
+    id proxy = MDKOriginalNSXPCRemoteObjectProxy(self, _cmd);
+    MDKRecordNSXPCConnectionEvent(@"nsxpc-remote-object-proxy", self, nil, proxy, nil);
+    return proxy;
+}
+
+static id MDKSwizzledNSXPCConnectionRemoteObjectProxyWithErrorHandler(id self, SEL _cmd, id handler) {
+    if (MDKOriginalNSXPCRemoteObjectProxyWithErrorHandler == nullptr) {
+        return nil;
+    }
+
+    id proxy = MDKOriginalNSXPCRemoteObjectProxyWithErrorHandler(self, _cmd, handler);
+    MDKRecordNSXPCConnectionEvent(@"nsxpc-remote-object-proxy-with-error-handler", self, nil, proxy, nil);
+    return proxy;
+}
+
+static id MDKSwizzledNSXPCConnectionSynchronousRemoteObjectProxyWithErrorHandler(id self, SEL _cmd, id handler) {
+    if (MDKOriginalNSXPCSynchronousRemoteObjectProxyWithErrorHandler == nullptr) {
+        return nil;
+    }
+
+    id proxy = MDKOriginalNSXPCSynchronousRemoteObjectProxyWithErrorHandler(self, _cmd, handler);
+    MDKRecordNSXPCConnectionEvent(@"nsxpc-synchronous-remote-object-proxy-with-error-handler", self, nil, proxy, nil);
+    return proxy;
+}
+
 static void MDKSwizzledProxyCoreGraphics(
     id self,
     SEL _cmd,
@@ -3417,6 +3455,12 @@ static void MDKRecordNSXPCConnectionEvent(
         counterKey = @"nsxpcSetRemoteObjectInterfaceEventCount";
     } else if ([kind isEqualToString:@"nsxpc-set-exported-interface"]) {
         counterKey = @"nsxpcSetExportedInterfaceEventCount";
+    } else if ([kind isEqualToString:@"nsxpc-remote-object-proxy"]) {
+        counterKey = @"nsxpcRemoteObjectProxyEventCount";
+    } else if ([kind isEqualToString:@"nsxpc-remote-object-proxy-with-error-handler"]) {
+        counterKey = @"nsxpcRemoteObjectProxyWithErrorHandlerEventCount";
+    } else if ([kind isEqualToString:@"nsxpc-synchronous-remote-object-proxy-with-error-handler"]) {
+        counterKey = @"nsxpcSynchronousRemoteObjectProxyWithErrorHandlerEventCount";
     }
 
     @synchronized(MDKActiveSCKTraceLock) {
@@ -6869,6 +6913,45 @@ static void MDKInstallSCKProxyTraceHooks(void) {
                     reinterpret_cast<IMP>(MDKSwizzledNSXPCConnectionSetExportedInterface)
                 );
             }
+
+            Method remoteObjectProxyMethod = class_getInstanceMethod(
+                nsxpcConnectionClass,
+                sel_registerName("remoteObjectProxy")
+            );
+            if (remoteObjectProxyMethod != nullptr) {
+                MDKOriginalNSXPCRemoteObjectProxy =
+                    reinterpret_cast<MDKNSXPCRemoteObjectProxyFn>(method_getImplementation(remoteObjectProxyMethod));
+                method_setImplementation(
+                    remoteObjectProxyMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledNSXPCConnectionRemoteObjectProxy)
+                );
+            }
+
+            Method remoteObjectProxyWithErrorHandlerMethod = class_getInstanceMethod(
+                nsxpcConnectionClass,
+                sel_registerName("remoteObjectProxyWithErrorHandler:")
+            );
+            if (remoteObjectProxyWithErrorHandlerMethod != nullptr) {
+                MDKOriginalNSXPCRemoteObjectProxyWithErrorHandler =
+                    reinterpret_cast<MDKNSXPCRemoteObjectProxyWithErrorHandlerFn>(method_getImplementation(remoteObjectProxyWithErrorHandlerMethod));
+                method_setImplementation(
+                    remoteObjectProxyWithErrorHandlerMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledNSXPCConnectionRemoteObjectProxyWithErrorHandler)
+                );
+            }
+
+            Method synchronousRemoteObjectProxyWithErrorHandlerMethod = class_getInstanceMethod(
+                nsxpcConnectionClass,
+                sel_registerName("synchronousRemoteObjectProxyWithErrorHandler:")
+            );
+            if (synchronousRemoteObjectProxyWithErrorHandlerMethod != nullptr) {
+                MDKOriginalNSXPCSynchronousRemoteObjectProxyWithErrorHandler =
+                    reinterpret_cast<MDKNSXPCRemoteObjectProxyWithErrorHandlerFn>(method_getImplementation(synchronousRemoteObjectProxyWithErrorHandlerMethod));
+                method_setImplementation(
+                    synchronousRemoteObjectProxyWithErrorHandlerMethod,
+                    reinterpret_cast<IMP>(MDKSwizzledNSXPCConnectionSynchronousRemoteObjectProxyWithErrorHandler)
+                );
+            }
         }
         Class daemonProxyClass = NSClassFromString(@"RPDaemonProxy");
         if (daemonProxyClass == Nil) {
@@ -9519,6 +9602,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     NSDictionary<NSString *, id> *firstNSXPCInitMachServiceEvent = nil;
     NSDictionary<NSString *, id> *firstNSXPCSetRemoteObjectInterfaceEvent = nil;
     NSDictionary<NSString *, id> *firstNSXPCSetExportedInterfaceEvent = nil;
+    NSDictionary<NSString *, id> *firstNSXPCRemoteObjectProxyEvent = nil;
+    NSDictionary<NSString *, id> *firstNSXPCRemoteObjectProxyWithErrorHandlerEvent = nil;
+    NSDictionary<NSString *, id> *firstNSXPCSynchronousRemoteObjectProxyWithErrorHandlerEvent = nil;
     auto copyFirstInterestingWrapperBacktraceFrame = ^NSDictionary<NSString *, id> * _Nullable(NSArray<NSDictionary<NSString *, id> *> *frames) {
         for (NSDictionary<NSString *, id> *frame in frames) {
             NSString *imagePath = [frame[@"imagePath"] isKindOfClass:[NSString class]] ? frame[@"imagePath"] : nil;
@@ -9555,6 +9641,15 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             } else if (firstNSXPCSetExportedInterfaceEvent == nil &&
                        [kind isEqualToString:@"nsxpc-set-exported-interface"]) {
                 firstNSXPCSetExportedInterfaceEvent = event;
+            } else if (firstNSXPCRemoteObjectProxyEvent == nil &&
+                       [kind isEqualToString:@"nsxpc-remote-object-proxy"]) {
+                firstNSXPCRemoteObjectProxyEvent = event;
+            } else if (firstNSXPCRemoteObjectProxyWithErrorHandlerEvent == nil &&
+                       [kind isEqualToString:@"nsxpc-remote-object-proxy-with-error-handler"]) {
+                firstNSXPCRemoteObjectProxyWithErrorHandlerEvent = event;
+            } else if (firstNSXPCSynchronousRemoteObjectProxyWithErrorHandlerEvent == nil &&
+                       [kind isEqualToString:@"nsxpc-synchronous-remote-object-proxy-with-error-handler"]) {
+                firstNSXPCSynchronousRemoteObjectProxyWithErrorHandlerEvent = event;
             }
             continue;
         }
@@ -9598,6 +9693,15 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
         } else if (firstNSXPCSetExportedInterfaceEvent == nil &&
                    [kind isEqualToString:@"nsxpc-set-exported-interface"]) {
             firstNSXPCSetExportedInterfaceEvent = event;
+        } else if (firstNSXPCRemoteObjectProxyEvent == nil &&
+                   [kind isEqualToString:@"nsxpc-remote-object-proxy"]) {
+            firstNSXPCRemoteObjectProxyEvent = event;
+        } else if (firstNSXPCRemoteObjectProxyWithErrorHandlerEvent == nil &&
+                   [kind isEqualToString:@"nsxpc-remote-object-proxy-with-error-handler"]) {
+            firstNSXPCRemoteObjectProxyWithErrorHandlerEvent = event;
+        } else if (firstNSXPCSynchronousRemoteObjectProxyWithErrorHandlerEvent == nil &&
+                   [kind isEqualToString:@"nsxpc-synchronous-remote-object-proxy-with-error-handler"]) {
+            firstNSXPCSynchronousRemoteObjectProxyWithErrorHandlerEvent = event;
         }
         if (firstVideoQueueWrapperInvokeEntryBacktrace != nil &&
             firstVideoQueueWrapperInvokeExitBacktrace != nil &&
@@ -9638,6 +9742,10 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             nil;
     id firstNSXPCRemoteObjectInterface = firstNSXPCSetRemoteObjectInterfaceEvent[@"interface"];
     id firstNSXPCExportedInterface = firstNSXPCSetExportedInterfaceEvent[@"interface"];
+    id firstNSXPCRemoteObjectProxy = firstNSXPCRemoteObjectProxyEvent[@"object"];
+    id firstNSXPCRemoteObjectProxyWithErrorHandler = firstNSXPCRemoteObjectProxyWithErrorHandlerEvent[@"object"];
+    id firstNSXPCSynchronousRemoteObjectProxyWithErrorHandler =
+        firstNSXPCSynchronousRemoteObjectProxyWithErrorHandlerEvent[@"object"];
     NSMutableDictionary<NSString *, NSNumber *> *videoQueueWrapperToNestedLeadHistogramMutable = [NSMutableDictionary dictionary];
     NSUInteger videoQueueWrapperToNestedLeadPairCount = 0;
     double videoQueueWrapperToNestedLeadMinMilliseconds = DBL_MAX;
@@ -10221,6 +10329,24 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             @"nsxpc-set-exported-interface",
         ]]
     );
+    NSDictionary<NSString *, id> *nsxpcRemoteObjectProxyCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"nsxpc-remote-object-proxy",
+        ]]
+    );
+    NSDictionary<NSString *, id> *nsxpcRemoteObjectProxyWithErrorHandlerCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"nsxpc-remote-object-proxy-with-error-handler",
+        ]]
+    );
+    NSDictionary<NSString *, id> *nsxpcSynchronousRemoteObjectProxyWithErrorHandlerCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"nsxpc-synchronous-remote-object-proxy-with-error-handler",
+        ]]
+    );
     NSDictionary<NSString *, id> *surfaceTransportHandleMessageCadenceSummary = MDKCopyTraceEventCadenceSummary(
         traceEvents,
         [NSSet setWithArray:@[
@@ -10581,10 +10707,22 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"nsxpcSetExportedInterfaceEventCount=%@", MDKDescribeTraceValue(nsxpcSetExportedInterfaceCadenceSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"nsxpcSetExportedInterfaceDeltaHistogram=%@", MDKDescribeTraceValue(nsxpcSetExportedInterfaceCadenceSummary[@"deltaHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"nsxpcSetExportedInterfaceCadenceClassification=%@", MDKDescribeTraceValue(nsxpcSetExportedInterfaceCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcRemoteObjectProxyEventCount=%@", MDKDescribeTraceValue(nsxpcRemoteObjectProxyCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcRemoteObjectProxyDeltaHistogram=%@", MDKDescribeTraceValue(nsxpcRemoteObjectProxyCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcRemoteObjectProxyCadenceClassification=%@", MDKDescribeTraceValue(nsxpcRemoteObjectProxyCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcRemoteObjectProxyWithErrorHandlerEventCount=%@", MDKDescribeTraceValue(nsxpcRemoteObjectProxyWithErrorHandlerCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcRemoteObjectProxyWithErrorHandlerDeltaHistogram=%@", MDKDescribeTraceValue(nsxpcRemoteObjectProxyWithErrorHandlerCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcRemoteObjectProxyWithErrorHandlerCadenceClassification=%@", MDKDescribeTraceValue(nsxpcRemoteObjectProxyWithErrorHandlerCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcSynchronousRemoteObjectProxyWithErrorHandlerEventCount=%@", MDKDescribeTraceValue(nsxpcSynchronousRemoteObjectProxyWithErrorHandlerCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcSynchronousRemoteObjectProxyWithErrorHandlerDeltaHistogram=%@", MDKDescribeTraceValue(nsxpcSynchronousRemoteObjectProxyWithErrorHandlerCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"nsxpcSynchronousRemoteObjectProxyWithErrorHandlerCadenceClassification=%@", MDKDescribeTraceValue(nsxpcSynchronousRemoteObjectProxyWithErrorHandlerCadenceSummary[@"cadenceClassification"])]];
     [notes addObject:[NSString stringWithFormat:@"nsxpcServiceHistogram=%@", MDKDescribeTraceValue(snapshot[@"nsxpcServiceHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"firstNSXPCMachServiceName=%@", MDKDescribeTraceValue(firstNSXPCMachServiceName)]];
     [notes addObject:[NSString stringWithFormat:@"firstNSXPCRemoteObjectInterface=%@", MDKDescribeTraceValue(firstNSXPCRemoteObjectInterface)]];
     [notes addObject:[NSString stringWithFormat:@"firstNSXPCExportedInterface=%@", MDKDescribeTraceValue(firstNSXPCExportedInterface)]];
+    [notes addObject:[NSString stringWithFormat:@"firstNSXPCRemoteObjectProxy=%@", MDKDescribeTraceValue(firstNSXPCRemoteObjectProxy)]];
+    [notes addObject:[NSString stringWithFormat:@"firstNSXPCRemoteObjectProxyWithErrorHandler=%@", MDKDescribeTraceValue(firstNSXPCRemoteObjectProxyWithErrorHandler)]];
+    [notes addObject:[NSString stringWithFormat:@"firstNSXPCSynchronousRemoteObjectProxyWithErrorHandler=%@", MDKDescribeTraceValue(firstNSXPCSynchronousRemoteObjectProxyWithErrorHandler)]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeAttempted=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeAttempted"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalled=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalled"])]];
     [notes addObject:[NSString stringWithFormat:@"xpcPipeInterposeInstalledImageCount=%@", MDKDescribeTraceValue(snapshot[@"xpcPipeInterposeInstalledImageCount"])]];
