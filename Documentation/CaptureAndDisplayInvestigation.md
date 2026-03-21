@@ -887,3 +887,19 @@ Interpretation:
 - because the already-confirmed wrapper and nested ScreenCaptureKit callbacks remain `60hz-like`,
   the missing `read` events are evidence that the scheduling ceiling is not inside those local
   callbacks and not inside a public fifo drain wrapper either
+
+Follow-up passive trace after scanning the live `OS_dispatch_source` for an embeddable handler
+block:
+
+- `dispatchSourceHandlerInstalledCount=0`
+- `dispatchSourceHandlerCallbackEventCount=0`
+
+Interpretation:
+
+- the live fifo-backed `OS_dispatch_source` that sits in front of the wrapper callback does not
+  currently expose an obvious writable `void (^)(void)` handler block inside the scanned object
+  allocation
+- this cuts off the simplest object-local `dispatch source handler block -> wrapper block` hook,
+  so the next meaningful reverse-engineering hop is now outside the object:
+  - libdispatch-internal source invoke/fire machinery, or
+  - the producer-side wakeup path that feeds the fifo before libdispatch fires the source

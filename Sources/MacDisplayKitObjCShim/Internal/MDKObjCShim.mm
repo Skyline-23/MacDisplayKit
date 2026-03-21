@@ -773,6 +773,7 @@ using MDKDispatchSourceCreateFn = dispatch_source_t (*)(dispatch_source_type_t, 
 using MDKDispatchSourceSetEventHandlerFn = void (*)(dispatch_source_t, dispatch_block_t);
 using MDKDispatchSourceSetEventHandlerFFn = void (*)(dispatch_source_t, dispatch_function_t);
 using MDKReadFn = ssize_t (*)(int, void *, size_t);
+using MDKDispatchSourceHandlerBlockInvokeFn = void (*)(void *);
 static MDKRQReceiverSetSourceBlockInvokeFn MDKOriginalRQReceiverSetSourceBlockInvoke = nullptr;
 static MDKDispatchSourceCreateFn MDKOriginalDispatchSourceCreate = nullptr;
 static MDKDispatchSourceSetEventHandlerFn MDKOriginalDispatchSourceSetEventHandler = nullptr;
@@ -1818,6 +1819,10 @@ static BOOL MDKIsVideoQueueNestedBlockSignature(NSString *signature) {
         [signature containsString:@"FigRemoteQueueMessage"];
 }
 
+static BOOL MDKIsDispatchSourceHandlerBlockSignature(NSString *signature) {
+    return signature != nil && [signature hasPrefix:@"v8@?0"];
+}
+
 static NSString *MDKPointerKey(id object) {
     if (object == nil) {
         return nil;
@@ -1992,6 +1997,9 @@ static void MDKResetSCKTraceState(NSUInteger displayID, NSTimeInterval timeout) 
             @"fifoReadEventCount": @0,
             @"fifoReadNoCancelEventCount": @0,
             @"fifoReadInterposeEventCount": @0,
+            @"dispatchSourceHandlerCallbackEventCount": @0,
+            @"dispatchSourceHandlerBlocks": [NSMutableDictionary dictionary],
+            @"dispatchSourceHandlerInvokes": [NSMutableDictionary dictionary],
             @"videoQueueWrapperCallbackEventCount": @0,
             @"videoQueueWrapperInvokeEntryEventCount": @0,
             @"videoQueueWrapperInvokeExitEventCount": @0,
@@ -3243,6 +3251,30 @@ static void MDKRecordFIFOReadInterposeEvent(
     MDKRecordSCKTraceEvent(kind, payload);
 }
 
+static void MDKRecordDispatchSourceHandlerCallbackEvent(void) {
+    BOOL shouldRecord = NO;
+    NSUInteger eventCount = 0;
+    @synchronized(MDKActiveSCKTraceLock) {
+        if (MDKActiveSCKTraceState != nil) {
+            eventCount = [MDKActiveSCKTraceState[@"dispatchSourceHandlerCallbackEventCount"] unsignedIntegerValue] + 1;
+            MDKActiveSCKTraceState[@"dispatchSourceHandlerCallbackEventCount"] = @(eventCount);
+            shouldRecord = eventCount <= 512;
+        }
+    }
+    if (!shouldRecord) {
+        return;
+    }
+
+    NSMutableDictionary<NSString *, id> *payload = [@{
+        @"wrapperSequenceID": MDKCurrentVideoQueueWrapperSequence() > 0 ? @(MDKCurrentVideoQueueWrapperSequence()) : [NSNull null],
+        @"wrapperDepth": @(MDKCurrentVideoQueueWrapperSequenceDepth()),
+    } mutableCopy];
+    if (eventCount <= 4) {
+        payload[@"backtrace"] = MDKCopyBacktraceFrames(8, 3);
+    }
+    MDKRecordSCKTraceEvent(@"dispatch-source-handler-callback", payload);
+}
+
 static void MDKRecordDispatchReadSourceInterposeEvent(NSString *kind, NSDictionary<NSString *, id> *payload) {
     BOOL shouldRecord = NO;
     @synchronized(MDKActiveSCKTraceLock) {
@@ -3554,6 +3586,167 @@ static BOOL MDKInstallNestedVideoQueueBlockAtPointer(const void *blockPointer) {
     return YES;
 }
 
+static const void *MDKFindDispatchSourcePointerInWrapper(const void *wrapperPointer) {
+    if (wrapperPointer == nullptr) {
+        return nullptr;
+    }
+
+    uint8_t *wrapperBase = reinterpret_cast<uint8_t *>(const_cast<void *>(wrapperPointer));
+    size_t wrapperAllocationSize = malloc_size(const_cast<void *>(wrapperPointer));
+    if (wrapperAllocationSize == 0) {
+        wrapperAllocationSize = 0x80;
+    }
+    const size_t maxInspectableBytes = std::min<size_t>(wrapperAllocationSize, 0x80);
+    const size_t lastOffset = maxInspectableBytes >= sizeof(void *) ? maxInspectableBytes - sizeof(void *) : 0;
+    for (size_t offset = 0; offset <= lastOffset; offset += sizeof(void *)) {
+        void *candidatePointer = nullptr;
+        memcpy(&candidatePointer, wrapperBase + offset, sizeof(candidatePointer));
+        if (candidatePointer == nullptr) {
+            continue;
+        }
+        NSDictionary<NSString *, id> *pointee = MDKDescribeShallowPointerPointee(candidatePointer);
+        NSDictionary<NSString *, id> *object = [pointee[@"object"] isKindOfClass:[NSDictionary class]] ? pointee[@"object"] : nil;
+        NSString *className = [object[@"className"] isKindOfClass:[NSString class]] ? object[@"className"] : nil;
+        NSString *fileType =
+            [object[@"dispatchSourceHandleFileType"] isKindOfClass:[NSString class]] ? object[@"dispatchSourceHandleFileType"] : nil;
+        if ([className isEqualToString:@"OS_dispatch_source"] &&
+            (fileType == nil || [fileType isEqualToString:@"fifo"])) {
+            return candidatePointer;
+        }
+    }
+
+    return nullptr;
+}
+
+static const void *MDKFindDispatchSourceHandlerBlockPointer(
+    const void *dispatchSourcePointer,
+    size_t *blockOffsetOut,
+    NSString **blockSignatureOut
+) {
+    if (blockOffsetOut != nullptr) {
+        *blockOffsetOut = SIZE_MAX;
+    }
+    if (blockSignatureOut != nullptr) {
+        *blockSignatureOut = nil;
+    }
+    if (dispatchSourcePointer == nullptr) {
+        return nullptr;
+    }
+
+    uint8_t *sourceBase = reinterpret_cast<uint8_t *>(const_cast<void *>(dispatchSourcePointer));
+    size_t allocationSize = malloc_size(const_cast<void *>(dispatchSourcePointer));
+    if (allocationSize == 0) {
+        return nullptr;
+    }
+
+    const size_t lastOffset = allocationSize >= sizeof(void *) ? allocationSize - sizeof(void *) : 0;
+    for (size_t offset = 0; offset <= lastOffset; offset += sizeof(void *)) {
+        void *candidatePointer = nullptr;
+        memcpy(&candidatePointer, sourceBase + offset, sizeof(candidatePointer));
+        if (candidatePointer == nullptr) {
+            continue;
+        }
+
+        NSString *candidateSignature = MDKCopyBlockSignatureString((__bridge id) candidatePointer);
+        if (!MDKIsDispatchSourceHandlerBlockSignature(candidateSignature)) {
+            continue;
+        }
+
+        NSDictionary<NSString *, id> *blockSummary = MDKDescribeBlockLiteralObject((__bridge id) candidatePointer);
+        NSDictionary<NSString *, id> *invokeSummary =
+            [blockSummary[@"invoke"] isKindOfClass:[NSDictionary class]] ? blockSummary[@"invoke"] : nil;
+        NSString *imagePath =
+            [invokeSummary[@"imagePath"] isKindOfClass:[NSString class]] ? invokeSummary[@"imagePath"] : nil;
+        if (imagePath != nil &&
+            ![imagePath containsString:@"libdispatch"] &&
+            ![imagePath containsString:@"CMCapture"] &&
+            ![imagePath containsString:@"ScreenCaptureKit"]) {
+            continue;
+        }
+
+        if (blockOffsetOut != nullptr) {
+            *blockOffsetOut = offset;
+        }
+        if (blockSignatureOut != nullptr) {
+            *blockSignatureOut = candidateSignature;
+        }
+        return candidatePointer;
+    }
+
+    return nullptr;
+}
+
+static void MDKInterposedDispatchSourceHandlerBlockInvoke(void *blockLiteral) {
+    MDKRecordDispatchSourceHandlerCallbackEvent();
+
+    MDKDispatchSourceHandlerBlockInvokeFn originalInvoke = nullptr;
+    @synchronized(MDKActiveSCKTraceLock) {
+        NSDictionary<NSString *, id> *wrappedInvokes = MDKActiveSCKTraceState[@"dispatchSourceHandlerInvokes"];
+        NSString *blockKey = [NSString stringWithFormat:@"%p", blockLiteral];
+        NSValue *invokeValue = [wrappedInvokes[blockKey] isKindOfClass:[NSValue class]] ? wrappedInvokes[blockKey] : nil;
+        if (invokeValue == nil) {
+            NSString *descriptorKey = MDKCopyVideoQueueBlockDescriptorKey(reinterpret_cast<const MDKBlockLiteral *>(blockLiteral));
+            invokeValue = [wrappedInvokes[descriptorKey] isKindOfClass:[NSValue class]] ? wrappedInvokes[descriptorKey] : nil;
+        }
+        if (invokeValue != nil) {
+            originalInvoke = reinterpret_cast<MDKDispatchSourceHandlerBlockInvokeFn>(invokeValue.pointerValue);
+        }
+    }
+
+    if (originalInvoke != nullptr) {
+        originalInvoke(blockLiteral);
+    }
+}
+
+static BOOL MDKInstallDispatchSourceHandlerBlockAtPointer(const void *dispatchSourcePointer) {
+    if (dispatchSourcePointer == nullptr) {
+        return NO;
+    }
+
+    size_t blockOffset = SIZE_MAX;
+    NSString *signature = nil;
+    const void *blockPointer = MDKFindDispatchSourceHandlerBlockPointer(dispatchSourcePointer, &blockOffset, &signature);
+    if (blockPointer == nullptr) {
+        return NO;
+    }
+
+    NSString *blockKey = [NSString stringWithFormat:@"%p", blockPointer];
+    auto *blockLiteral = reinterpret_cast<MDKBlockLiteral *>(const_cast<void *>(blockPointer));
+    if (blockLiteral == nullptr || blockLiteral->invoke == nullptr) {
+        return NO;
+    }
+
+    NSString *descriptorKey = MDKCopyVideoQueueBlockDescriptorKey(blockLiteral);
+    MDKDispatchSourceHandlerBlockInvokeFn originalInvoke =
+        reinterpret_cast<MDKDispatchSourceHandlerBlockInvokeFn>(blockLiteral->invoke);
+    @synchronized(MDKActiveSCKTraceLock) {
+        NSMutableDictionary<NSString *, id> *wrappedBlocks = MDKActiveSCKTraceState[@"dispatchSourceHandlerBlocks"];
+        NSMutableDictionary<NSString *, id> *wrappedInvokes = MDKActiveSCKTraceState[@"dispatchSourceHandlerInvokes"];
+        if (wrappedInvokes[blockKey] != nil) {
+            return YES;
+        }
+
+        wrappedBlocks[blockKey] = (__bridge id) blockPointer;
+        wrappedInvokes[blockKey] = [NSValue valueWithPointer:reinterpret_cast<void *>(originalInvoke)];
+        if (descriptorKey != nil) {
+            wrappedInvokes[descriptorKey] = [NSValue valueWithPointer:reinterpret_cast<void *>(originalInvoke)];
+        }
+        blockLiteral->invoke = reinterpret_cast<void (*)(void *, ...)>(MDKInterposedDispatchSourceHandlerBlockInvoke);
+    }
+
+    MDKRecordSCKTraceEvent(
+        @"dispatch-source-handler-installed",
+        @{
+            @"dispatchSourcePointer": [NSString stringWithFormat:@"%p", dispatchSourcePointer],
+            @"blockPointer": [NSString stringWithFormat:@"%p", blockPointer],
+            @"blockOffset": blockOffset == SIZE_MAX ? [NSNull null] : @(blockOffset),
+            @"blockSignature": signature ?: @"",
+            @"originalInvoke": MDKDescribeCodePointer(reinterpret_cast<void *>(originalInvoke)),
+        }
+    );
+    return YES;
+}
+
 static BOOL MDKMaybeInstallNestedVideoQueueBlockFromWrapperPointer(const void *wrapperPointer, NSString *reason) {
     size_t callbackOffset = SIZE_MAX;
     NSString *callbackSignature = nil;
@@ -3622,6 +3815,8 @@ static BOOL MDKInstallVideoQueueWrapperCallbackAtPointer(const void *wrapperPoin
     if (callbackLiteral == nullptr || callbackLiteral->invoke == nullptr) {
         return NO;
     }
+    const void *dispatchSourcePointer = MDKFindDispatchSourcePointerInWrapper(wrapperPointer);
+    MDKInstallDispatchSourceHandlerBlockAtPointer(dispatchSourcePointer);
     MDKMaybeInstallNestedVideoQueueBlockFromWrapperPointer(wrapperPointer, @"wrapper-install");
     NSString *descriptorKey = MDKCopyVideoQueueBlockDescriptorKey(callbackLiteral);
     MDKVideoReceiveQueueBlockInvokeFn originalInvoke =
@@ -7750,6 +7945,18 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             @"video-shared-region-change",
         ]]
     );
+    NSDictionary<NSString *, id> *dispatchSourceHandlerCadenceSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"dispatch-source-handler-callback",
+        ]]
+    );
+    NSDictionary<NSString *, id> *dispatchSourceHandlerInstallSummary = MDKCopyTraceEventCadenceSummary(
+        traceEvents,
+        [NSSet setWithArray:@[
+            @"dispatch-source-handler-installed",
+        ]]
+    );
     NSDictionary<NSString *, id> *videoRecvFDCadenceSummary = MDKCopyTraceEventCadenceSummary(
         traceEvents,
         [NSSet setWithArray:@[
@@ -7993,6 +8200,12 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"videoRemoteQueueRecvFDCadenceClassification=%@", MDKDescribeTraceValue(videoRecvFDCadenceSummary[@"cadenceClassification"])]];
     [notes addObject:[NSString stringWithFormat:@"videoRemoteQueueRecvFDAvailableBytesHistogram=%@", MDKDescribeTraceValue(snapshot[@"videoRemoteQueueRecvFDAvailableBytesHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"videoRemoteQueueRecvFDAvailableBytesMax=%@", MDKDescribeTraceValue(snapshot[@"videoRemoteQueueRecvFDAvailableBytesMax"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceHandlerInstalledCount=%@", MDKDescribeTraceValue(dispatchSourceHandlerInstallSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceHandlerCallbackEventCount=%@", MDKDescribeTraceValue(dispatchSourceHandlerCadenceSummary[@"eventCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceHandlerCallbackDeltaCount=%@", MDKDescribeTraceValue(dispatchSourceHandlerCadenceSummary[@"deltaCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceHandlerCallbackDeltaHistogram=%@", MDKDescribeTraceValue(dispatchSourceHandlerCadenceSummary[@"deltaHistogram"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceHandlerCallback120HzEquivalentCount=%@", MDKDescribeTraceValue(dispatchSourceHandlerCadenceSummary[@"delta120HzEquivalentCount"])]];
+    [notes addObject:[NSString stringWithFormat:@"dispatchSourceHandlerCallbackCadenceClassification=%@", MDKDescribeTraceValue(dispatchSourceHandlerCadenceSummary[@"cadenceClassification"])]];
     [notes addObject:[NSString stringWithFormat:@"capturedRemoteQueueCount=%lu", (unsigned long) MDKCapturedSCKRemoteQueueCount()]];
     [notes addObject:[NSString stringWithFormat:@"privateQueueProbesEnabled=%@", includePrivateQueueProbes ? @"true" : @"false"]];
     [notes addObject:[NSString stringWithFormat:@"firstPublicSampleTimestampNanos=%@", MDKDescribeTraceValue(firstPublicSampleTimestampNanos)]];
