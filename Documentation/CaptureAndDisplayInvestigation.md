@@ -1238,6 +1238,16 @@ Interpretation:
       (`rowCount=0`) even though the `.trace` bundle recorded successfully
     - this means the immediate next step is artifact-first, not table-row-first:
       keep the `.trace` bundle, TOC, table exports, and replayd log together for later bundle-format parsing
+  - explicit upstream attach check:
+    - `/usr/bin/sample` still cannot inspect `WindowServer` without elevated privileges
+    - but `xcrun xctrace record --template 'System Trace' --attach 408 --time-limit 1s --output <trace> --no-prompt`
+      does succeed and produces a valid `WindowServer` trace bundle without `sudo`
+    - a raw `1s` explicit attach export on this machine produced:
+      - `context-switch rowCount=7839`
+      - `time-sample rowCount=231`
+    - that makes `xctrace`, not `sample`, the viable low-level artifact path for `WindowServer -> replayd`
+    - the host now exposes the matching orchestration entry point:
+      - `MacDisplayKitHost --experimental-screencapturekit-windowserver-xctrace-display auto --sample-duration 3 --with-metal-stimulus --json`
   - useful bundle paths inside a successful `System Trace` artifact include:
     - `corespace/run1/core/table-manager`
     - `corespace/run1/core/stores/indexed-store-*`

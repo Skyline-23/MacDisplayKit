@@ -2,6 +2,49 @@ import Foundation
 import MacDisplayKit
 
 enum MDKHostBenchmarkFormatter {
+    static func formatWindowServerXctraceArtifactReport(
+        _ report: MDKWindowServerXctraceArtifactReport
+    ) -> String {
+        var lines = formatScreenCaptureKitProxyHandshakeTrace(report.passiveTrace)
+            .components(separatedBy: "\n")
+        lines.append("")
+        lines.append("windowserver xctrace artifacts")
+        lines.append("PID: \(report.windowServerPID)")
+        lines.append("Trace directory: \(report.traceDirectoryPath)")
+        lines.append("Trace bundle: \(report.tracePath)")
+        lines.append("TOC: \(report.tocPath) bytes=\(report.tocByteCount)")
+        lines.append("Tables:")
+        lines.append(
+            "  - \(report.contextSwitchTable.schema): rows=\(report.contextSwitchTable.rowCount) bytes=\(report.contextSwitchTable.byteCount) path=\(report.contextSwitchTable.outputPath)"
+        )
+        if !report.contextSwitchTable.windowServerRunningThreadCadenceSummaries.isEmpty {
+            for summary in report.contextSwitchTable.windowServerRunningThreadCadenceSummaries.prefix(4) {
+                lines.append(
+                    "    windowServerThreadCadence[\(summary.threadID)]: event=\(summary.eventName) count=\(summary.eventCount) class=\(summary.cadenceClassification) histogram=\(summary.intervalHistogram)"
+                )
+            }
+        }
+        lines.append(
+            "  - \(report.systemCallTable.schema): rows=\(report.systemCallTable.rowCount) bytes=\(report.systemCallTable.byteCount) path=\(report.systemCallTable.outputPath)"
+        )
+        if !report.systemCallTable.hotSymbolHistogram.isEmpty {
+            lines.append("    hotSymbols: \(report.systemCallTable.hotSymbolHistogram)")
+        }
+        lines.append(
+            "  - \(report.timeSampleTable.schema): rows=\(report.timeSampleTable.rowCount) bytes=\(report.timeSampleTable.byteCount) path=\(report.timeSampleTable.outputPath)"
+        )
+        if !report.timeSampleTable.hotSymbolHistogram.isEmpty {
+            lines.append("    hotSymbols: \(report.timeSampleTable.hotSymbolHistogram)")
+        }
+        if !report.notes.isEmpty {
+            lines.append("Notes:")
+            for note in report.notes {
+                lines.append("  - \(note)")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
     static func formatReplaydXctraceArtifactReport(
         _ report: MDKReplaydXctraceArtifactReport
     ) -> String {

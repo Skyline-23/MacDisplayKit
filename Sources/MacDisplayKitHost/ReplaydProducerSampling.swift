@@ -36,8 +36,22 @@ struct MDKReplaydXctraceArtifactReport: Codable, Equatable, Sendable {
     let notes: [String]
 }
 
+struct MDKWindowServerXctraceArtifactReport: Codable, Equatable, Sendable {
+    let passiveTrace: MDKScreenCaptureKitProxyHandshakeTrace
+    let windowServerPID: Int32
+    let traceDirectoryPath: String
+    let tracePath: String
+    let tocPath: String
+    let tocByteCount: Int
+    let contextSwitchTable: MDKReplaydXctraceTableArtifact
+    let systemCallTable: MDKReplaydXctraceTableArtifact
+    let timeSampleTable: MDKReplaydXctraceTableArtifact
+    let notes: [String]
+}
+
 enum MDKReplaydProducerSamplerError: Error {
     case replaydNotRunning
+    case windowServerNotRunning
     case sampleFailed(status: Int32, output: String)
 }
 
@@ -49,6 +63,10 @@ private struct MDKReplaydProducerSampleExecution: Sendable {
 
 private struct MDKReplaydXctraceExecution: Sendable {
     let report: MDKReplaydXctraceArtifactReport
+}
+
+private struct MDKWindowServerXctraceExecution: Sendable {
+    let report: MDKWindowServerXctraceArtifactReport
 }
 
 private actor MDKReplaydProducerSampleCoordinator {
@@ -481,6 +499,202 @@ private actor MDKReplaydXctraceCoordinator {
     }
 }
 
+private actor MDKWindowServerXctraceCoordinator {
+    func capture(
+        windowServerPID: Int32,
+        sampleDuration: TimeInterval,
+        passiveTrace: MDKScreenCaptureKitProxyHandshakeTrace
+    ) async throws -> MDKWindowServerXctraceExecution {
+        let traceDirectoryURL = Self.temporaryTraceDirectoryURL()
+        try FileManager.default.createDirectory(
+            at: traceDirectoryURL,
+            withIntermediateDirectories: true
+        )
+
+        let traceURL = traceDirectoryURL.appendingPathComponent("windowserver-system.trace")
+        let tocURL = traceDirectoryURL.appendingPathComponent("toc.xml")
+        let contextSwitchURL = traceDirectoryURL.appendingPathComponent("context-switch.xml")
+        let syscallURL = traceDirectoryURL.appendingPathComponent("syscall.xml")
+        let timeSampleURL = traceDirectoryURL.appendingPathComponent("time-sample.xml")
+
+        let captureDuration = max(2, Int(ceil(min(sampleDuration, 5))))
+
+        try Self.runProcess(
+            executablePath: "/usr/bin/xcrun",
+            arguments: [
+                "xctrace", "record",
+                "--template", "System Trace",
+                "--attach", String(windowServerPID),
+                "--time-limit", "\(captureDuration)s",
+                "--output", traceURL.path,
+                "--no-prompt"
+            ]
+        )
+
+        try Self.runProcess(
+            executablePath: "/usr/bin/xcrun",
+            arguments: [
+                "xctrace", "export",
+                "--input", traceURL.path,
+                "--toc"
+            ],
+            outputURL: tocURL
+        )
+
+        try Self.runProcess(
+            executablePath: "/usr/bin/xcrun",
+            arguments: [
+                "xctrace", "export",
+                "--input", traceURL.path,
+                "--xpath", "/trace-toc/run[@number=\"1\"]/data/table[@schema=\"context-switch\"]"
+            ],
+            outputURL: contextSwitchURL
+        )
+
+        try Self.runProcess(
+            executablePath: "/usr/bin/xcrun",
+            arguments: [
+                "xctrace", "export",
+                "--input", traceURL.path,
+                "--xpath", "/trace-toc/run[@number=\"1\"]/data/table[@schema=\"syscall\"]"
+            ],
+            outputURL: syscallURL
+        )
+
+        try Self.runProcess(
+            executablePath: "/usr/bin/xcrun",
+            arguments: [
+                "xctrace", "export",
+                "--input", traceURL.path,
+                "--xpath", "/trace-toc/run[@number=\"1\"]/data/table[@schema=\"time-sample\"]"
+            ],
+            outputURL: timeSampleURL
+        )
+
+        let tocText = try String(contentsOf: tocURL, encoding: .utf8)
+        let contextSwitchText = try String(contentsOf: contextSwitchURL, encoding: .utf8)
+        let syscallText = try String(contentsOf: syscallURL, encoding: .utf8)
+        let timeSampleText = try String(contentsOf: timeSampleURL, encoding: .utf8)
+
+        let contextSwitchTable = MDKReplaydXctraceArtifactParser.summarizeTableArtifact(
+            schema: "context-switch",
+            outputPath: contextSwitchURL.path,
+            exportText: contextSwitchText
+        )
+        let systemCallTable = MDKReplaydXctraceArtifactParser.summarizeTableArtifact(
+            schema: "syscall",
+            outputPath: syscallURL.path,
+            exportText: syscallText
+        )
+        let timeSampleTable = MDKReplaydXctraceArtifactParser.summarizeTableArtifact(
+            schema: "time-sample",
+            outputPath: timeSampleURL.path,
+            exportText: timeSampleText
+        )
+
+        var notes: [String] = []
+        if !contextSwitchTable.containsRows {
+            notes.append("xctrace context-switch export returned schema-only XML on this WindowServer run.")
+        }
+        if !systemCallTable.containsRows {
+            notes.append("xctrace syscall export returned schema-only XML on this WindowServer run.")
+        }
+        if !timeSampleTable.containsRows {
+            notes.append("xctrace time-sample export returned schema-only XML on this WindowServer run.")
+        }
+        if contextSwitchTable.containsRows || systemCallTable.containsRows || timeSampleTable.containsRows {
+            notes.append(
+                "xctrace exported WindowServer rows: context-switch=\(contextSwitchTable.rowCount) syscall=\(systemCallTable.rowCount) time-sample=\(timeSampleTable.rowCount)."
+            )
+        }
+        if !contextSwitchTable.windowServerRunningThreadCadenceSummaries.isEmpty {
+            let dominantThreads = contextSwitchTable.windowServerRunningThreadCadenceSummaries.prefix(2).map {
+                "\($0.threadID)=\($0.cadenceClassification) count=\($0.eventCount)"
+            }
+            notes.append("WindowServer context-switch running cadences \(dominantThreads.joined(separator: ", ")).")
+            if let mainThreadSummary = contextSwitchTable.windowServerRunningThreadCadenceSummaries.first(where: {
+                $0.threadName.contains("Main Thread")
+            }) {
+                notes.append(
+                    "WindowServer main thread cadence classified as \(mainThreadSummary.cadenceClassification) over \(mainThreadSummary.eventCount) running events."
+                )
+            }
+        }
+        if !systemCallTable.hotSymbolHistogram.isEmpty {
+            notes.append("WindowServer syscall backtraces hit hot symbols \(systemCallTable.hotSymbolHistogram).")
+        }
+        if !timeSampleTable.hotSymbolHistogram.isEmpty {
+            notes.append("WindowServer time-sample backtraces hit hot symbols \(timeSampleTable.hotSymbolHistogram).")
+        }
+        if !passiveTrace.succeeded {
+            notes.append("paired passive trace did not reach a succeeded state during WindowServer xctrace capture.")
+        }
+
+        return MDKWindowServerXctraceExecution(
+            report: MDKWindowServerXctraceArtifactReport(
+                passiveTrace: passiveTrace,
+                windowServerPID: windowServerPID,
+                traceDirectoryPath: traceDirectoryURL.path,
+                tracePath: traceURL.path,
+                tocPath: tocURL.path,
+                tocByteCount: tocText.lengthOfBytes(using: .utf8),
+                contextSwitchTable: contextSwitchTable,
+                systemCallTable: systemCallTable,
+                timeSampleTable: timeSampleTable,
+                notes: notes
+            )
+        )
+    }
+
+    nonisolated private static func runProcess(
+        executablePath: String,
+        arguments: [String],
+        outputURL: URL? = nil
+    ) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+
+        if let outputURL {
+            FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: outputURL)
+            defer { try? handle.close() }
+            process.standardOutput = handle
+            process.standardError = handle
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                throw MDKReplaydProducerSamplerError.sampleFailed(
+                    status: process.terminationStatus,
+                    output: (try? String(contentsOf: outputURL, encoding: .utf8)) ?? ""
+                )
+            }
+            return
+        }
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+        let outputText = String(
+            decoding: pipe.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        guard process.terminationStatus == 0 else {
+            throw MDKReplaydProducerSamplerError.sampleFailed(
+                status: process.terminationStatus,
+                output: outputText
+            )
+        }
+    }
+
+    nonisolated private static func temporaryTraceDirectoryURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("mdk-windowserver-xctrace-\(UUID().uuidString)", isDirectory: true)
+    }
+}
+
 enum MDKReplaydProducerSampler {
     @MainActor
     static func capturePassiveTrace(
@@ -588,6 +802,31 @@ enum MDKReplaydProducerSampler {
     }
 
     @MainActor
+    static func capturePassiveTraceWithWindowServerXctraceArtifacts(
+        controller: MDKHostBenchmarkController,
+        displayID: UInt32,
+        sampleDuration: TimeInterval,
+        useMetalStimulus: Bool
+    ) async throws -> MDKWindowServerXctraceArtifactReport {
+        let windowServerPID = try currentWindowServerPID()
+        let xctraceCoordinator = MDKWindowServerXctraceCoordinator()
+        let stimulus = useMetalStimulus ? MDKHostMetalStimulus(displayID: displayID) : nil
+        stimulus?.start()
+        defer { stimulus?.stop() }
+
+        let passiveTrace = try controller.traceScreenCaptureKitPassiveHandshake(
+            displayID: displayID,
+            sampleDuration: sampleDuration
+        )
+        let execution = try await xctraceCoordinator.capture(
+            windowServerPID: windowServerPID,
+            sampleDuration: sampleDuration,
+            passiveTrace: passiveTrace
+        )
+        return execution.report
+    }
+
+    @MainActor
     private static func performPassiveTraceCapture(
         controller: MDKHostBenchmarkController,
         displayID: UInt32,
@@ -639,9 +878,20 @@ enum MDKReplaydProducerSampler {
     }
 
     private static func currentReplaydPID() throws -> Int32 {
+        try currentPID(processName: "replayd", notRunning: .replaydNotRunning)
+    }
+
+    private static func currentWindowServerPID() throws -> Int32 {
+        try currentPID(processName: "WindowServer", notRunning: .windowServerNotRunning)
+    }
+
+    private static func currentPID(
+        processName: String,
+        notRunning: MDKReplaydProducerSamplerError
+    ) throws -> Int32 {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        process.arguments = ["-x", "replayd"]
+        process.arguments = ["-x", processName]
 
         let outputPipe = Pipe()
         process.standardOutput = outputPipe
@@ -651,7 +901,7 @@ enum MDKReplaydProducerSampler {
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
-            throw MDKReplaydProducerSamplerError.replaydNotRunning
+            throw notRunning
         }
 
         let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
@@ -661,7 +911,7 @@ enum MDKReplaydProducerSampler {
             .first,
               let pid = Int32(firstLine)
         else {
-            throw MDKReplaydProducerSamplerError.replaydNotRunning
+            throw notRunning
         }
 
         return pid
