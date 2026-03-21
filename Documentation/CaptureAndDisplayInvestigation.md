@@ -1134,10 +1134,20 @@ Interpretation:
   `rpDaemonProxyToSCStreamRemoteQueuePointerMatched=1`
 - the `streamID` continuity also holds in the same trace:
   `rpDaemonProxyFirstStartRemoteQueueStreamIDMatchesTraceStreamID=1`
+- a live `sample replayd 1 1` during passive capture shows the daemon-side producer thread
+  `com.apple.coremedia.remotequeue_sender.readqueue` blocked in
+  `rqSenderHandleDequeue (in CMCapture) -> read`
+- the same `replayd` binary imports
+  `_FigRemoteQueueSenderCreate`,
+  `_FigRemoteQueueSenderCreateXPCObject`, and
+  `_FigRemoteQueueSenderSetMaximumBufferAge`
+- taken together, the brokered producer side now points much more strongly at
+  `CMCapture`'s `FigRemoteQueueSender` path than at an ordinary host-side `libdispatch`
+  or `NSXPCConnection` helper
 - the current request/reply split is `4` requests vs `2` replies in a healthy `1`-second passive trace
 - that is the first direct host-side confirmation that the passive `SCStream` capture path is brokered through
   `replayd`, even though the lower imported C shims stay dark
 - this shifts the next reverse-engineering target from generic host-side imported stubs to two sharper paths:
-  - the next selector or queue transition below that start-queue dispatch boundary
-  - the first producer-side transition that fills the matched `remoteQueue` dictionary
+  - the next producer-side transition below `rqSenderHandleDequeue`
+  - the `FigRemoteQueueSenderCreate*` / `SetMaximumBufferAge` setup path inside `replayd`
   - `replayd` itself, especially `SCContentSharingSessionService` and the session creation / reply path
