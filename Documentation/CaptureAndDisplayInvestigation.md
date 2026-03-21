@@ -765,3 +765,21 @@ Interpretation:
 - this pushes the remaining cadence ceiling one step farther upstream and makes it very likely that
   the dominant `60hz-like` behavior is already fixed before entry into
   `__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke`
+
+Follow-up passive trace after adding first-entry/exit backtrace capture around the same wrapper:
+
+- `videoQueueWrapperInvokeEntryCadenceClassification=60hz-like`
+- `videoQueueWrapperInvokeExitCadenceClassification=60hz-like`
+- `firstVideoQueueWrapperInvokeEntryFirstInterestingFrame={"symbolName":"__rqReceiverSetSource_block_invoke","imagePath":"/System/Library/PrivateFrameworks/CMCapture.framework/Versions/A/CMCapture","symbolOffset":260}`
+- `firstVideoQueueWrapperInvokeExitFirstInterestingFrame={"symbolName":"__rqReceiverSetSource_block_invoke","imagePath":"/System/Library/PrivateFrameworks/CMCapture.framework/Versions/A/CMCapture","symbolOffset":260}`
+- `videoQueueInvokeEntryToExitLeadHistogram={"0.1ms":25,"0.2ms":16,"0.3ms":9,"0.7ms":2,"0.9ms":1,"4.4ms":1}`
+- `firstVideoQueueNestedBlockInsideWrapperOriginalInvoke=1`
+
+Interpretation:
+
+- the first non-shim caller visible above `__FigRemoteOperationReceiverCreateMessageReceiver_block_invoke`
+  is now identified as `CMCapture::__rqReceiverSetSource_block_invoke`
+- entry and exit of the lower wrapper still collapse to the same `60hz-like` cadence, so the next
+  meaningful interpose target has moved one frame higher into the `rqReceiverSetSource` path
+- the immediate next technical target is therefore the CMCapture receive-source boundary around
+  `__rqReceiverSetSource_block_invoke`, not the later ScreenCaptureKit local receive block

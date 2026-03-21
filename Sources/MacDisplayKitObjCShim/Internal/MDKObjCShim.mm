@@ -3,6 +3,7 @@
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <IOSurface/IOSurface.h>
+#import <execinfo.h>
 #import <dlfcn.h>
 #import <mach/mach.h>
 #import <mach-o/dyld.h>
@@ -671,6 +672,7 @@ static BOOL MDKWrapVideoReceiveQueueCallbackIfPossible(id stream);
 static NSString *MDKBucketMilliseconds(double milliseconds);
 static void MDKIncrementMutableHistogram(NSMutableDictionary<NSString *, NSNumber *> *histogram, NSString *bucket);
 static NSString *MDKClassifyCadenceHistogram(NSDictionary<NSString *, NSNumber *> *histogram, NSUInteger deltaCount);
+static NSArray<NSDictionary<NSString *, id> *> *MDKCopyBacktraceFrames(NSUInteger maxFrames, NSUInteger skipFrames);
 
 static uint64_t MDKPushVideoQueueWrapperSequence(void) {
     const uint64_t sequenceID = MDKVideoQueueWrapperSequenceCounter.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -707,6 +709,52 @@ static uint64_t MDKPopVideoQueueWrapperSequence(void) {
     MDKVideoQueueWrapperSequenceTLSStack[index] = 0;
     MDKVideoQueueWrapperSequenceTLSDepth = currentDepth - 1;
     return sequenceID;
+}
+
+static NSArray<NSDictionary<NSString *, id> *> *MDKCopyBacktraceFrames(NSUInteger maxFrames, NSUInteger skipFrames) {
+    if (maxFrames == 0) {
+        return @[];
+    }
+
+    constexpr int maxStoredFrames = 64;
+    void *addresses[maxStoredFrames] = {};
+    const int capturedFrameCount = backtrace(addresses, maxStoredFrames);
+    if (capturedFrameCount <= 0) {
+        return @[];
+    }
+
+    NSMutableArray<NSDictionary<NSString *, id> *> *frames = [NSMutableArray array];
+    for (int idx = static_cast<int>(skipFrames); idx < capturedFrameCount && frames.count < maxFrames; ++idx) {
+        void *address = addresses[idx];
+        Dl_info info = {};
+        const BOOL hasInfo = dladdr(address, &info) != 0;
+        NSString *symbolName = hasInfo && info.dli_sname != nullptr ? [NSString stringWithUTF8String:info.dli_sname] : nil;
+        NSString *imagePath = hasInfo && info.dli_fname != nullptr ? [NSString stringWithUTF8String:info.dli_fname] : nil;
+        uintptr_t imageBase = hasInfo ? reinterpret_cast<uintptr_t>(info.dli_fbase) : 0;
+        uintptr_t symbolAddress = hasInfo ? reinterpret_cast<uintptr_t>(info.dli_saddr) : 0;
+        uintptr_t rawAddress = reinterpret_cast<uintptr_t>(address);
+        NSMutableDictionary<NSString *, id> *frame = [@{
+            @"frameIndex": @(idx - static_cast<int>(skipFrames)),
+            @"address": [NSString stringWithFormat:@"0x%llx", static_cast<unsigned long long>(rawAddress)],
+        } mutableCopy];
+        if (symbolName != nil) {
+            frame[@"symbolName"] = symbolName;
+        }
+        if (imagePath != nil) {
+            frame[@"imagePath"] = imagePath;
+        }
+        if (imageBase != 0 && rawAddress >= imageBase) {
+            frame[@"imageBase"] = [NSString stringWithFormat:@"0x%llx", static_cast<unsigned long long>(imageBase)];
+            frame[@"imageOffset"] = @(rawAddress - imageBase);
+        }
+        if (symbolAddress != 0 && rawAddress >= symbolAddress) {
+            frame[@"symbolAddress"] = [NSString stringWithFormat:@"0x%llx", static_cast<unsigned long long>(symbolAddress)];
+            frame[@"symbolOffset"] = @(rawAddress - symbolAddress);
+        }
+        [frames addObject:frame];
+    }
+
+    return frames;
 }
 
 @implementation MDKShimStreamOutputCollector
@@ -2872,13 +2920,14 @@ static void MDKRecordVideoQueueWrapperInvokeBoundaryEvent(
     void *context
 ) {
     BOOL shouldRecord = NO;
+    NSUInteger eventCount = 0;
     @synchronized(MDKActiveSCKTraceLock) {
         if (MDKActiveSCKTraceState != nil) {
             NSString *counterKey =
                 [kind isEqualToString:@"video-queue-wrapper-invoke-exit"] ?
                     @"videoQueueWrapperInvokeExitEventCount" :
                     @"videoQueueWrapperInvokeEntryEventCount";
-            NSUInteger eventCount = [MDKActiveSCKTraceState[counterKey] unsignedIntegerValue] + 1;
+            eventCount = [MDKActiveSCKTraceState[counterKey] unsignedIntegerValue] + 1;
             MDKActiveSCKTraceState[counterKey] = @(eventCount);
             shouldRecord = eventCount <= 512;
         }
@@ -2889,14 +2938,17 @@ static void MDKRecordVideoQueueWrapperInvokeBoundaryEvent(
 
     NSDictionary<NSString *, id> *surfaceSummary = message != nullptr ? MDKSummarizeIOSurface(message->surface) : @{ @"present": @NO };
     id messageType = message != nullptr ? static_cast<id>(@(message->messageType)) : [NSNull null];
-    NSDictionary<NSString *, id> *payload = @{
+    NSMutableDictionary<NSString *, id> *payload = [@{
         @"wrapperSequenceID": sequenceID > 0 ? @(sequenceID) : [NSNull null],
         @"wrapperDepth": @(wrapperDepth),
         @"status": @(status),
         @"messageType": messageType,
         @"surface": surfaceSummary,
         @"context": MDKSummarizePointerValue(context),
-    };
+    } mutableCopy];
+    if (eventCount <= 4) {
+        payload[@"backtrace"] = MDKCopyBacktraceFrames(8, 3);
+    }
     MDKRecordSCKTraceEvent(kind, payload);
 }
 
@@ -6538,6 +6590,48 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
             @"video-queue-nested-block-callback",
         ]]
     );
+    NSArray<NSDictionary<NSString *, id> *> *firstVideoQueueWrapperInvokeEntryBacktrace = nil;
+    NSArray<NSDictionary<NSString *, id> *> *firstVideoQueueWrapperInvokeExitBacktrace = nil;
+    auto copyFirstInterestingWrapperBacktraceFrame = ^NSDictionary<NSString *, id> * _Nullable(NSArray<NSDictionary<NSString *, id> *> *frames) {
+        for (NSDictionary<NSString *, id> *frame in frames) {
+            NSString *imagePath = [frame[@"imagePath"] isKindOfClass:[NSString class]] ? frame[@"imagePath"] : nil;
+            NSString *symbolName = [frame[@"symbolName"] isKindOfClass:[NSString class]] ? frame[@"symbolName"] : nil;
+            if (imagePath != nil && [imagePath containsString:@"MacDisplayKitObjCShim"]) {
+                continue;
+            }
+            if (symbolName != nil &&
+                ([symbolName containsString:@"MDKInterposedVideoQueueBlockInvoke"] ||
+                 [symbolName containsString:@"MDKRecordVideoQueueWrapperInvokeBoundaryEvent"] ||
+                 [symbolName containsString:@"MDKCopyBacktraceFrames"])) {
+                continue;
+            }
+            return frame;
+        }
+        return nil;
+    };
+    for (NSDictionary<NSString *, id> *event in traceEvents) {
+        NSString *kind = [event[@"kind"] isKindOfClass:[NSString class]] ? event[@"kind"] : nil;
+        NSArray<NSDictionary<NSString *, id> *> *backtrace =
+            [event[@"backtrace"] isKindOfClass:[NSArray class]] ? event[@"backtrace"] : nil;
+        if (backtrace == nil) {
+            continue;
+        }
+        if (firstVideoQueueWrapperInvokeEntryBacktrace == nil &&
+            [kind isEqualToString:@"video-queue-wrapper-invoke-entry"]) {
+            firstVideoQueueWrapperInvokeEntryBacktrace = backtrace;
+        } else if (firstVideoQueueWrapperInvokeExitBacktrace == nil &&
+                   [kind isEqualToString:@"video-queue-wrapper-invoke-exit"]) {
+            firstVideoQueueWrapperInvokeExitBacktrace = backtrace;
+        }
+        if (firstVideoQueueWrapperInvokeEntryBacktrace != nil &&
+            firstVideoQueueWrapperInvokeExitBacktrace != nil) {
+            break;
+        }
+    }
+    NSDictionary<NSString *, id> *firstVideoQueueWrapperInvokeEntryFirstInterestingFrame =
+        copyFirstInterestingWrapperBacktraceFrame(firstVideoQueueWrapperInvokeEntryBacktrace ?: @[]);
+    NSDictionary<NSString *, id> *firstVideoQueueWrapperInvokeExitFirstInterestingFrame =
+        copyFirstInterestingWrapperBacktraceFrame(firstVideoQueueWrapperInvokeExitBacktrace ?: @[]);
     NSMutableDictionary<NSString *, NSNumber *> *videoQueueWrapperToNestedLeadHistogramMutable = [NSMutableDictionary dictionary];
     NSUInteger videoQueueWrapperToNestedLeadPairCount = 0;
     double videoQueueWrapperToNestedLeadMinMilliseconds = DBL_MAX;
@@ -6960,10 +7054,14 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeEntryDeltaHistogram=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeEntryCadenceSummary[@"deltaHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeEntry120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeEntryCadenceSummary[@"delta120HzEquivalentCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeEntryCadenceClassification=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeEntryCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueWrapperInvokeEntryBacktrace=%@", MDKDescribeTraceValue(firstVideoQueueWrapperInvokeEntryBacktrace)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueWrapperInvokeEntryFirstInterestingFrame=%@", MDKDescribeTraceValue(firstVideoQueueWrapperInvokeEntryFirstInterestingFrame)]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeExitEventCount=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeExitCadenceSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeExitDeltaHistogram=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeExitCadenceSummary[@"deltaHistogram"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeExit120HzEquivalentCount=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeExitCadenceSummary[@"delta120HzEquivalentCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeExitCadenceClassification=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeExitCadenceSummary[@"cadenceClassification"])]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueWrapperInvokeExitBacktrace=%@", MDKDescribeTraceValue(firstVideoQueueWrapperInvokeExitBacktrace)]];
+    [notes addObject:[NSString stringWithFormat:@"firstVideoQueueWrapperInvokeExitFirstInterestingFrame=%@", MDKDescribeTraceValue(firstVideoQueueWrapperInvokeExitFirstInterestingFrame)]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackEventCount=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"eventCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackDeltaCount=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"deltaCount"])]];
     [notes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackDeltaHistogram=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"deltaHistogram"])]];
@@ -7149,8 +7247,10 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKProxyHandshakeTrace(
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperCallbackEventCount=%@", MDKDescribeTraceValue(videoQueueWrapperCadenceSummary[@"eventCount"])]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeEntryEventCount=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeEntryCadenceSummary[@"eventCount"])]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeEntryCadenceClassification=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeEntryCadenceSummary[@"cadenceClassification"])]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueWrapperInvokeEntryFirstInterestingFrame=%@", MDKDescribeTraceValue(firstVideoQueueWrapperInvokeEntryFirstInterestingFrame)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeExitEventCount=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeExitCadenceSummary[@"eventCount"])]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueWrapperInvokeExitCadenceClassification=%@", MDKDescribeTraceValue(videoQueueWrapperInvokeExitCadenceSummary[@"cadenceClassification"])]];
+    [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"firstVideoQueueWrapperInvokeExitFirstInterestingFrame=%@", MDKDescribeTraceValue(firstVideoQueueWrapperInvokeExitFirstInterestingFrame)]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueNestedBlockCallbackEventCount=%@", MDKDescribeTraceValue(videoQueueNestedBlockCadenceSummary[@"eventCount"])]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueNestedAttributedCallbackCount=%@", MDKDescribeTraceValue(@(videoQueueNestedAttributedCallbackCount))]];
     [deliveryComparisonNotes addObject:[NSString stringWithFormat:@"videoQueueNestedUnattributedCallbackCount=%@", MDKDescribeTraceValue(@(videoQueueNestedUnattributedCallbackCount))]];
