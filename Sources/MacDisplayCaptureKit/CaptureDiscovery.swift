@@ -26,6 +26,12 @@ public final class MDKCaptureDiscovery: NSObject {
     }
 
     public static func microphoneInputs() -> [MDKAudioInputDescriptor] {
-        MDKShimMicrophoneNames().map(MDKAudioInputDescriptor.init(name:))
+        MDKShimMicrophoneDescriptors().compactMap { entry in
+            guard let id = entry["id"], let name = entry["name"] else {
+                return nil
+            }
+
+            return MDKAudioInputDescriptor(id: id, name: name)
+        }
     }
 }

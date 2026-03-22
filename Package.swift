@@ -68,6 +68,7 @@ let package = Package(
                 .linkedFramework("CoreVideo"),
                 .linkedFramework("IOSurface"),
                 .linkedFramework("Metal"),
+                .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("VideoToolbox")
             ]
         ),

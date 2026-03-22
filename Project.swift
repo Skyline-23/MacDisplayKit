@@ -32,6 +32,7 @@ let project = Project(
                 .sdk(name: "CoreVideo", type: .framework),
                 .sdk(name: "IOSurface", type: .framework),
                 .sdk(name: "Metal", type: .framework),
+                .sdk(name: "ScreenCaptureKit", type: .framework),
                 .sdk(name: "VideoToolbox", type: .framework)
             ],
             settings: .settings(

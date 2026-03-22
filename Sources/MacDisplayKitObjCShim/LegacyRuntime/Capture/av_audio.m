@@ -4,6 +4,7 @@
  */
 // local includes
 #import "av_audio.h"
+#import <math.h>
 
 @implementation AVAudio
 
@@ -35,9 +36,34 @@
   return result;
 }
 
++ (NSArray<NSDictionary<NSString *, NSString *> *> *)microphoneDescriptors {
+  NSMutableArray<NSDictionary<NSString *, NSString *> *> *result = [[NSMutableArray alloc] init];
+
+  for (AVCaptureDevice *device in [AVAudio microphones]) {
+    NSString *uniqueID = device.uniqueID ?: @"";
+    NSString *localizedName = device.localizedName ?: uniqueID;
+    [result addObject:@ {
+      @"id": uniqueID,
+      @"name": localizedName
+    }];
+  }
+
+  return result;
+}
+
 + (AVCaptureDevice *)findMicrophone:(NSString *)name {
   for (AVCaptureDevice *device in [AVAudio microphones]) {
     if ([[device localizedName] isEqualToString:name]) {
+      return device;
+    }
+  }
+
+  return nil;
+}
+
++ (AVCaptureDevice *)findMicrophoneByID:(NSString *)uniqueID {
+  for (AVCaptureDevice *device in [AVAudio microphones]) {
+    if ([device.uniqueID isEqualToString:uniqueID]) {
       return device;
     }
   }
@@ -64,6 +90,7 @@
 }
 
 - (void)dealloc {
+  self.sampleHandler = nil;
   self.audioConnection = nil;
   [self stopCapture];
   TPCircularBufferCleanup(&audioSampleBuffer);
@@ -98,7 +125,7 @@
     (NSString *) AVLinearPCMIsNonInterleaved: @NO
   }];
 
-  dispatch_queue_attr_t qos = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_CONCURRENT, QOS_CLASS_USER_INITIATED, DISPATCH_QUEUE_PRIORITY_HIGH);
+  dispatch_queue_attr_t qos = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, DISPATCH_QUEUE_PRIORITY_HIGH);
   dispatch_queue_t recordingQueue = dispatch_queue_create("dev.lizardbyte.sunshine.audio.capture", qos);
 
   [audioOutput setSampleBufferDelegate:self queue:recordingQueue];
@@ -111,18 +138,25 @@
 
   self.audioConnection = [audioOutput connectionWithMediaType:AVMediaTypeAudio];
 
-  [self.audioCaptureSession startRunning];
   [self prepareAudioBuffer];
+  [self.audioCaptureSession startRunning];
 
   return 0;
 }
 
-- (void)appendInterleavedFloatSamples:(const float *)samples sampleCount:(UInt32)sampleCount {
+- (void)appendInterleavedFloatSamples:(const float *)samples
+                          sampleCount:(UInt32)sampleCount
+                   sourceTimeNanos:(uint64_t)sourceTimeNanoseconds
+                           frameCount:(UInt32)frameCount {
   if (samples == NULL || sampleCount == 0) {
     return;
   }
 
   TPCircularBufferProduceBytes(&self->audioSampleBuffer, samples, sampleCount * sizeof(float));
+  if (self.sampleHandler != nil) {
+    NSData *sampleData = [NSData dataWithBytes:samples length:sampleCount * sizeof(float)];
+    self.sampleHandler(sampleData, sourceTimeNanoseconds, self.sampleRate, self.channels, frameCount);
+  }
   [self.samplesArrivedSignal lock];
   [self.samplesArrivedSignal signal];
   [self.samplesArrivedSignal unlock];
@@ -130,7 +164,8 @@
 
 - (void)appendSamplesFromBufferList:(const AudioBufferList *)audioBufferList
                          frameCount:(UInt32)frameCount
-                               asbd:(const AudioStreamBasicDescription *)streamDescription {
+                               asbd:(const AudioStreamBasicDescription *)streamDescription
+                 sourceTimeNanos:(uint64_t)sourceTimeNanoseconds {
   static BOOL warnedUnsupportedFormat = NO;
 
   if (audioBufferList == NULL || streamDescription == NULL || frameCount == 0) {
@@ -151,7 +186,9 @@
   if (!isNonInterleaved && audioBufferList->mNumberBuffers == 1) {
     const AudioBuffer audioBuffer = audioBufferList->mBuffers[0];
     [self appendInterleavedFloatSamples:(const float *) audioBuffer.mData
-                            sampleCount:frameCount * self.channels];
+                            sampleCount:frameCount * self.channels
+                     sourceTimeNanos:sourceTimeNanoseconds
+                             frameCount:frameCount];
     return;
   }
 
@@ -167,7 +204,10 @@
       }
     }
 
-    [self appendInterleavedFloatSamples:interleaved sampleCount:frameCount * self.channels];
+    [self appendInterleavedFloatSamples:interleaved
+                            sampleCount:frameCount * self.channels
+                     sourceTimeNanos:sourceTimeNanoseconds
+                             frameCount:frameCount];
   }
 }
 
@@ -189,7 +229,18 @@
   }
 
   UInt32 frameCount = (UInt32) CMSampleBufferGetNumSamples(sampleBuffer);
-  [self appendSamplesFromBufferList:&audioBufferList frameCount:frameCount asbd:streamDescription];
+  CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
+  uint64_t sourceTimeNanoseconds = 0;
+  if (CMTIME_IS_NUMERIC(presentationTime)) {
+    Float64 seconds = CMTimeGetSeconds(presentationTime);
+    if (isfinite(seconds) && seconds > 0) {
+      sourceTimeNanoseconds = (uint64_t) llround(seconds * 1e9);
+    }
+  }
+  [self appendSamplesFromBufferList:&audioBufferList
+                         frameCount:frameCount
+                               asbd:streamDescription
+                     sourceTimeNanos:sourceTimeNanoseconds];
 
   if (blockBuffer != nil) {
     CFRelease(blockBuffer);

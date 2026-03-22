@@ -79,6 +79,21 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         XCTAssertEqual(MDKVideoEncoderCodec.proResProxy.rawValue, "prores-proxy")
     }
 
+    func testAudioCaptureConfigurationTracksMicrophoneAndSystemOutputSources() throws {
+        let microphone = MDKAudioCaptureConfiguration.microphone(inputID: "mic-1")
+        let systemOutput = MDKAudioCaptureConfiguration.systemOutput(displayID: 99)
+
+        XCTAssertEqual(microphone.source, .microphone(inputID: "mic-1"))
+        XCTAssertEqual(microphone.sampleRate, 48_000)
+        XCTAssertEqual(microphone.channelCount, 2)
+        XCTAssertEqual(microphone.frameSize, 480)
+        XCTAssertEqual(systemOutput.source, .systemOutput(displayID: 99, excludesCurrentProcessAudio: false))
+
+        let encoded = try JSONEncoder().encode(systemOutput)
+        let decoded = try JSONDecoder().decode(MDKAudioCaptureConfiguration.self, from: encoded)
+        XCTAssertEqual(decoded, systemOutput)
+    }
+
     func testBackpressurePoliciesMapToStableAsyncStreamPolicies() {
         let oldest = MDKEncodedCaptureBackpressurePolicy.dropOldest(limit: 4).streamBufferingPolicy
         let newest = MDKEncodedCaptureBackpressurePolicy.dropNewest(limit: 3).streamBufferingPolicy
@@ -227,6 +242,67 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
+    }
+
+    func testAudioCallbackOnlyConfigurationRequiresCallbackConsumer() async {
+        let session = makeAudioTestSession(
+            configuration: .microphone(deliveryMode: .callbackOnly),
+            source: TestAudioSourceSession()
+        )
+
+        do {
+            try await session.start()
+            XCTFail("Expected callback-only audio session start without callbacks to fail.")
+        } catch let error as MDKAudioCaptureSessionError {
+            XCTAssertEqual(error, .callbackRequiredForCallbackOnlyMode)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testAudioSessionDeliversFramesToCallbacksAndEvents() async throws {
+        let recorder = TestAudioCallbackRecorder()
+        let source = TestAudioSourceSession()
+        let session = makeAudioTestSession(source: source)
+
+        try await session.start(
+            callbacks: .init(
+                frameHandler: { frame in
+                    Task {
+                        await recorder.record(frame: frame)
+                    }
+                },
+                eventHandler: { event in
+                    Task {
+                        await recorder.record(event: event)
+                    }
+                }
+            )
+        )
+
+        source.emitFrame(
+            .init(
+                sequenceNumber: 7,
+                hostTimeNanoseconds: 700,
+                sampleRate: 48_000,
+                channelCount: 2,
+                frameCount: 480,
+                pcmFloat32LE: Data(repeating: 0, count: 480 * 2 * MemoryLayout<Float>.size)
+            )
+        )
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        let snapshot = await recorder.snapshot()
+        let stats = await session.statisticsSnapshot()
+        XCTAssertEqual(snapshot.frameCount, 1)
+        XCTAssertEqual(snapshot.lastSequenceNumber, 7)
+        XCTAssertEqual(snapshot.eventKinds.first, .started)
+        XCTAssertEqual(stats.emittedFrameCount, 1)
+
+        await session.stop()
+        try await Task.sleep(nanoseconds: 20_000_000)
+        let stoppedSnapshot = await recorder.snapshot()
+        XCTAssertEqual(stoppedSnapshot.eventKinds.last, .stopped)
     }
 
     func testEncodedCaptureSessionEmitsFramesFromProcessorOutput() async throws {
@@ -556,11 +632,24 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         )
     }
 
+    private func makeAudioTestSession(
+        configuration: MDKAudioCaptureConfiguration = .microphone(),
+        source: TestAudioSourceSession
+    ) -> MDKAudioCaptureSession {
+        MDKAudioCaptureSession(
+            configuration: configuration,
+            sourceFactory: { _, frameHandler, _ in
+                source.frameHandler = frameHandler
+                return source
+            }
+        )
+    }
+
     private static func makeTestSurface(
         width: Int = 64,
         height: Int = 64,
         pixelFormat: OSType = kCVPixelFormatType_32BGRA
-    ) -> IOSurface {
+    ) -> IOSurfaceRef {
         guard let surface = IOSurfaceCreate([
             kIOSurfaceWidth: width,
             kIOSurfaceHeight: height,
@@ -626,7 +715,7 @@ private final class TestSourceSession: MDKEncodedCaptureSourceRuntime, @unchecke
 
     func emitFrame(
         displayTime: UInt64 = 1,
-        surface: IOSurface
+        surface: IOSurfaceRef
     ) {
         frameHandler?(
             MDKCaptureFrame(
@@ -639,6 +728,25 @@ private final class TestSourceSession: MDKEncodedCaptureSourceRuntime, @unchecke
                 surface: MDKCaptureSurface(ioSurface: surface)
             )
         )
+    }
+}
+
+private final class TestAudioSourceSession: MDKAudioCaptureSourceRuntime, @unchecked Sendable {
+    var frameHandler: (@Sendable (MDKAudioFrame) -> Void)?
+    var startCallCount: Int = 0
+    var stopCallCount: Int = 0
+
+    func start() async throws {
+        startCallCount += 1
+    }
+
+    func stop() async -> Int32 {
+        stopCallCount += 1
+        return 0
+    }
+
+    func emitFrame(_ frame: MDKAudioFrame) {
+        frameHandler?(frame)
     }
 }
 
@@ -729,6 +837,35 @@ private actor TestCallbackRecorder {
         Snapshot(
             frameCount: frameCount,
             lastSourceDisplayTime: lastSourceDisplayTime,
+            eventKinds: eventKinds
+        )
+    }
+}
+
+private actor TestAudioCallbackRecorder {
+    struct Snapshot {
+        let frameCount: Int
+        let lastSequenceNumber: UInt64?
+        let eventKinds: [MDKAudioCaptureSessionEventKind]
+    }
+
+    private(set) var frameCount: Int = 0
+    private(set) var lastSequenceNumber: UInt64?
+    private(set) var eventKinds: [MDKAudioCaptureSessionEventKind] = []
+
+    func record(frame: MDKAudioFrame) {
+        frameCount += 1
+        lastSequenceNumber = frame.sequenceNumber
+    }
+
+    func record(event: MDKAudioCaptureSessionEvent) {
+        eventKinds.append(event.kind)
+    }
+
+    func snapshot() -> Snapshot {
+        Snapshot(
+            frameCount: frameCount,
+            lastSequenceNumber: lastSequenceNumber,
             eventKinds: eventKinds
         )
     }

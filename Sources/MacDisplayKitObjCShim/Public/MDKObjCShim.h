@@ -121,7 +121,39 @@ FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoTraceScre
 FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoInspectScreenCaptureKitRuntime(
     NSError * _Nullable * _Nullable error
 );
+FOUNDATION_EXPORT NSArray<NSDictionary<NSString *, NSString *> *> *MDKShimMicrophoneDescriptors(void);
 FOUNDATION_EXPORT NSArray<NSString *> *MDKShimMicrophoneNames(void);
+
+typedef void (^MDKShimAudioCaptureFrameHandler)(
+    uint64_t hostTimeNanoseconds,
+    NSData *pcmFloat32LE,
+    NSUInteger frameCount,
+    NSUInteger channelCount,
+    NSUInteger sampleRate
+);
+
+@interface MDKShimMicrophoneCaptureSession : NSObject
+
+- (instancetype)init NS_UNAVAILABLE;
++ (instancetype)new NS_UNAVAILABLE;
+
+- (instancetype)initWithInputID:(NSString * _Nullable)inputID
+                     sampleRate:(NSUInteger)sampleRate
+                      frameSize:(NSUInteger)frameSize
+                       channels:(NSUInteger)channels
+                   frameHandler:(MDKShimAudioCaptureFrameHandler)frameHandler NS_DESIGNATED_INITIALIZER;
+
+@property (nonatomic, readonly, nullable) NSString *inputID;
+@property (nonatomic, readonly) NSUInteger sampleRate;
+@property (nonatomic, readonly) NSUInteger frameSize;
+@property (nonatomic, readonly) NSUInteger channels;
+@property (nonatomic, readonly, getter=isRunning) BOOL running;
+
+- (BOOL)start:(NSError * _Nullable * _Nullable)error;
+- (int32_t)stop;
+
+@end
+
 FOUNDATION_EXPORT NSString * _Nullable MDKShimCreateVirtualDisplay(
     NSString *clientIdentifier,
     NSString *clientName,
