@@ -993,7 +993,26 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let latencyMilliseconds = submissionToken.map {
             max((callbackReceivedAt - $0.submittedAt) * 1000.0, 0)
         }
-        let encodedFrame = sampleBuffer.map {
+        let resolvedSampleBuffer = sampleBuffer.map { sampleBuffer in
+            guard let hdrConfiguration else {
+                return sampleBuffer
+            }
+            let isKeyFrame: Bool
+            if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
+                as? [[CFString: Any]],
+               let firstAttachment = attachments.first {
+                let notSync = firstAttachment[kCMSampleAttachmentKey_NotSync] as? Bool ?? false
+                isKeyFrame = !notSync
+            } else {
+                isKeyFrame = true
+            }
+            return MDKHEVCHDRStaticMetadataTransport.makeAugmentedSampleBufferIfNeeded(
+                sampleBuffer: sampleBuffer,
+                hdrConfiguration: hdrConfiguration,
+                isKeyFrame: isKeyFrame
+            ) ?? sampleBuffer
+        }
+        let encodedFrame = resolvedSampleBuffer.map {
             MDKEncodedFrame(
                 sampleBuffer: $0,
                 codec: codec,
@@ -1007,7 +1026,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 releaseStagingSlot(identifier: slotIdentifier)
             }
         }
-
         outputQueue.async { [self] in
             outputCallbackCount += 1
             outputCallbackStatusHistogram[describe(status: status), default: 0] += 1

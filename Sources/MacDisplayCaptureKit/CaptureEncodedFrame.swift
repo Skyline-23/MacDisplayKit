@@ -110,12 +110,21 @@ public final class MDKEncodedFrame: @unchecked Sendable {
             colorPrimaries == (kCMFormatDescriptionColorPrimaries_P3_D65 as String)
         let isPQ = transferFunction == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String)
         let isHLG = transferFunction == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String)
+        let staticMetadataPresence: MDKHEVCHDRStaticMetadataPresence
+        if codec == .hevc {
+            staticMetadataPresence = MDKHEVCHDRStaticMetadataTransport.presence(in: sampleBuffer)
+        } else {
+            staticMetadataPresence = MDKHEVCHDRStaticMetadataPresence(
+                hasMasteringDisplayColorVolume: extensions[kCMFormatDescriptionExtension_MasteringDisplayColorVolume as String] != nil,
+                hasContentLightLevelInfo: extensions[kCMFormatDescriptionExtension_ContentLightLevelInfo as String] != nil
+            )
+        }
         return MDKEncodedFrameHDRValidationReport(
             colorPrimaries: colorPrimaries,
             transferFunction: transferFunction,
             yCbCrMatrix: yCbCrMatrix,
-            hasMasteringDisplayColorVolume: extensions[kCMFormatDescriptionExtension_MasteringDisplayColorVolume as String] != nil,
-            hasContentLightLevelInfo: extensions[kCMFormatDescriptionExtension_ContentLightLevelInfo as String] != nil,
+            hasMasteringDisplayColorVolume: staticMetadataPresence.hasMasteringDisplayColorVolume,
+            hasContentLightLevelInfo: staticMetadataPresence.hasContentLightLevelInfo,
             isWideGamut: isWideGamut,
             isPQ: isPQ,
             isHLG: isHLG

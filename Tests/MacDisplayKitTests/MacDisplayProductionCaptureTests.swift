@@ -517,6 +517,84 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         XCTAssertTrue(frame.hdrValidationReport.hasContentLightLevelInfo)
     }
 
+    func testEncodedFrameHDRValidationReportDetectsHEVCStaticMetadataSEIInBitstream() throws {
+        let hdrConfiguration = MDKVideoHDRConfiguration(
+            colorPrimaries: .p3D65,
+            transferFunction: .smpteSt2084PQ,
+            yCbCrMatrix: .ituR709,
+            masteringDisplayColorVolume: ApolloStyleHDRMetadata.p3Mastering,
+            contentLightLevelInfo: ApolloStyleHDRMetadata.p3ContentLight
+        )
+        let payload = try XCTUnwrap(
+            MDKHEVCHDRStaticMetadataTransport.makeLengthPrefixedPrefixSEINALUnit(
+                nalUnitHeaderLength: 4,
+                masteringDisplayColorVolume: hdrConfiguration.masteringDisplayColorVolume,
+                contentLightLevelInfo: hdrConfiguration.contentLightLevelInfo
+            )
+        )
+        let sampleBuffer = try Self.makeCompressedSampleBuffer(
+            codecType: kCMVideoCodecType_HEVC,
+            formatDescriptionExtensions: [
+                kCMFormatDescriptionExtension_ColorPrimaries as String: kCMFormatDescriptionColorPrimaries_P3_D65 as String,
+                kCMFormatDescriptionExtension_TransferFunction as String: kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String,
+                kCMFormatDescriptionExtension_YCbCrMatrix as String: kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2 as String
+            ],
+            payload: payload
+        )
+
+        let frame = MDKEncodedFrame(
+            sampleBuffer: sampleBuffer,
+            codec: .hevc,
+            sourceSequenceNumber: 9,
+            sourceDisplayTime: 9,
+            outputCallbackLatencyMilliseconds: nil
+        )
+
+        XCTAssertTrue(frame.hdrValidationReport.hasMasteringDisplayColorVolume)
+        XCTAssertTrue(frame.hdrValidationReport.hasContentLightLevelInfo)
+        XCTAssertTrue(frame.hdrValidationReport.isHDRSignaled)
+    }
+
+    func testHEVCHDRStaticMetadataTransportAugmentsKeyframesWhenVTOutputOmitsMetadata() throws {
+        let hdrConfiguration = MDKVideoHDRConfiguration(
+            colorPrimaries: .p3D65,
+            transferFunction: .smpteSt2084PQ,
+            yCbCrMatrix: .ituR709,
+            masteringDisplayColorVolume: ApolloStyleHDRMetadata.p3Mastering,
+            contentLightLevelInfo: ApolloStyleHDRMetadata.p3ContentLight
+        )
+        let sampleBuffer = try Self.makeCompressedSampleBuffer(
+            codecType: kCMVideoCodecType_HEVC,
+            formatDescriptionExtensions: [
+                kCMFormatDescriptionExtension_ColorPrimaries as String: kCMFormatDescriptionColorPrimaries_P3_D65 as String,
+                kCMFormatDescriptionExtension_TransferFunction as String: kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String,
+                kCMFormatDescriptionExtension_YCbCrMatrix as String: kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2 as String
+            ],
+            payload: Self.makeLengthPrefixedNALUnit(
+                nalUnitHeaderLength: 4,
+                bytes: Data([0x26, 0x01, 0x88, 0x99])
+            )
+        )
+
+        let augmentedSampleBuffer = try XCTUnwrap(
+            MDKHEVCHDRStaticMetadataTransport.makeAugmentedSampleBufferIfNeeded(
+                sampleBuffer: sampleBuffer,
+                hdrConfiguration: hdrConfiguration,
+                isKeyFrame: true
+            )
+        )
+        let frame = MDKEncodedFrame(
+            sampleBuffer: augmentedSampleBuffer,
+            codec: .hevc,
+            sourceSequenceNumber: 10,
+            sourceDisplayTime: 10,
+            outputCallbackLatencyMilliseconds: nil
+        )
+
+        XCTAssertTrue(frame.hdrValidationReport.hasMasteringDisplayColorVolume)
+        XCTAssertTrue(frame.hdrValidationReport.hasContentLightLevelInfo)
+    }
+
     func testEncodedCaptureSessionPublishesLifecycleEvents() async throws {
         let source = TestSourceSession()
         let sampleBuffer = TestSendableSampleBufferBox(sampleBuffer: try Self.makeTestSampleBuffer())
@@ -697,6 +775,107 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         )
         return try XCTUnwrap(sampleBuffer)
     }
+
+    private static func makeCompressedSampleBuffer(
+        codecType: CMVideoCodecType,
+        formatDescriptionExtensions: [String: Any],
+        payload: Data
+    ) throws -> CMSampleBuffer {
+        var sampleBuffer: CMSampleBuffer?
+        var formatDescription: CMFormatDescription?
+        XCTAssertEqual(
+            CMVideoFormatDescriptionCreate(
+                allocator: kCFAllocatorDefault,
+                codecType: codecType,
+                width: 1920,
+                height: 1080,
+                extensions: formatDescriptionExtensions as CFDictionary,
+                formatDescriptionOut: &formatDescription
+            ),
+            noErr
+        )
+
+        var blockBuffer: CMBlockBuffer?
+        XCTAssertEqual(
+            CMBlockBufferCreateWithMemoryBlock(
+                allocator: kCFAllocatorDefault,
+                memoryBlock: nil,
+                blockLength: payload.count,
+                blockAllocator: nil,
+                customBlockSource: nil,
+                offsetToData: 0,
+                dataLength: payload.count,
+                flags: 0,
+                blockBufferOut: &blockBuffer
+            ),
+            kCMBlockBufferNoErr
+        )
+        let replaceStatus = payload.withUnsafeBytes { rawBytes in
+            guard let baseAddress = rawBytes.baseAddress else {
+                return kCMBlockBufferBadLengthParameterErr
+            }
+            return CMBlockBufferReplaceDataBytes(
+                with: baseAddress,
+                blockBuffer: try! XCTUnwrap(blockBuffer),
+                offsetIntoDestination: 0,
+                dataLength: payload.count
+            )
+        }
+        XCTAssertEqual(replaceStatus, kCMBlockBufferNoErr)
+
+        let timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: 120),
+            presentationTimeStamp: CMTime(value: 10, timescale: 120),
+            decodeTimeStamp: .invalid
+        )
+        var sampleSize = payload.count
+        XCTAssertEqual(
+            CMSampleBufferCreateReady(
+                allocator: kCFAllocatorDefault,
+                dataBuffer: try XCTUnwrap(blockBuffer),
+                formatDescription: try XCTUnwrap(formatDescription),
+                sampleCount: 1,
+                sampleTimingEntryCount: 1,
+                sampleTimingArray: [timing],
+                sampleSizeEntryCount: 1,
+                sampleSizeArray: &sampleSize,
+                sampleBufferOut: &sampleBuffer
+            ),
+            noErr
+        )
+        return try XCTUnwrap(sampleBuffer)
+    }
+
+    private static func makeLengthPrefixedNALUnit(
+        nalUnitHeaderLength: Int,
+        bytes: Data
+    ) -> Data {
+        var prefix = Data(repeating: 0, count: nalUnitHeaderLength)
+        for byteIndex in 0..<nalUnitHeaderLength {
+            let shift = (nalUnitHeaderLength - byteIndex - 1) * 8
+            prefix[byteIndex] = UInt8((bytes.count >> shift) & 0xFF)
+        }
+        var output = Data()
+        output.append(prefix)
+        output.append(bytes)
+        return output
+    }
+}
+
+private enum ApolloStyleHDRMetadata {
+    static let p3Mastering = MDKVideoMasteringDisplayColorVolume(
+        redPrimary: MDKVideoChromaticityPoint(x: 0.6800, y: 0.3200),
+        greenPrimary: MDKVideoChromaticityPoint(x: 0.2650, y: 0.6900),
+        bluePrimary: MDKVideoChromaticityPoint(x: 0.1500, y: 0.0600),
+        whitePoint: MDKVideoChromaticityPoint(x: 0.3127, y: 0.3290),
+        maxLuminance: 1000.0,
+        minLuminance: 0.001
+    )
+
+    static let p3ContentLight = MDKVideoContentLightLevelInfo(
+        maximumContentLightLevel: 1000,
+        maximumFrameAverageLightLevel: 400
+    )
 }
 
 private final class TestSourceSession: MDKEncodedCaptureSourceRuntime, @unchecked Sendable {
