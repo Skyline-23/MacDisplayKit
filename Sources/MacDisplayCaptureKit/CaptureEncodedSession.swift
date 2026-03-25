@@ -1,4 +1,5 @@
 import CoreVideo
+import Darwin
 import Foundation
 import MacDisplayKitObjCShim
 
@@ -177,6 +178,94 @@ private final class MDKEncodedCapturePendingFrameTracker: @unchecked Sendable {
     }
 }
 
+private final class MDKEncodedCaptureSourceCadenceTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frameCount: UInt64 = 0
+    private var displayDeltaCount: UInt64 = 0
+    private var cumulativeDisplayDeltaMilliseconds: Double = 0
+    private var previousDisplayTime: UInt64?
+    private var lastDisplayDeltaMilliseconds: Double?
+    private var minDisplayDeltaMilliseconds: Double?
+    private var maxDisplayDeltaMilliseconds: Double?
+
+    func record(displayTime: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        frameCount += 1
+        if let previousDisplayTime, displayTime >= previousDisplayTime {
+            let displayDeltaMilliseconds = Self.displayTimeDeltaMilliseconds(displayTime - previousDisplayTime)
+            displayDeltaCount += 1
+            cumulativeDisplayDeltaMilliseconds += displayDeltaMilliseconds
+            lastDisplayDeltaMilliseconds = displayDeltaMilliseconds
+            minDisplayDeltaMilliseconds = min(minDisplayDeltaMilliseconds ?? displayDeltaMilliseconds, displayDeltaMilliseconds)
+            maxDisplayDeltaMilliseconds = max(maxDisplayDeltaMilliseconds ?? displayDeltaMilliseconds, displayDeltaMilliseconds)
+        }
+        previousDisplayTime = displayTime
+    }
+
+    func snapshotNotes() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard frameCount > 0 else {
+            return []
+        }
+
+        var notes = [
+            "sourceFrameCount=\(frameCount)",
+            "sourceDisplayDeltaCount=\(displayDeltaCount)"
+        ]
+
+        if let lastDisplayDeltaMilliseconds {
+            notes.append(String(format: "sourceLastDisplayDeltaMilliseconds=%.3f", lastDisplayDeltaMilliseconds))
+        }
+        if let minDisplayDeltaMilliseconds {
+            notes.append(String(format: "sourceMinDisplayDeltaMilliseconds=%.3f", minDisplayDeltaMilliseconds))
+        }
+        if let maxDisplayDeltaMilliseconds {
+            notes.append(String(format: "sourceMaxDisplayDeltaMilliseconds=%.3f", maxDisplayDeltaMilliseconds))
+        }
+        if displayDeltaCount > 0 {
+            let averageDisplayDeltaMilliseconds = cumulativeDisplayDeltaMilliseconds / Double(displayDeltaCount)
+            notes.append(String(format: "sourceAverageDisplayDeltaMilliseconds=%.3f", averageDisplayDeltaMilliseconds))
+            let approximateFrameRate = averageDisplayDeltaMilliseconds > 0 ? (1000.0 / averageDisplayDeltaMilliseconds) : 0
+            notes.append(String(format: "sourceApproxFrameRate=%.2f", approximateFrameRate))
+            notes.append(
+                "sourceCadenceClassification=\(Self.classifyCadence(forAverageDisplayDeltaMilliseconds: averageDisplayDeltaMilliseconds))"
+            )
+        }
+
+        return notes
+    }
+
+    private static func displayTimeDeltaMilliseconds(_ delta: UInt64) -> Double {
+        var timebase = mach_timebase_info_data_t()
+        mach_timebase_info(&timebase)
+        guard timebase.denom != 0 else {
+            return 0
+        }
+
+        let nanoseconds = (Double(delta) * Double(timebase.numer)) / Double(timebase.denom)
+        return nanoseconds / 1_000_000
+    }
+
+    private static func classifyCadence(forAverageDisplayDeltaMilliseconds value: Double) -> String {
+        switch value {
+        case ..<12.0:
+            return "120hz-like"
+        case ..<20.0:
+            return "60hz-like"
+        case ..<29.0:
+            return "40hz-like"
+        case ..<37.0:
+            return "30hz-like"
+        default:
+            return "sub-30hz"
+        }
+    }
+}
+
 extension MDKVideoToolboxEncodingProcessor: MDKEncodedCaptureProcessorRuntime {}
 
 public struct MDKEncodedCaptureSessionStatistics: Codable, Equatable, Sendable {
@@ -311,6 +400,7 @@ public actor MDKEncodedCaptureSession {
     private var callbacks: MDKEncodedCaptureCallbacks?
     private var statistics = MDKEncodedCaptureSessionStatistics()
     private var runtimeDiagnosticNotes: [String] = []
+    private var sourceCadenceTracker: MDKEncodedCaptureSourceCadenceTracker?
     private var scheduledRestartTask: Task<Void, Never>?
     private var scheduledRestartGeneration: UInt64?
 
@@ -516,6 +606,7 @@ public actor MDKEncodedCaptureSession {
             attributes: .concurrent
         )
         let pendingFrameTracker = MDKEncodedCapturePendingFrameTracker()
+        let sourceCadenceTracker = MDKEncodedCaptureSourceCadenceTracker()
         let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
         let maximumPendingFrameCount = sourcePreparation.recommendedPendingFrameCount
 
@@ -550,6 +641,7 @@ public actor MDKEncodedCaptureSession {
                 return
             }
 
+            sourceCadenceTracker.record(displayTime: frame.displayTime)
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
                     await self.handleSourceFrameDropped(
@@ -574,11 +666,13 @@ public actor MDKEncodedCaptureSession {
                 }
             }
         }
+        self.sourceCadenceTracker = sourceCadenceTracker
         runtimeDiagnosticNotes = sourcePreparation.diagnosticNotes
 
         do {
             try source.start()
         } catch {
+            self.sourceCadenceTracker = nil
             statistics = preservedStatistics(
                 lastErrorDescription: (error as? LocalizedError)?.errorDescription ?? String(describing: error),
                 isRunning: false
@@ -617,7 +711,11 @@ public actor MDKEncodedCaptureSession {
             return statistics
         }
 
-        return mergedStatistics(with: summary, isRunning: statistics.isRunning)
+        return mergedStatistics(
+            with: summary,
+            isRunning: statistics.isRunning,
+            sourceNotes: sourceCadenceTracker?.snapshotNotes() ?? []
+        )
     }
 
     private func installContinuation(
@@ -847,6 +945,7 @@ public actor MDKEncodedCaptureSession {
         scheduledRestartGeneration = nil
 
         guard let runtime else {
+            sourceCadenceTracker = nil
             if finishingStream {
                 continuation?.finish()
                 continuation = nil
@@ -878,6 +977,7 @@ public actor MDKEncodedCaptureSession {
 
         let stopStatus = runtime.source.stop()
         let processingSummary = runtime.processor.finalize()
+        let sourceNotes = sourceCadenceTracker?.snapshotNotes() ?? []
         self.runtime = nil
         if finishingStream {
             continuation?.finish()
@@ -903,8 +1003,9 @@ public actor MDKEncodedCaptureSession {
             isRunning: false,
             minOutputCallbackLatencyMilliseconds: processingSummary?.minOutputCallbackLatencyMilliseconds,
             maxOutputCallbackLatencyMilliseconds: processingSummary?.maxOutputCallbackLatencyMilliseconds,
-            notes: mergedRuntimeNotes(with: processingSummary?.notes ?? statistics.notes)
+            notes: mergedRuntimeNotes(with: (processingSummary?.notes ?? statistics.notes) + sourceNotes)
         )
+        sourceCadenceTracker = nil
         if emitStopEvent {
             emitEvent(
                 .init(
@@ -921,7 +1022,8 @@ public actor MDKEncodedCaptureSession {
 
     private func mergedStatistics(
         with summary: MDKCaptureFrameProcessingSummary,
-        isRunning: Bool
+        isRunning: Bool,
+        sourceNotes: [String] = []
     ) -> MDKEncodedCaptureSessionStatistics {
         MDKEncodedCaptureSessionStatistics(
             emittedFrameCount: max(statistics.emittedFrameCount, summary.completedOutputFrameCount ?? 0),
@@ -933,7 +1035,7 @@ public actor MDKEncodedCaptureSession {
             isRunning: isRunning,
             minOutputCallbackLatencyMilliseconds: summary.minOutputCallbackLatencyMilliseconds,
             maxOutputCallbackLatencyMilliseconds: summary.maxOutputCallbackLatencyMilliseconds,
-            notes: mergedRuntimeNotes(with: summary.notes)
+            notes: mergedRuntimeNotes(with: summary.notes + sourceNotes)
         )
     }
 

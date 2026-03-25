@@ -327,26 +327,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 outputCallbackLatencyHistogram: outputSummary.7,
                 minOutputCallbackLatencyMilliseconds: outputSummary.8,
                 maxOutputCallbackLatencyMilliseconds: outputSummary.9,
-                notes: [
-                    "videoToolboxSubmitMode=sync-submit-queue",
-                    "videoToolboxOutputCallback=non-nil",
-                    "videoToolboxCodec=\(codec.rawValue)",
-                    "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
-                    "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "hybrid-direct-or-metal-staging")",
-                    "videoToolboxStagedSourceReleaseMode=post-submit",
-                    "videoToolboxDirectSubmissionFrameCount=\(outputSummary.10)",
-                    "videoToolboxStagedSubmissionFrameCount=\(outputSummary.11)",
-                    "videoToolboxColorConversionMode=\(sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) ? "custom" : "passthrough")",
-                    "videoToolboxMaxInflightStagingSlots=\(maxInflightStagingSlots)",
-                    "videoToolboxSubmittedFrameCount=\(outputSummary.3)",
-                    "videoToolboxStagingSubmissionWait=\(stagingSubmissionWaitStatus == .success ? "success" : "timeout")",
-                    "videoToolboxOutputDrainWait=\(outputDrainWaitStatus == .success ? "success" : "timeout")",
-                    "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
-                    "videoToolboxPixelBufferPoolIsShared=\(describeHardwareAcceleration(encoderPixelBufferPoolIsShared))",
-                    "videoToolboxRecommendedParallelizationLimit=\(recommendedParallelizationLimit.map(String.init) ?? "unknown")",
-                    "videoToolboxPixelBufferCacheSize=\(pixelBufferCache.count)"
-                ] + (colorConverterInitializationErrorDescription.map { ["videoToolboxColorConverterInitError=\($0)"] } ?? [])
-                  + sessionConfigurationNotes
+                notes: runtimeNotes(
+                    submittedFrameCount: outputSummary.3,
+                    directSubmissionFrameCount: outputSummary.10,
+                    stagedSubmissionFrameCount: outputSummary.11,
+                    includeDrainWaitStatus: true,
+                    stagingSubmissionWaitStatus: stagingSubmissionWaitStatus,
+                    outputDrainWaitStatus: outputDrainWaitStatus
+                )
             )
         }
     }
@@ -364,9 +352,50 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 outputCallbackLatencyHistogram: outputCallbackLatencyHistogram,
                 minOutputCallbackLatencyMilliseconds: minOutputCallbackLatencyMilliseconds,
                 maxOutputCallbackLatencyMilliseconds: maxOutputCallbackLatencyMilliseconds,
-                notes: []
+                notes: runtimeNotes(
+                    submittedFrameCount: submittedFrameCount,
+                    directSubmissionFrameCount: directSubmissionFrameCount,
+                    stagedSubmissionFrameCount: stagedSubmissionFrameCount,
+                    includeDrainWaitStatus: false,
+                    stagingSubmissionWaitStatus: nil,
+                    outputDrainWaitStatus: nil
+                )
             )
         }
+    }
+
+    private func runtimeNotes(
+        submittedFrameCount: UInt64,
+        directSubmissionFrameCount: UInt64,
+        stagedSubmissionFrameCount: UInt64,
+        includeDrainWaitStatus: Bool,
+        stagingSubmissionWaitStatus: DispatchTimeoutResult?,
+        outputDrainWaitStatus: DispatchTimeoutResult?
+    ) -> [String] {
+        var notes = [
+            "videoToolboxSubmitMode=sync-submit-queue",
+            "videoToolboxOutputCallback=non-nil",
+            "videoToolboxCodec=\(codec.rawValue)",
+            "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
+            "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "hybrid-direct-or-metal-staging")",
+            "videoToolboxStagedSourceReleaseMode=post-submit",
+            "videoToolboxDirectSubmissionFrameCount=\(directSubmissionFrameCount)",
+            "videoToolboxStagedSubmissionFrameCount=\(stagedSubmissionFrameCount)",
+            "videoToolboxColorConversionMode=\(sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) ? "custom" : "passthrough")",
+            "videoToolboxMaxInflightStagingSlots=\(maxInflightStagingSlots)",
+            "videoToolboxSubmittedFrameCount=\(submittedFrameCount)",
+            "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
+            "videoToolboxPixelBufferPoolIsShared=\(describeHardwareAcceleration(encoderPixelBufferPoolIsShared))",
+            "videoToolboxRecommendedParallelizationLimit=\(recommendedParallelizationLimit.map(String.init) ?? "unknown")",
+            "videoToolboxPixelBufferCacheSize=\(pixelBufferCache.count)"
+        ]
+        if includeDrainWaitStatus {
+            notes.append("videoToolboxStagingSubmissionWait=\(stagingSubmissionWaitStatus == .success ? "success" : "timeout")")
+            notes.append("videoToolboxOutputDrainWait=\(outputDrainWaitStatus == .success ? "success" : "timeout")")
+        }
+        notes += colorConverterInitializationErrorDescription.map { ["videoToolboxColorConverterInitError=\($0)"] } ?? []
+        notes += sessionConfigurationNotes
+        return notes
     }
 
     private func encode(

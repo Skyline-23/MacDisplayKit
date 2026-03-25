@@ -738,6 +738,51 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         XCTAssertEqual(stoppedSnapshot.eventKinds.last, .stopped)
     }
 
+    func testCallbackOnlyStatisticsExposeSourceCadenceNotes() async throws {
+        let source = TestSourceSession()
+        let sampleBuffer = TestSendableSampleBufferBox(sampleBuffer: try Self.makeTestSampleBuffer())
+        let processor = TestProcessor { outputHandler, _ in
+            outputHandler(
+                MDKEncodedFrame(
+                    sampleBuffer: sampleBuffer.sampleBuffer,
+                    codec: .hevc,
+                    sourceSequenceNumber: 1,
+                    sourceDisplayTime: 1,
+                    outputCallbackLatencyMilliseconds: 0.4
+                )
+            )
+        }
+        let session = makeTestSession(
+            configuration: .panelNative(
+                displayID: 14,
+                deliveryMode: .callbackOnly
+            ),
+            source: source,
+            processorFactory: { outputHandler, failureHandler in
+                processor.bind(outputHandler: outputHandler, failureHandler: failureHandler)
+                return processor
+            }
+        )
+
+        try await session.start(
+            callbacks: MDKEncodedCaptureCallbacks(
+                frameHandler: { _ in },
+                eventHandler: nil
+            )
+        )
+
+        source.emitFrame(displayTime: 400_000, surface: Self.makeTestSurface())
+        source.emitFrame(displayTime: 1_000_000, surface: Self.makeTestSurface())
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        let statistics = await session.statisticsSnapshot()
+        XCTAssertTrue(statistics.notes.contains("sourceFrameCount=2"))
+        XCTAssertTrue(statistics.notes.contains(where: { $0.hasPrefix("sourceApproxFrameRate=") }))
+        XCTAssertTrue(statistics.notes.contains(where: { $0.hasPrefix("sourceAverageDisplayDeltaMilliseconds=") }))
+
+        await session.stop()
+    }
+
     private typealias TestProcessorFactoryClosure = @Sendable (
         @escaping @Sendable (MDKEncodedFrame) -> Void,
         @escaping @Sendable (String) -> Void
