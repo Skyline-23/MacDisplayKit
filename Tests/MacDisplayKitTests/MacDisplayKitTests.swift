@@ -140,7 +140,7 @@ final class MacDisplayKitTests: XCTestCase {
         )
     }
 
-    func testSkyLightDisplayStreamAutoEncoderInputStrategyPreservesAutomaticSelection() {
+    func testAutoEncoderInputStrategyTracksResolvedCaptureBackend() {
         let baseStreamConfiguration = MDKSkyLightDisplayStreamConfiguration(
             queueDepth: 2,
             queueProfile: .q2,
@@ -148,6 +148,22 @@ final class MacDisplayKitTests: XCTestCase {
             outputWidth: 3512,
             outputHeight: 2290,
             pixelFormat: kCVPixelFormatType_32BGRA
+        )
+        let skyLightCapabilities = MDKPrivateCaptureCapabilities(
+            desktopCaptureAvailable: true,
+            displayIOSurfaceCaptureAvailable: false,
+            displayIOSurfaceCaptureWithOptionsAvailable: false,
+            displayIOSurfaceProxyCaptureAvailable: false,
+            displayStreamProxyAvailable: true,
+            extendedRangeOptionAvailable: false
+        )
+        let privateCapabilities = MDKPrivateCaptureCapabilities(
+            desktopCaptureAvailable: true,
+            displayIOSurfaceCaptureAvailable: true,
+            displayIOSurfaceCaptureWithOptionsAvailable: true,
+            displayIOSurfaceProxyCaptureAvailable: true,
+            displayStreamProxyAvailable: true,
+            extendedRangeOptionAvailable: true
         )
 
         let hevcSDRConfiguration = MDKEncodedCaptureConfiguration(
@@ -159,8 +175,12 @@ final class MacDisplayKitTests: XCTestCase {
             hdrConfiguration: nil
         )
         XCTAssertEqual(
-            hevcSDRConfiguration.resolvedEncoderInputStrategy,
+            hevcSDRConfiguration.resolvedEncoderInputStrategy(using: skyLightCapabilities),
             MDKEncodedCaptureEncoderInputStrategy.auto
+        )
+        XCTAssertEqual(
+            hevcSDRConfiguration.resolvedEncoderInputStrategy(using: privateCapabilities),
+            MDKEncodedCaptureEncoderInputStrategy.yuv420v8
         )
 
         let hevcHDRConfiguration = MDKEncodedCaptureConfiguration(
@@ -172,8 +192,12 @@ final class MacDisplayKitTests: XCTestCase {
             hdrConfiguration: .hdr10()
         )
         XCTAssertEqual(
-            hevcHDRConfiguration.resolvedEncoderInputStrategy,
+            hevcHDRConfiguration.resolvedEncoderInputStrategy(using: skyLightCapabilities),
             MDKEncodedCaptureEncoderInputStrategy.auto
+        )
+        XCTAssertEqual(
+            hevcHDRConfiguration.resolvedEncoderInputStrategy(using: privateCapabilities),
+            MDKEncodedCaptureEncoderInputStrategy.yuv420v10
         )
 
         let h264Configuration = MDKEncodedCaptureConfiguration(
@@ -185,8 +209,12 @@ final class MacDisplayKitTests: XCTestCase {
             hdrConfiguration: nil
         )
         XCTAssertEqual(
-            h264Configuration.resolvedEncoderInputStrategy,
+            h264Configuration.resolvedEncoderInputStrategy(using: skyLightCapabilities),
             MDKEncodedCaptureEncoderInputStrategy.auto
+        )
+        XCTAssertEqual(
+            h264Configuration.resolvedEncoderInputStrategy(using: privateCapabilities),
+            MDKEncodedCaptureEncoderInputStrategy.yuv420v8
         )
 
         let proResConfiguration = MDKEncodedCaptureConfiguration(
@@ -198,8 +226,12 @@ final class MacDisplayKitTests: XCTestCase {
             hdrConfiguration: nil
         )
         XCTAssertEqual(
-            proResConfiguration.resolvedEncoderInputStrategy,
+            proResConfiguration.resolvedEncoderInputStrategy(using: skyLightCapabilities),
             MDKEncodedCaptureEncoderInputStrategy.auto
+        )
+        XCTAssertEqual(
+            proResConfiguration.resolvedEncoderInputStrategy(using: privateCapabilities),
+            MDKEncodedCaptureEncoderInputStrategy.bgra
         )
     }
 

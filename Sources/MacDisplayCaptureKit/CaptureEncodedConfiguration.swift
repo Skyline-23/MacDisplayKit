@@ -131,7 +131,25 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
     }
 
     var resolvedSourceBackend: MDKEncodedCaptureSourceBackend {
-        // Encoded sessions need a continuous private producer, not a snapshot-style poller.
+        resolvedSourceBackend(using: MDKPrivateCaptureCapabilityProbe.current())
+    }
+
+    func resolvedSourceBackend(
+        using capabilities: MDKPrivateCaptureCapabilities
+    ) -> MDKEncodedCaptureSourceBackend {
+        guard shouldPreferPrivateIOSurfaceSource(using: capabilities) else {
+            return .skyLightDisplayStream
+        }
+
+        if capabilities.displayIOSurfaceProxyCaptureAvailable {
+            return .privateProxyIOSurface
+        }
+
+        if capabilities.displayIOSurfaceCaptureWithOptionsAvailable ||
+            capabilities.displayIOSurfaceCaptureAvailable {
+            return .privateDirectIOSurface
+        }
+
         return .skyLightDisplayStream
     }
 
@@ -149,12 +167,24 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         hdrConfiguration?.negotiatedForEncodedDelivery(codec: codec)
     }
 
+    private func shouldPreferPrivateIOSurfaceSource(
+        using capabilities: MDKPrivateCaptureCapabilities
+    ) -> Bool {
+        capabilities.supportsIOSurfaceDisplayCapture
+    }
+
     var resolvedEncoderInputStrategy: MDKEncodedCaptureEncoderInputStrategy {
+        resolvedEncoderInputStrategy(using: MDKPrivateCaptureCapabilityProbe.current())
+    }
+
+    func resolvedEncoderInputStrategy(
+        using capabilities: MDKPrivateCaptureCapabilities
+    ) -> MDKEncodedCaptureEncoderInputStrategy {
         guard encoderInputStrategy == .auto else {
             return encoderInputStrategy
         }
 
-        switch resolvedSourceBackend {
+        switch resolvedSourceBackend(using: capabilities) {
         case .privateDirectIOSurface, .privateProxyIOSurface:
             switch codec {
             case .h264:

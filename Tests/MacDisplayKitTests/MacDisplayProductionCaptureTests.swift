@@ -22,7 +22,81 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
             configuration.resolvedCapturePixelFormat,
             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
         )
-        XCTAssertEqual(configuration.resolvedSourceBackend, .skyLightDisplayStream)
+    }
+
+    func testEncodedCaptureConfigurationPrefersPrivateProxyIOSurfaceWhenAvailable() {
+        let configuration = MDKEncodedCaptureConfiguration.panelNative(displayID: 7)
+
+        XCTAssertEqual(
+            configuration.resolvedSourceBackend(
+                using: .init(
+                    desktopCaptureAvailable: true,
+                    displayIOSurfaceCaptureAvailable: true,
+                    displayIOSurfaceCaptureWithOptionsAvailable: true,
+                    displayIOSurfaceProxyCaptureAvailable: true,
+                    displayStreamProxyAvailable: true,
+                    extendedRangeOptionAvailable: true
+                )
+            ),
+            .privateProxyIOSurface
+        )
+    }
+
+    func testEncodedCaptureConfigurationFallsBackToPrivateDirectIOSurfaceWithoutProxySupport() {
+        let configuration = MDKEncodedCaptureConfiguration.panelNative(displayID: 7)
+
+        XCTAssertEqual(
+            configuration.resolvedSourceBackend(
+                using: .init(
+                    desktopCaptureAvailable: false,
+                    displayIOSurfaceCaptureAvailable: true,
+                    displayIOSurfaceCaptureWithOptionsAvailable: true,
+                    displayIOSurfaceProxyCaptureAvailable: false,
+                    displayStreamProxyAvailable: false,
+                    extendedRangeOptionAvailable: false
+                )
+            ),
+            .privateDirectIOSurface
+        )
+    }
+
+    func testEncodedCaptureConfigurationFallsBackToSkyLightWithoutPrivateIOSurfaceSupport() {
+        let configuration = MDKEncodedCaptureConfiguration.panelNative(displayID: 7)
+
+        XCTAssertEqual(
+            configuration.resolvedSourceBackend(
+                using: .init(
+                    desktopCaptureAvailable: true,
+                    displayIOSurfaceCaptureAvailable: false,
+                    displayIOSurfaceCaptureWithOptionsAvailable: false,
+                    displayIOSurfaceProxyCaptureAvailable: false,
+                    displayStreamProxyAvailable: true,
+                    extendedRangeOptionAvailable: false
+                )
+            ),
+            .skyLightDisplayStream
+        )
+    }
+
+    func testEncodedCaptureConfigurationKeepsPrivateIOSurfaceForHDRWithoutExtendedRangeHints() {
+        let configuration = MDKEncodedCaptureConfiguration.panelNative(
+            displayID: 7,
+            hdrConfiguration: .hdr10()
+        )
+
+        XCTAssertEqual(
+            configuration.resolvedSourceBackend(
+                using: .init(
+                    desktopCaptureAvailable: false,
+                    displayIOSurfaceCaptureAvailable: true,
+                    displayIOSurfaceCaptureWithOptionsAvailable: false,
+                    displayIOSurfaceProxyCaptureAvailable: false,
+                    displayStreamProxyAvailable: false,
+                    extendedRangeOptionAvailable: false
+                )
+            ),
+            .privateDirectIOSurface
+        )
     }
 
     func testEncodedCaptureConfigurationPreservesExplicitCapturePixelFormatOverride() {
