@@ -5,7 +5,6 @@ import MacDisplayKitObjCShim
 
 enum MDKEncodedCaptureSourceBackend: String, Sendable {
     case privateDirectIOSurface = "private-direct-iosurface"
-    case privateProxyIOSurface = "private-proxy-iosurface"
     case skyLightDisplayStream = "skylight-display-stream"
 }
 
@@ -121,7 +120,7 @@ private final class MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime: MDKEnc
             displayID: UInt(configuration.displayID),
             targetFrameRate: configuration.targetFrameRate,
             requestExtendedRange: requestExtendedRange,
-            useProxyCapture: sourceBackend == .privateProxyIOSurface,
+            useProxyCapture: false,
             showCursor: configuration.streamConfiguration.resolvedShowCursor,
             outputWidth: UInt(configuration.streamConfiguration.resolvedOutputWidth),
             outputHeight: UInt(configuration.streamConfiguration.resolvedOutputHeight),
@@ -408,7 +407,7 @@ public actor MDKEncodedCaptureSession {
         self.configuration = configuration
         self.sourceFactory = { configuration, preparation, frameHandler in
             switch configuration.resolvedSourceBackend {
-            case .privateProxyIOSurface, .privateDirectIOSurface:
+            case .privateDirectIOSurface:
                 return MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime(
                     configuration: configuration,
                     frameHandler: frameHandler
@@ -448,7 +447,7 @@ public actor MDKEncodedCaptureSession {
         for configuration: MDKEncodedCaptureConfiguration
     ) async -> MDKEncodedCaptureSourcePreparation {
         switch configuration.resolvedSourceBackend {
-        case .privateDirectIOSurface, .privateProxyIOSurface:
+        case .privateDirectIOSurface:
             return MDKEncodedCaptureSourcePreparation(
                 recommendedPendingFrameCount: max(configuration.resolvedPrivateCaptureSurfaceCount - 1, 1),
                 diagnosticNotes: [],

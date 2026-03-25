@@ -146,10 +146,6 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
             return .privateDirectIOSurface
         }
 
-        if capabilities.displayIOSurfaceProxyCaptureAvailable {
-            return .privateProxyIOSurface
-        }
-
         return .skyLightDisplayStream
     }
 
@@ -185,7 +181,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         }
 
         switch resolvedSourceBackend(using: capabilities) {
-        case .privateDirectIOSurface, .privateProxyIOSurface:
+        case .privateDirectIOSurface:
             switch codec {
             case .h264:
                 return .yuv420v8

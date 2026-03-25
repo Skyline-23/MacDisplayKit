@@ -2,7 +2,6 @@ import Foundation
 
 public enum MDKPrivateCaptureEntryPoint: String, Codable, Equatable, Sendable {
     case displayStreamProxying = "sls-display-stream-proxying"
-    case displayIOSurfaceProxying = "sls-display-iosurface-proxying"
     case displayIOSurfaceWithOptions = "cgshw-display-iosurface-with-options"
     case displayIOSurface = "cgshw-display-iosurface"
     case desktopCapture = "cgshw-desktop"
@@ -12,8 +11,6 @@ public enum MDKPrivateCaptureEntryPoint: String, Codable, Equatable, Sendable {
         switch self {
         case .displayStreamProxying:
             return "SLSDisplayStreamCreateProxying"
-        case .displayIOSurfaceProxying:
-            return "SLSHWCaptureDisplayIntoIOSurfaceProxying"
         case .displayIOSurfaceWithOptions:
             return "CGSHWCaptureDisplayIntoIOSurfaceWithOptions"
         case .displayIOSurface:
@@ -61,20 +58,6 @@ public enum MDKPrivateCapturePrototypePlanner {
                 recommendedNotes: [
                     "Prefer the ScreenCaptureKit display-stream proxy create path because it is the strongest candidate for a reusable hardware-backed stream session.",
                     "Start with a create-only probe that watches the supplied mach port for activity before attempting any repeated capture loop."
-                ]
-            )
-        }
-
-        if capabilities.displayIOSurfaceProxyCaptureAvailable {
-            return MDKPrivateCapturePrototypePlan(
-                capabilities: capabilities,
-                recommendedEntryPoint: .displayIOSurfaceProxying,
-                readyForIOSurfacePrototype: true,
-                recommendedNotes: [
-                    "Prefer the ScreenCaptureKit proxying entry point because it bypasses the SkyLight wrapper and should avoid per-frame mach-port churn.",
-                    capabilities.extendedRangeOptionAvailable
-                        ? "Keep the extended-range option bit enabled during the first proxy benchmark so HDR behavior stays comparable to the wrapper path."
-                        : "Treat HDR as unresolved until an explicit extended-range hint becomes available."
                 ]
             )
         }

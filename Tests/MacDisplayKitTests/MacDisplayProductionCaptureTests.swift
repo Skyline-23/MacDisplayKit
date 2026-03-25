@@ -714,7 +714,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         let processor = BlockingReleaseProcessor()
         let configuration = MDKEncodedCaptureConfiguration.panelNative(displayID: 11)
         let expectedPendingLimit = switch configuration.resolvedSourceBackend {
-        case .privateDirectIOSurface, .privateProxyIOSurface:
+        case .privateDirectIOSurface:
             max(configuration.resolvedPrivateCaptureSurfaceCount - 1, 1)
         case .skyLightDisplayStream:
             {

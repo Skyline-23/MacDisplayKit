@@ -2251,7 +2251,7 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(inventory.notes, ["inventory payload parsed"])
     }
 
-    func testPrivateCapturePrototypePlannerPrefersProxyingPathWhenAvailable() {
+    func testPrivateCapturePrototypePlannerPrefersDirectIOSurfaceOptionsWhenProxyingIsAlsoExported() {
         let plan = MDKPrivateCapturePrototypePlanner.plan(
             for: MDKPrivateCaptureCapabilities(
                 desktopCaptureAvailable: true,
@@ -2263,7 +2263,7 @@ final class MacDisplayKitTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(plan.recommendedEntryPoint, .displayIOSurfaceProxying)
+        XCTAssertEqual(plan.recommendedEntryPoint, .displayIOSurfaceWithOptions)
         XCTAssertTrue(plan.readyForIOSurfacePrototype)
     }
 
