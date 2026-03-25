@@ -371,9 +371,15 @@ public actor MDKEncodedCaptureSession {
                 for: configuration,
                 queueDepth: queueDepth
             )
+            let pendingPolicy =
+                configuration.deliveryMode == .callbackOnly &&
+                configuration.resolvedSkyLightProcessingMode != nil
+                ? "callback-low-latency"
+                : "default"
             return MDKEncodedCaptureSourcePreparation(
                 recommendedPendingFrameCount: recommendedPendingFrameCount,
                 diagnosticNotes: (tuningSelection?.notes ?? []) + [
+                    "skyLightPendingPolicy=\(pendingPolicy)",
                     "skyLightRecommendedPendingFrameCount=\(recommendedPendingFrameCount)"
                 ],
                 skyLightTuningSelection: tuningSelection
@@ -381,11 +387,25 @@ public actor MDKEncodedCaptureSession {
         }
     }
 
-    private static func recommendedSkyLightPendingFrameCount(
+    static func recommendedSkyLightPendingFrameCount(
         for configuration: MDKEncodedCaptureConfiguration,
         queueDepth: Int
     ) -> Int {
         let effectiveQueueDepth = max(queueDepth, 1)
+        let usesLowLatencyCallbackEncode =
+            configuration.deliveryMode == .callbackOnly &&
+            configuration.resolvedSkyLightProcessingMode != nil
+
+        if usesLowLatencyCallbackEncode {
+            if configuration.targetFrameRate >= 100 {
+                return min(max(effectiveQueueDepth + 2, 4), 6)
+            } else if configuration.targetFrameRate >= 60 {
+                return min(max(effectiveQueueDepth + 1, 3), 5)
+            }
+
+            return min(max(effectiveQueueDepth + 1, 2), 4)
+        }
+
         if configuration.targetFrameRate >= 100 {
             return min(max(effectiveQueueDepth * 3, 10), 16)
         } else if configuration.targetFrameRate >= 60 {

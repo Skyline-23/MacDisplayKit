@@ -203,6 +203,70 @@ final class MacDisplayKitTests: XCTestCase {
         )
     }
 
+    func testSkyLightPendingFrameCountStaysTightForCallbackOnlyEncodedCapture() {
+        let callbackOnlyQ2 = MDKEncodedCaptureConfiguration(
+            displayID: 7,
+            streamConfiguration: .panelNative(
+                queueDepth: 2,
+                queueProfile: .q2,
+                showCursor: false,
+                pixelFormat: kCVPixelFormatType_32BGRA
+            ),
+            codec: .hevc,
+            preprocessStrategy: .none,
+            targetFrameRate: 120,
+            deliveryMode: .callbackOnly
+        )
+        let callbackOnlyQ3 = MDKEncodedCaptureConfiguration(
+            displayID: 7,
+            streamConfiguration: .panelNative(
+                queueDepth: 3,
+                queueProfile: .q3,
+                showCursor: false,
+                pixelFormat: kCVPixelFormatType_32BGRA
+            ),
+            codec: .hevc,
+            preprocessStrategy: .none,
+            targetFrameRate: 120,
+            deliveryMode: .callbackOnly
+        )
+        let multiplexedQ2 = MDKEncodedCaptureConfiguration(
+            displayID: 7,
+            streamConfiguration: .panelNative(
+                queueDepth: 2,
+                queueProfile: .q2,
+                showCursor: false,
+                pixelFormat: kCVPixelFormatType_32BGRA
+            ),
+            codec: .hevc,
+            preprocessStrategy: .none,
+            targetFrameRate: 120,
+            deliveryMode: .multiplexed
+        )
+
+        XCTAssertEqual(
+            MDKEncodedCaptureSession.recommendedSkyLightPendingFrameCount(
+                for: callbackOnlyQ2,
+                queueDepth: 2
+            ),
+            4
+        )
+        XCTAssertEqual(
+            MDKEncodedCaptureSession.recommendedSkyLightPendingFrameCount(
+                for: callbackOnlyQ3,
+                queueDepth: 3
+            ),
+            5
+        )
+        XCTAssertEqual(
+            MDKEncodedCaptureSession.recommendedSkyLightPendingFrameCount(
+                for: multiplexedQ2,
+                queueDepth: 2
+            ),
+            10
+        )
+    }
+
     func testHEVCHDRNegotiationPreservesDisplayP3WhenRequested() {
         let requested = MDKVideoHDRConfiguration(
             colorPrimaries: .p3D65,

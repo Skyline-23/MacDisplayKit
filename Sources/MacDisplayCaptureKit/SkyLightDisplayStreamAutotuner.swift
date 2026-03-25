@@ -65,13 +65,14 @@ actor MDKSkyLightDisplayStreamAutotuner {
                 )
             }
         }
+        let candidateNotes = evaluations.map(describeEvaluation)
 
         guard let bestIndex = MDKSkyLightDisplayStreamProcessingMatrix.bestEvaluationIndex(for: evaluations),
               evaluations.indices.contains(bestIndex),
               let bestResult = evaluations[bestIndex].result else {
             return MDKSkyLightDisplayStreamAutotuningSelection(
                 candidate: fallbackCandidate,
-                notes: [
+                notes: candidateNotes + [
                     "skyLightAutotuningSource=fallback",
                     "skyLightTuningCandidate=\(fallbackCandidate.identifier)",
                     "skyLightTuningQueueDepth=\(fallbackCandidate.queueDepth)",
@@ -85,7 +86,7 @@ actor MDKSkyLightDisplayStreamAutotuner {
 
         return MDKSkyLightDisplayStreamAutotuningSelection(
             candidate: bestCandidate,
-            notes: [
+            notes: candidateNotes + [
                 "skyLightAutotuningSource=benchmarked-live",
                 "skyLightTuningCandidate=\(bestCandidate.identifier)",
                 "skyLightTuningQueueDepth=\(bestCandidate.queueDepth)",
@@ -94,6 +95,28 @@ actor MDKSkyLightDisplayStreamAutotuner {
                 "skyLightTuningCadence=\(bestResult.cadenceClassification)"
             ]
         )
+    }
+
+    private func describeEvaluation(
+        _ evaluation: MDKSkyLightDisplayStreamProcessingMatrixEvaluation
+    ) -> String {
+        let candidate = evaluation.candidate.tuningCandidate
+        if let result = evaluation.result {
+            let latencyText = result.maxOutputCallbackLatencyMilliseconds.map {
+                String(format: "%.2f", $0)
+            } ?? "unknown"
+            return String(
+                format: "skyLightCandidateResult=%@,fps=%.2f,lat-ms=%@,cadence=%@,queue-depth=%d,min-frame-time=%.6f",
+                candidate.identifier,
+                result.effectiveOutputFrameRate,
+                latencyText,
+                result.cadenceClassification,
+                candidate.queueDepth,
+                candidate.minimumFrameTime
+            )
+        }
+
+        return "skyLightCandidateResult=\(candidate.identifier),error=\(evaluation.errorDescription ?? "unknown")"
     }
 
     private func prioritizedCandidates(
