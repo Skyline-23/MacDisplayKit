@@ -386,16 +386,13 @@ public actor MDKEncodedCaptureSession {
         queueDepth: Int
     ) -> Int {
         let effectiveQueueDepth = max(queueDepth, 1)
-        let latencyFloor: Int
         if configuration.targetFrameRate >= 100 {
-            latencyFloor = 4
+            return min(max(effectiveQueueDepth * 3, 10), 16)
         } else if configuration.targetFrameRate >= 60 {
-            latencyFloor = 3
-        } else {
-            latencyFloor = 2
+            return min(max(effectiveQueueDepth * 2, 3), 10)
         }
 
-        return min(max(effectiveQueueDepth * 2, latencyFloor), 8)
+        return min(max(effectiveQueueDepth * 2, 2), 8)
     }
 
     public func frames() -> AsyncThrowingStream<MDKEncodedFrame, Error> {
@@ -562,29 +559,19 @@ public actor MDKEncodedCaptureSession {
         do {
             try source.start()
         } catch {
-            statistics = MDKEncodedCaptureSessionStatistics(
-                emittedFrameCount: statistics.emittedFrameCount,
-                droppedFrameCount: statistics.droppedFrameCount,
-                processingFailureCount: statistics.processingFailureCount,
-                automaticRestartCount: statistics.automaticRestartCount,
+            statistics = preservedStatistics(
                 lastErrorDescription: (error as? LocalizedError)?.errorDescription ?? String(describing: error),
-                lastStopStatus: statistics.lastStopStatus,
                 isRunning: false
             )
             throw error
         }
 
         runtime = Runtime(source: source, processor: processor)
-        statistics = MDKEncodedCaptureSessionStatistics(
-            emittedFrameCount: statistics.emittedFrameCount,
-            droppedFrameCount: statistics.droppedFrameCount,
-            processingFailureCount: statistics.processingFailureCount,
-                automaticRestartCount: statistics.automaticRestartCount,
-                lastErrorDescription: statistics.lastErrorDescription,
-                lastStopStatus: nil,
-                isRunning: true,
-                notes: mergedRuntimeNotes(with: statistics.notes)
-            )
+        statistics = preservedStatistics(
+            lastStopStatus: nil,
+            isRunning: true,
+            notes: mergedRuntimeNotes(with: statistics.notes)
+        )
         emitEvent(
             .init(
                 kind: .started,
@@ -644,24 +631,12 @@ public actor MDKEncodedCaptureSession {
         var deliveredFrame = deliveredViaCallback
         guard let continuation else {
             if deliveredViaCallback {
-                statistics = MDKEncodedCaptureSessionStatistics(
-                    emittedFrameCount: statistics.emittedFrameCount + 1,
-                    droppedFrameCount: statistics.droppedFrameCount,
-                    processingFailureCount: statistics.processingFailureCount,
-                    automaticRestartCount: statistics.automaticRestartCount,
-                    lastErrorDescription: statistics.lastErrorDescription,
-                    lastStopStatus: statistics.lastStopStatus,
-                    isRunning: statistics.isRunning
+                statistics = preservedStatistics(
+                    emittedFrameCount: statistics.emittedFrameCount + 1
                 )
             } else {
-                statistics = MDKEncodedCaptureSessionStatistics(
-                    emittedFrameCount: statistics.emittedFrameCount,
-                    droppedFrameCount: statistics.droppedFrameCount + 1,
-                    processingFailureCount: statistics.processingFailureCount,
-                    automaticRestartCount: statistics.automaticRestartCount,
-                    lastErrorDescription: statistics.lastErrorDescription,
-                    lastStopStatus: statistics.lastStopStatus,
-                    isRunning: statistics.isRunning
+                statistics = preservedStatistics(
+                    droppedFrameCount: statistics.droppedFrameCount + 1
                 )
                 emitEvent(
                     .init(
@@ -677,35 +652,17 @@ public actor MDKEncodedCaptureSession {
         switch continuation.yield(frame) {
         case .enqueued:
             deliveredFrame = true
-            statistics = MDKEncodedCaptureSessionStatistics(
-                emittedFrameCount: statistics.emittedFrameCount + (deliveredViaCallback ? 0 : 1),
-                droppedFrameCount: statistics.droppedFrameCount,
-                processingFailureCount: statistics.processingFailureCount,
-                automaticRestartCount: statistics.automaticRestartCount,
-                lastErrorDescription: statistics.lastErrorDescription,
-                lastStopStatus: statistics.lastStopStatus,
-                isRunning: statistics.isRunning
+            statistics = preservedStatistics(
+                emittedFrameCount: statistics.emittedFrameCount + (deliveredViaCallback ? 0 : 1)
             )
         case .dropped:
             if deliveredViaCallback {
-                statistics = MDKEncodedCaptureSessionStatistics(
-                    emittedFrameCount: statistics.emittedFrameCount + 1,
-                    droppedFrameCount: statistics.droppedFrameCount,
-                    processingFailureCount: statistics.processingFailureCount,
-                    automaticRestartCount: statistics.automaticRestartCount,
-                    lastErrorDescription: statistics.lastErrorDescription,
-                    lastStopStatus: statistics.lastStopStatus,
-                    isRunning: statistics.isRunning
+                statistics = preservedStatistics(
+                    emittedFrameCount: statistics.emittedFrameCount + 1
                 )
             } else {
-                statistics = MDKEncodedCaptureSessionStatistics(
-                    emittedFrameCount: statistics.emittedFrameCount,
-                    droppedFrameCount: statistics.droppedFrameCount + 1,
-                    processingFailureCount: statistics.processingFailureCount,
-                    automaticRestartCount: statistics.automaticRestartCount,
-                    lastErrorDescription: statistics.lastErrorDescription,
-                    lastStopStatus: statistics.lastStopStatus,
-                    isRunning: statistics.isRunning
+                statistics = preservedStatistics(
+                    droppedFrameCount: statistics.droppedFrameCount + 1
                 )
             }
             if !deliveredViaCallback {
@@ -720,14 +677,9 @@ public actor MDKEncodedCaptureSession {
         case .terminated:
             self.continuation = nil
             self.continuationToken = nil
-            statistics = MDKEncodedCaptureSessionStatistics(
+            statistics = preservedStatistics(
                 emittedFrameCount: statistics.emittedFrameCount + (deliveredViaCallback ? 1 : 0),
-                droppedFrameCount: statistics.droppedFrameCount + (deliveredViaCallback ? 0 : 1),
-                processingFailureCount: statistics.processingFailureCount,
-                automaticRestartCount: statistics.automaticRestartCount,
-                lastErrorDescription: statistics.lastErrorDescription,
-                lastStopStatus: statistics.lastStopStatus,
-                isRunning: statistics.isRunning
+                droppedFrameCount: statistics.droppedFrameCount + (deliveredViaCallback ? 0 : 1)
             )
             if !deliveredViaCallback {
                 emitEvent(
@@ -749,14 +701,8 @@ public actor MDKEncodedCaptureSession {
         }
 
         if deliveredViaCallback && !deliveredFrame {
-            statistics = MDKEncodedCaptureSessionStatistics(
-                emittedFrameCount: statistics.emittedFrameCount + 1,
-                droppedFrameCount: statistics.droppedFrameCount,
-                processingFailureCount: statistics.processingFailureCount,
-                automaticRestartCount: statistics.automaticRestartCount,
-                lastErrorDescription: statistics.lastErrorDescription,
-                lastStopStatus: statistics.lastStopStatus,
-                isRunning: statistics.isRunning
+            statistics = preservedStatistics(
+                emittedFrameCount: statistics.emittedFrameCount + 1
             )
         }
     }
@@ -765,14 +711,9 @@ public actor MDKEncodedCaptureSession {
         guard runtime != nil, self.runtimeGeneration == runtimeGeneration else {
             return
         }
-        statistics = MDKEncodedCaptureSessionStatistics(
-            emittedFrameCount: statistics.emittedFrameCount,
-            droppedFrameCount: statistics.droppedFrameCount,
+        statistics = preservedStatistics(
             processingFailureCount: statistics.processingFailureCount + 1,
-            automaticRestartCount: statistics.automaticRestartCount,
-            lastErrorDescription: description,
-            lastStopStatus: statistics.lastStopStatus,
-            isRunning: statistics.isRunning
+            lastErrorDescription: description
         )
         emitEvent(.init(kind: .failed, message: description))
 
@@ -826,14 +767,8 @@ public actor MDKEncodedCaptureSession {
             return
         }
 
-        statistics = MDKEncodedCaptureSessionStatistics(
-            emittedFrameCount: statistics.emittedFrameCount,
-            droppedFrameCount: statistics.droppedFrameCount + 1,
-            processingFailureCount: statistics.processingFailureCount,
-            automaticRestartCount: statistics.automaticRestartCount,
-            lastErrorDescription: statistics.lastErrorDescription,
-            lastStopStatus: statistics.lastStopStatus,
-            isRunning: statistics.isRunning
+        statistics = preservedStatistics(
+            droppedFrameCount: statistics.droppedFrameCount + 1
         )
         emitEvent(
             .init(
@@ -858,13 +793,9 @@ public actor MDKEncodedCaptureSession {
         stopRuntime(finishingStream: false, emitStopEvent: false)
         do {
             try await start()
-            statistics = MDKEncodedCaptureSessionStatistics(
-                emittedFrameCount: statistics.emittedFrameCount,
-                droppedFrameCount: statistics.droppedFrameCount,
-                processingFailureCount: statistics.processingFailureCount,
+            statistics = preservedStatistics(
                 automaticRestartCount: statistics.automaticRestartCount + 1,
                 lastErrorDescription: lastErrorDescription,
-                lastStopStatus: statistics.lastStopStatus,
                 isRunning: true
             )
             emitEvent(
@@ -983,6 +914,30 @@ public actor MDKEncodedCaptureSession {
             minOutputCallbackLatencyMilliseconds: summary.minOutputCallbackLatencyMilliseconds,
             maxOutputCallbackLatencyMilliseconds: summary.maxOutputCallbackLatencyMilliseconds,
             notes: mergedRuntimeNotes(with: summary.notes)
+        )
+    }
+
+    private func preservedStatistics(
+        emittedFrameCount: UInt64? = nil,
+        droppedFrameCount: UInt64? = nil,
+        processingFailureCount: UInt64? = nil,
+        automaticRestartCount: UInt64? = nil,
+        lastErrorDescription: String? = nil,
+        lastStopStatus: Int32?? = nil,
+        isRunning: Bool? = nil,
+        notes: [String]? = nil
+    ) -> MDKEncodedCaptureSessionStatistics {
+        MDKEncodedCaptureSessionStatistics(
+            emittedFrameCount: emittedFrameCount ?? statistics.emittedFrameCount,
+            droppedFrameCount: droppedFrameCount ?? statistics.droppedFrameCount,
+            processingFailureCount: processingFailureCount ?? statistics.processingFailureCount,
+            automaticRestartCount: automaticRestartCount ?? statistics.automaticRestartCount,
+            lastErrorDescription: lastErrorDescription ?? statistics.lastErrorDescription,
+            lastStopStatus: lastStopStatus ?? statistics.lastStopStatus,
+            isRunning: isRunning ?? statistics.isRunning,
+            minOutputCallbackLatencyMilliseconds: statistics.minOutputCallbackLatencyMilliseconds,
+            maxOutputCallbackLatencyMilliseconds: statistics.maxOutputCallbackLatencyMilliseconds,
+            notes: notes ?? statistics.notes
         )
     }
 

@@ -645,16 +645,12 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         case .skyLightDisplayStream:
             {
                 let effectiveQueueDepth = max(configuration.streamConfiguration.resolvedQueueDepth, 1)
-                let latencyFloor: Int
                 if configuration.targetFrameRate >= 100 {
-                    latencyFloor = 4
+                    return min(max(effectiveQueueDepth * 3, 10), 16)
                 } else if configuration.targetFrameRate >= 60 {
-                    latencyFloor = 3
-                } else {
-                    latencyFloor = 2
+                    return min(max(effectiveQueueDepth * 2, 3), 10)
                 }
-
-                return min(max(effectiveQueueDepth * 2, latencyFloor), 8)
+                return min(max(effectiveQueueDepth * 2, 2), 8)
             }()
         }
         let expectedDroppedCount = UInt64(10 - expectedPendingLimit)
