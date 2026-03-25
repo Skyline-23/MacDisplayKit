@@ -17,6 +17,19 @@ func MDKDisplayLogicalSize(displayID: CGDirectDisplayID) -> CGSize {
     )
 }
 
+func MDKDisplayRefreshRate(displayID: CGDirectDisplayID) -> Double? {
+    guard let displayMode = CGDisplayCopyDisplayMode(displayID) else {
+        return nil
+    }
+
+    let refreshRate = displayMode.refreshRate
+    guard refreshRate > 1 else {
+        return nil
+    }
+
+    return refreshRate
+}
+
 struct MDKCGDisplayStreamConfiguration: Equatable {
     let minimumFrameTime: TimeInterval
     let sourceRect: CGRect

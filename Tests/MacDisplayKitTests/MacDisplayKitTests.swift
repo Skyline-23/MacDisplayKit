@@ -1560,6 +1560,131 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(MDKSkyLightDisplayStreamProcessingMatrix.bestEvaluationIndex(for: evaluations), 1)
     }
 
+    func testSkyLightAutotunerUsesLongerBenchmarkWindowForHighRefreshTargets() {
+        XCTAssertEqual(
+            MDKSkyLightDisplayStreamAutotuner.benchmarkSampleDuration(
+                targetFrameRate: 120,
+                displayRefreshRate: 120
+            ),
+            0.75
+        )
+        XCTAssertEqual(
+            MDKSkyLightDisplayStreamAutotuner.benchmarkSampleDuration(
+                targetFrameRate: 60,
+                displayRefreshRate: 60
+            ),
+            0.35
+        )
+    }
+
+    func testSkyLightAutotunerFallsBackToDeepBaselineCandidateWhenLiveResultsUnderrun() {
+        let q2Evaluation = MDKSkyLightDisplayStreamProcessingMatrixEvaluation(
+            candidate: MDKSkyLightDisplayStreamProcessingMatrixCandidate(
+                identifier: "baseline-q2",
+                processingMode: .videoToolboxEncode,
+                tuningCandidate: MDKSkyLightDisplayStreamTuningMatrix.baselineQueue2Candidate
+            ),
+            result: MDKSkyLightDisplayStreamProcessingBenchmarkResult(
+                displayID: 2,
+                status: 0,
+                stopStatus: 0,
+                processingMode: .videoToolboxEncode,
+                videoEncoderCodec: .hevc,
+                sampleDuration: 0.75,
+                callbackCount: 18,
+                completeFrameCount: 18,
+                observedFrameRate: 24.0,
+                processedFrameCount: 18,
+                processingFailureCount: 0,
+                processingErrorHistogram: [:],
+                processedFrameRate: 24.0,
+                processedFrameRatio: 1.0,
+                outputCallbackCount: 18,
+                completedOutputFrameCount: 18,
+                completedOutputFrameRate: 24.0,
+                completedOutputFrameRatio: 1.0,
+                outputCallbackStatusHistogram: ["noErr": 18],
+                outputCallbackLatencyHistogram: ["18.0ms": 18],
+                minOutputCallbackLatencyMilliseconds: 18.0,
+                maxOutputCallbackLatencyMilliseconds: 18.0,
+                requestedMinimumFrameTime: 0,
+                requestedQueueDepth: 2,
+                requestedShowCursor: false,
+                surfaceWidth: 3840,
+                surfaceHeight: 2160,
+                pixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                intervalCount: 17,
+                minIntervalMilliseconds: 16.667,
+                maxIntervalMilliseconds: 41.667,
+                intervalHistogram: ["16.7ms": 9, "41.7ms": 8],
+                stallCountOver16Milliseconds: 8,
+                stallCountOver33Milliseconds: 8,
+                stallCountOver100Milliseconds: 0,
+                cadenceClassification: "coalesced-or-mixed",
+                frameStatusHistogram: ["frame-complete": 18],
+                notes: []
+            ),
+            errorDescription: nil
+        )
+        let q8Evaluation = MDKSkyLightDisplayStreamProcessingMatrixEvaluation(
+            candidate: MDKSkyLightDisplayStreamProcessingMatrixCandidate(
+                identifier: "baseline-q8",
+                processingMode: .videoToolboxEncode,
+                tuningCandidate: MDKSkyLightDisplayStreamTuningMatrix.baselineQueue8Candidate
+            ),
+            result: MDKSkyLightDisplayStreamProcessingBenchmarkResult(
+                displayID: 2,
+                status: 0,
+                stopStatus: 0,
+                processingMode: .videoToolboxEncode,
+                videoEncoderCodec: .hevc,
+                sampleDuration: 0.75,
+                callbackCount: 20,
+                completeFrameCount: 20,
+                observedFrameRate: 26.7,
+                processedFrameCount: 20,
+                processingFailureCount: 0,
+                processingErrorHistogram: [:],
+                processedFrameRate: 26.7,
+                processedFrameRatio: 1.0,
+                outputCallbackCount: 20,
+                completedOutputFrameCount: 20,
+                completedOutputFrameRate: 26.7,
+                completedOutputFrameRatio: 1.0,
+                outputCallbackStatusHistogram: ["noErr": 20],
+                outputCallbackLatencyHistogram: ["19.0ms": 20],
+                minOutputCallbackLatencyMilliseconds: 19.0,
+                maxOutputCallbackLatencyMilliseconds: 19.0,
+                requestedMinimumFrameTime: 0,
+                requestedQueueDepth: 8,
+                requestedShowCursor: false,
+                surfaceWidth: 3840,
+                surfaceHeight: 2160,
+                pixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                intervalCount: 19,
+                minIntervalMilliseconds: 16.667,
+                maxIntervalMilliseconds: 41.667,
+                intervalHistogram: ["16.7ms": 10, "41.7ms": 9],
+                stallCountOver16Milliseconds: 9,
+                stallCountOver33Milliseconds: 9,
+                stallCountOver100Milliseconds: 0,
+                cadenceClassification: "coalesced-or-mixed",
+                frameStatusHistogram: ["frame-complete": 20],
+                notes: []
+            ),
+            errorDescription: nil
+        )
+
+        XCTAssertEqual(
+            MDKSkyLightDisplayStreamAutotuner.highRefreshGuardrailCandidate(
+                for: [q2Evaluation, q8Evaluation],
+                targetFrameRate: 120,
+                displayRefreshRate: 120
+            ),
+            MDKSkyLightDisplayStreamTuningMatrix.baselineQueue8Candidate
+        )
+    }
+
     func testSkyLightDisplayStreamProcessingBenchmarkMarks120LikeTarget() {
         let result = MDKSkyLightDisplayStreamProcessingBenchmarkResult(
             displayID: 2,
