@@ -333,6 +333,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     "videoToolboxCodec=\(codec.rawValue)",
                     "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
                     "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "hybrid-direct-or-metal-staging")",
+                    "videoToolboxStagedSourceReleaseMode=post-submit",
                     "videoToolboxDirectSubmissionFrameCount=\(outputSummary.10)",
                     "videoToolboxStagedSubmissionFrameCount=\(outputSummary.11)",
                     "videoToolboxColorConversionMode=\(sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) ? "custom" : "passthrough")",
@@ -553,10 +554,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                         frame: frame,
                         slotIdentifier: slotIdentifier,
                         presentationTimeStamp: presentationTimeStamp,
-                        releasePendingFrame: releaseSourceFrame
+                        releasePendingFrame: {}
                     )
+                    releaseSourceFrame()
                     self.recordProcessingSuccess(isStaged: true)
                 } catch {
+                    releaseSourceFrame()
                     let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
                     self.recordProcessingFailure(errorDescription)
                     self.releaseStagingSlot(identifier: slotIdentifier)
