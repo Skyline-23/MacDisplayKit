@@ -12977,10 +12977,13 @@ static void MDKOverlayCursorOnIOSurface(
 
     [self destroySurfaceRing];
     if (error != nullptr) {
+        const auto *captureModeDescription = _useProxyCapture ?
+            "The private proxy IOSurface capture session warmup call returned a non-zero status." :
+            "The private direct IOSurface capture session warmup call returned a non-zero status.";
         *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
                                      code:warmupStatus
                                  userInfo:@{
-                                     NSLocalizedDescriptionKey: @"The private direct IOSurface capture session warmup call returned a non-zero status."
+                                     NSLocalizedDescriptionKey: [NSString stringWithUTF8String:captureModeDescription]
                                  }];
     }
     return NO;

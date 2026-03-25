@@ -24,7 +24,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         )
     }
 
-    func testEncodedCaptureConfigurationPrefersPrivateProxyIOSurfaceWhenAvailable() {
+    func testEncodedCaptureConfigurationPrefersPrivateDirectIOSurfaceWhenAvailable() {
         let configuration = MDKEncodedCaptureConfiguration.panelNative(displayID: 7)
 
         XCTAssertEqual(
@@ -38,7 +38,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
                     extendedRangeOptionAvailable: true
                 )
             ),
-            .privateProxyIOSurface
+            .privateDirectIOSurface
         )
     }
 

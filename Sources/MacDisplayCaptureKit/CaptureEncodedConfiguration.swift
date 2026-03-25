@@ -141,13 +141,13 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
             return .skyLightDisplayStream
         }
 
-        if capabilities.displayIOSurfaceProxyCaptureAvailable {
-            return .privateProxyIOSurface
-        }
-
         if capabilities.displayIOSurfaceCaptureWithOptionsAvailable ||
             capabilities.displayIOSurfaceCaptureAvailable {
             return .privateDirectIOSurface
+        }
+
+        if capabilities.displayIOSurfaceProxyCaptureAvailable {
+            return .privateProxyIOSurface
         }
 
         return .skyLightDisplayStream
