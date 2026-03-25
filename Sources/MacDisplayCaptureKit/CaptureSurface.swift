@@ -52,12 +52,19 @@ public final class MDKCaptureSurface: @unchecked Sendable, Equatable {
         pixelFormat: UInt32,
         planeCount: Int
     ) {
-        self.ioSurface = ioSurface
+        // Capture callbacks can hand us an IOSurface whose lifetime does not extend
+        // beyond the callback scope, so retain it explicitly before handing it to
+        // asynchronous processing stages.
+        self.ioSurface = Unmanaged.passRetained(ioSurface).takeUnretainedValue()
         self.id = id
         self.width = width
         self.height = height
         self.pixelFormat = pixelFormat
         self.planeCount = planeCount
+    }
+
+    deinit {
+        Unmanaged.passUnretained(ioSurface).release()
     }
 
     public static func == (lhs: MDKCaptureSurface, rhs: MDKCaptureSurface) -> Bool {

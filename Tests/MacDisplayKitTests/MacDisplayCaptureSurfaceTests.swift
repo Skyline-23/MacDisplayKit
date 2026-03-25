@@ -5,6 +5,26 @@ import XCTest
 @testable import MacDisplayCaptureKit
 
 final class MacDisplayCaptureSurfaceTests: XCTestCase {
+    func testCaptureSurfaceRetainsIOSurfaceBeyondCreationScope() throws {
+        let captureSurface = try autoreleasepool { () throws -> MDKCaptureSurface in
+            let surface = try makeBGRAIOSurface(width: 80, height: 40)
+            return MDKCaptureSurface(ioSurface: surface)
+        }
+
+        XCTAssertEqual(captureSurface.width, 80)
+        XCTAssertEqual(captureSurface.height, 40)
+        XCTAssertEqual(captureSurface.pixelFormat, kCVPixelFormatType_32BGRA)
+
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device is not available on this host.")
+        }
+
+        let texture = try captureSurface.makeMetalTexture(device: device)
+        XCTAssertNotNil(texture)
+        XCTAssertEqual(texture?.width, 80)
+        XCTAssertEqual(texture?.height, 40)
+    }
+
     func testBGRAIOSurfaceProducesMetalTexture() throws {
         let surface = try makeBGRAIOSurface(width: 64, height: 32)
         let captureSurface = MDKCaptureSurface(ioSurface: surface)
