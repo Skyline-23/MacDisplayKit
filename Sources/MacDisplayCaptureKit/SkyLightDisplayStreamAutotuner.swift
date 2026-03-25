@@ -179,8 +179,7 @@ actor MDKSkyLightDisplayStreamAutotuner {
                 return true
             }
 
-            return result.effectiveOutputFrameRate >= highRefreshGuardrailMinimumOutputFrameRate &&
-                cadenceRank(result.cadenceClassification) >= cadenceRank("60hz-like")
+            return result.effectiveOutputFrameRate >= highRefreshGuardrailMinimumOutputFrameRate
         }
         guard !hasHealthyCandidate else {
             return nil
