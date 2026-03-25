@@ -1380,6 +1380,122 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(MDKSkyLightDisplayStreamProcessingMatrix.bestEvaluationIndex(for: evaluations), 0)
     }
 
+    func testProcessingMatrixRejectsLowOutputFrameRateCoalescedCandidate() {
+        let coalescedSlow = MDKSkyLightDisplayStreamProcessingBenchmarkResult(
+            displayID: 2,
+            status: 0,
+            stopStatus: 0,
+            processingMode: .videoToolboxEncode,
+            videoEncoderCodec: .hevc,
+            sampleDuration: 2.0,
+            callbackCount: 170,
+            completeFrameCount: 170,
+            observedFrameRate: 85.0,
+            processedFrameCount: 170,
+            processingFailureCount: 0,
+            processingErrorHistogram: [:],
+            processedFrameRate: 85.0,
+            processedFrameRatio: 1.0,
+            outputCallbackCount: 36,
+            completedOutputFrameCount: 36,
+            completedOutputFrameRate: 18.0,
+            completedOutputFrameRatio: 36.0 / 170.0,
+            outputCallbackStatusHistogram: ["noErr": 36],
+            outputCallbackLatencyHistogram: ["18.0ms": 36],
+            minOutputCallbackLatencyMilliseconds: 18.0,
+            maxOutputCallbackLatencyMilliseconds: 18.0,
+            requestedMinimumFrameTime: 1.0 / 120.0,
+            requestedQueueDepth: 8,
+            requestedShowCursor: false,
+            surfaceWidth: 3840,
+            surfaceHeight: 2160,
+            pixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+            intervalCount: 169,
+            minIntervalMilliseconds: 8.333,
+            maxIntervalMilliseconds: 66.667,
+            intervalHistogram: ["8.3ms": 90, "66.7ms": 79],
+            stallCountOver16Milliseconds: 0,
+            stallCountOver33Milliseconds: 0,
+            stallCountOver100Milliseconds: 0,
+            cadenceClassification: "coalesced-or-mixed",
+            frameStatusHistogram: ["frame-complete": 170],
+            notes: []
+        )
+        let steadyNearRealtime = MDKSkyLightDisplayStreamProcessingBenchmarkResult(
+            displayID: 2,
+            status: 0,
+            stopStatus: 0,
+            processingMode: .videoToolboxEncode,
+            videoEncoderCodec: .hevc,
+            sampleDuration: 2.0,
+            callbackCount: 116,
+            completeFrameCount: 116,
+            observedFrameRate: 58.0,
+            processedFrameCount: 116,
+            processingFailureCount: 0,
+            processingErrorHistogram: [:],
+            processedFrameRate: 58.0,
+            processedFrameRatio: 1.0,
+            outputCallbackCount: 116,
+            completedOutputFrameCount: 116,
+            completedOutputFrameRate: 58.0,
+            completedOutputFrameRatio: 1.0,
+            outputCallbackStatusHistogram: ["noErr": 116],
+            outputCallbackLatencyHistogram: ["11.0ms": 116],
+            minOutputCallbackLatencyMilliseconds: 11.0,
+            maxOutputCallbackLatencyMilliseconds: 11.0,
+            requestedMinimumFrameTime: 0,
+            requestedQueueDepth: 2,
+            requestedShowCursor: false,
+            surfaceWidth: 3840,
+            surfaceHeight: 2160,
+            pixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+            intervalCount: 115,
+            minIntervalMilliseconds: 16.667,
+            maxIntervalMilliseconds: 18.0,
+            intervalHistogram: ["16.7ms": 115],
+            stallCountOver16Milliseconds: 0,
+            stallCountOver33Milliseconds: 0,
+            stallCountOver100Milliseconds: 0,
+            cadenceClassification: "60hz-like",
+            frameStatusHistogram: ["frame-complete": 116],
+            notes: []
+        )
+
+        let evaluations = [
+            MDKSkyLightDisplayStreamProcessingMatrixEvaluation(
+                candidate: MDKSkyLightDisplayStreamProcessingMatrixCandidate(
+                    identifier: "coalesced-slow",
+                    processingMode: .videoToolboxEncode,
+                    tuningCandidate: MDKSkyLightDisplayStreamTuningCandidate(
+                        identifier: "legacy-120hz-request",
+                        minimumFrameTime: 1.0 / 120.0,
+                        queueDepth: 8,
+                        showCursor: false
+                    )
+                ),
+                result: coalescedSlow,
+                errorDescription: nil
+            ),
+            MDKSkyLightDisplayStreamProcessingMatrixEvaluation(
+                candidate: MDKSkyLightDisplayStreamProcessingMatrixCandidate(
+                    identifier: "steady-near-realtime",
+                    processingMode: .videoToolboxEncode,
+                    tuningCandidate: MDKSkyLightDisplayStreamTuningCandidate(
+                        identifier: "baseline-q2",
+                        minimumFrameTime: 0,
+                        queueDepth: 2,
+                        showCursor: false
+                    )
+                ),
+                result: steadyNearRealtime,
+                errorDescription: nil
+            )
+        ]
+
+        XCTAssertEqual(MDKSkyLightDisplayStreamProcessingMatrix.bestEvaluationIndex(for: evaluations), 1)
+    }
+
     func testSkyLightDisplayStreamProcessingBenchmarkMarks120LikeTarget() {
         let result = MDKSkyLightDisplayStreamProcessingBenchmarkResult(
             displayID: 2,
