@@ -366,15 +366,36 @@ public actor MDKEncodedCaptureSession {
             )
         case .skyLightDisplayStream:
             let tuningSelection = await MDKSkyLightDisplayStreamAutotuner.shared.resolveSelection(for: configuration)
+            let queueDepth = tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth
+            let recommendedPendingFrameCount = recommendedSkyLightPendingFrameCount(
+                for: configuration,
+                queueDepth: queueDepth
+            )
             return MDKEncodedCaptureSourcePreparation(
-                recommendedPendingFrameCount: max(
-                    tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth,
-                    1
-                ),
-                diagnosticNotes: tuningSelection?.notes ?? [],
+                recommendedPendingFrameCount: recommendedPendingFrameCount,
+                diagnosticNotes: (tuningSelection?.notes ?? []) + [
+                    "skyLightRecommendedPendingFrameCount=\(recommendedPendingFrameCount)"
+                ],
                 skyLightTuningSelection: tuningSelection
             )
         }
+    }
+
+    private static func recommendedSkyLightPendingFrameCount(
+        for configuration: MDKEncodedCaptureConfiguration,
+        queueDepth: Int
+    ) -> Int {
+        let effectiveQueueDepth = max(queueDepth, 1)
+        let latencyFloor: Int
+        if configuration.targetFrameRate >= 100 {
+            latencyFloor = 4
+        } else if configuration.targetFrameRate >= 60 {
+            latencyFloor = 3
+        } else {
+            latencyFloor = 2
+        }
+
+        return min(max(effectiveQueueDepth * 2, latencyFloor), 8)
     }
 
     public func frames() -> AsyncThrowingStream<MDKEncodedFrame, Error> {
