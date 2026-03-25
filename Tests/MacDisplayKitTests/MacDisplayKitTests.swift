@@ -1577,6 +1577,46 @@ final class MacDisplayKitTests: XCTestCase {
         )
     }
 
+    func testSkyLightAutotunerUsesHighRefreshProductionBootstrapForVTEncode() {
+        let candidates = MDKSkyLightDisplayStreamTuningAdvisor.recommendedCandidates(
+            for: .videoToolboxEncode,
+            targetFrameRate: 120
+        )
+
+        XCTAssertEqual(
+            MDKSkyLightDisplayStreamAutotuner.highRefreshProductionBootstrapCandidate(
+                processingMode: .videoToolboxEncode,
+                candidates: candidates,
+                targetFrameRate: 120,
+                displayRefreshRate: 240
+            ),
+            MDKSkyLightDisplayStreamTuningMatrix.baselineQueue2Candidate
+        )
+    }
+
+    func testSkyLightAutotunerSkipsHighRefreshProductionBootstrapOutsideEncodedHighRefreshSessions() {
+        let candidates = MDKSkyLightDisplayStreamTuningAdvisor.recommendedCandidates(
+            for: .videoToolboxEncode,
+            targetFrameRate: 60
+        )
+        XCTAssertNil(
+            MDKSkyLightDisplayStreamAutotuner.highRefreshProductionBootstrapCandidate(
+                processingMode: .videoToolboxEncode,
+                candidates: candidates,
+                targetFrameRate: 60,
+                displayRefreshRate: 60
+            )
+        )
+        XCTAssertNil(
+            MDKSkyLightDisplayStreamAutotuner.highRefreshProductionBootstrapCandidate(
+                processingMode: .metalCopy,
+                candidates: candidates,
+                targetFrameRate: 120,
+                displayRefreshRate: 240
+            )
+        )
+    }
+
     func testSkyLightAutotunerFallsBackToDeepBaselineCandidateWhenLiveResultsUnderrun() {
         let q2Evaluation = MDKSkyLightDisplayStreamProcessingMatrixEvaluation(
             candidate: MDKSkyLightDisplayStreamProcessingMatrixCandidate(

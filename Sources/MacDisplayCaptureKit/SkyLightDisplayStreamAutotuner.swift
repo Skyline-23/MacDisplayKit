@@ -38,6 +38,28 @@ actor MDKSkyLightDisplayStreamAutotuner {
         }
 
         let displayRefreshRate = MDKDisplayRefreshRate(displayID: configuration.displayID)
+        if let bootstrapCandidate = Self.highRefreshProductionBootstrapCandidate(
+            processingMode: processingMode,
+            candidates: candidates,
+            targetFrameRate: configuration.targetFrameRate,
+            displayRefreshRate: displayRefreshRate
+        ) {
+            return MDKSkyLightDisplayStreamAutotuningSelection(
+                candidate: bootstrapCandidate,
+                notes: [
+                    "skyLightAutotuningSource=high-refresh-bootstrap",
+                    "skyLightTuningCandidate=\(bootstrapCandidate.identifier)",
+                    "skyLightTuningQueueDepth=\(bootstrapCandidate.queueDepth)",
+                    String(format: "skyLightTuningMinimumFrameTime=%.6f", bootstrapCandidate.minimumFrameTime),
+                    String(
+                        format: "skyLightDisplayRefreshRate=%@",
+                        displayRefreshRate.map { String(format: "%.2f", $0) } ?? "unknown"
+                    ),
+                    "skyLightBenchmarkSkipped=production-default"
+                ]
+            )
+        }
+
         let sampleDuration = Self.benchmarkSampleDuration(
             targetFrameRate: configuration.targetFrameRate,
             displayRefreshRate: displayRefreshRate
@@ -193,6 +215,25 @@ actor MDKSkyLightDisplayStreamAutotuner {
         return preferredEvaluations.max { lhs, rhs in
             highRefreshGuardrailScore(lhs.0, lhs.1) < highRefreshGuardrailScore(rhs.0, rhs.1)
         }?.0
+    }
+
+    static func highRefreshProductionBootstrapCandidate(
+        processingMode: MDKCaptureBenchmarkProcessingMode,
+        candidates: [MDKSkyLightDisplayStreamTuningCandidate],
+        targetFrameRate: Int,
+        displayRefreshRate: Double?
+    ) -> MDKSkyLightDisplayStreamTuningCandidate? {
+        guard isHighRefreshSession(
+            targetFrameRate: targetFrameRate,
+            displayRefreshRate: displayRefreshRate
+        ),
+        processingMode.videoEncoderCodec != nil else {
+            return nil
+        }
+
+        return candidates.first {
+            $0.identifier == MDKSkyLightDisplayStreamTuningMatrix.baselineQueue2Candidate.identifier
+        } ?? candidates.first
     }
 
     private func describeEvaluation(
