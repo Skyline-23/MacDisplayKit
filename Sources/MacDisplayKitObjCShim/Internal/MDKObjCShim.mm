@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
@@ -27,6 +28,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <vector>
 
 #import "../LegacyRuntime/Capture/av_audio.h"
 #import "../LegacyRuntime/Capture/av_video.h"
@@ -11988,6 +11990,29 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSCKPublicTimingTrace(
     return result;
 }
 
+using MDKPrivateCaptureDisplayIntoIOSurfaceWithOptionsFn =
+    int (*)(std::uint32_t, std::uint32_t, std::uint32_t, IOSurfaceRef, std::uint32_t *);
+using MDKPrivateCaptureDisplayIntoIOSurfaceProxyFn =
+    int (*)(std::uint32_t, std::uint32_t, std::uint32_t, mach_port_t, std::uint32_t *, BOOL *);
+
+static constexpr std::uint32_t MDKPrivateCaptureExtendedRangeBit = 0x00200000;
+
+static MDKPrivateCaptureDisplayIntoIOSurfaceWithOptionsFn MDKPrivateCaptureDisplayIntoIOSurfaceWithOptionsSymbol(void) {
+    return reinterpret_cast<MDKPrivateCaptureDisplayIntoIOSurfaceWithOptionsFn>(
+        MDKLookupCaptureSymbol("CGSHWCaptureDisplayIntoIOSurfaceWithOptions")
+    );
+}
+
+static IOSurfaceRef _Nullable MDKCreatePrivateCaptureIOSurface(size_t width, size_t height) {
+    NSDictionary *surfaceProperties = @{
+        (NSString *) kIOSurfaceWidth: @(width),
+        (NSString *) kIOSurfaceHeight: @(height),
+        (NSString *) kIOSurfacePixelFormat: @(kCVPixelFormatType_32BGRA),
+        (NSString *) kIOSurfaceBytesPerElement: @4,
+    };
+    return IOSurfaceCreate((__bridge CFDictionaryRef) surfaceProperties);
+}
+
 static NSDictionary<NSString *, id> * _Nullable MDKCreatePrivateCaptureSurfacePayload(
     NSUInteger displayID,
     BOOL requestExtendedRange,
@@ -11996,15 +12021,10 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreatePrivateCaptureSurfacePa
     NSTimeInterval sampleDuration,
     BOOL useDirectProxy
 ) {
-    using MDKPrivateCaptureDisplayIntoIOSurfaceWithOptionsFn =
-        int (*)(std::uint32_t, std::uint32_t, std::uint32_t, IOSurfaceRef, std::uint32_t *);
     using MDKPrivateCaptureDisplayIntoIOSurfaceProxyFn =
         int (*)(std::uint32_t, std::uint32_t, std::uint32_t, mach_port_t, std::uint32_t *, BOOL *);
-    static constexpr std::uint32_t MDKPrivateCaptureExtendedRangeBit = 0x00200000;
 
-    auto symbol = reinterpret_cast<MDKPrivateCaptureDisplayIntoIOSurfaceWithOptionsFn>(
-        MDKLookupCaptureSymbol("CGSHWCaptureDisplayIntoIOSurfaceWithOptions")
-    );
+    auto symbol = MDKPrivateCaptureDisplayIntoIOSurfaceWithOptionsSymbol();
     auto proxySymbol = reinterpret_cast<MDKPrivateCaptureDisplayIntoIOSurfaceProxyFn>(
         MDKLookupScreenCaptureKitSymbol("SLSHWCaptureDisplayIntoIOSurfaceProxying")
     );
@@ -12037,13 +12057,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreatePrivateCaptureSurfacePa
     const std::uint32_t height = static_cast<std::uint32_t>(std::max<std::size_t>(CGDisplayModeGetPixelHeight(mode), 1));
     CFRelease(mode);
 
-    NSDictionary *surfaceProperties = @{
-        (NSString *) kIOSurfaceWidth: @(width),
-        (NSString *) kIOSurfaceHeight: @(height),
-        (NSString *) kIOSurfacePixelFormat: @(kCVPixelFormatType_32BGRA),
-        (NSString *) kIOSurfaceBytesPerElement: @4,
-    };
-    IOSurfaceRef surface = IOSurfaceCreate((__bridge CFDictionaryRef) surfaceProperties);
+    IOSurfaceRef surface = MDKCreatePrivateCaptureIOSurface(width, height);
     if (surface == nil) {
         if (error != nullptr) {
             *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
@@ -12601,6 +12615,7 @@ static BOOL MDKPopulateSkyLightDisplayStreamProperties(
     double minimumFrameTime,
     NSInteger queueDepth,
     BOOL showCursor,
+    NSString * _Nullable yCbCrMatrix,
     NSMutableDictionary *streamProperties,
     NSUInteger *appliedPropertyCount
 ) {
@@ -12621,12 +12636,547 @@ static BOOL MDKPopulateSkyLightDisplayStreamProperties(
         streamProperties[(__bridge NSString *) showCursorKey] = @(showCursor);
         propertyCount += 1;
     }
+    if (yCbCrMatrix != nil) {
+        if (CFStringRef yCbCrMatrixKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamYCbCrMatrix")) {
+            streamProperties[(__bridge NSString *) yCbCrMatrixKey] = yCbCrMatrix;
+            propertyCount += 1;
+        }
+    }
 
     if (appliedPropertyCount != nullptr) {
         *appliedPropertyCount = propertyCount;
     }
     return propertyCount > 0;
 }
+
+static CGImageRef _Nullable MDKCopyCurrentSystemCursorImage(CGPoint * _Nullable hotSpotOut, CGSize * _Nullable logicalSizeOut) {
+    __block CGImageRef cursorImage = nil;
+    __block CGPoint hotSpot = CGPointZero;
+    __block CGSize logicalSize = CGSizeZero;
+
+    auto fetchCursor = ^{
+        NSCursor *cursor = nil;
+        if ([NSCursor respondsToSelector:@selector(currentSystemCursor)]) {
+            cursor = [NSCursor currentSystemCursor];
+        }
+        if (cursor == nil) {
+            cursor = [NSCursor currentCursor];
+        }
+        if (cursor == nil) {
+            cursor = [NSCursor arrowCursor];
+        }
+
+        NSImage *image = cursor.image;
+        NSRect proposedRect = NSMakeRect(0, 0, image.size.width, image.size.height);
+        CGImageRef cgImage = [image CGImageForProposedRect:&proposedRect context:nil hints:nil];
+        if (cgImage == nil) {
+            return;
+        }
+
+        cursorImage = CGImageRetain(cgImage);
+        hotSpot = cursor.hotSpot;
+        logicalSize = image.size;
+    };
+
+    if ([NSThread isMainThread]) {
+        fetchCursor();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), fetchCursor);
+    }
+
+    if (hotSpotOut != nullptr) {
+        *hotSpotOut = hotSpot;
+    }
+    if (logicalSizeOut != nullptr) {
+        *logicalSizeOut = logicalSize;
+    }
+    return cursorImage;
+}
+
+static BOOL MDKCopyIOSurfaceContents(
+    IOSurfaceRef sourceSurface,
+    IOSurfaceRef destinationSurface
+) {
+    if (sourceSurface == nil || destinationSurface == nil) {
+        return NO;
+    }
+
+    const size_t sourceWidth = IOSurfaceGetWidth(sourceSurface);
+    const size_t sourceHeight = IOSurfaceGetHeight(sourceSurface);
+    const size_t destinationWidth = IOSurfaceGetWidth(destinationSurface);
+    const size_t destinationHeight = IOSurfaceGetHeight(destinationSurface);
+    const size_t rowCount = std::min(sourceHeight, destinationHeight);
+    if (sourceWidth == 0 || sourceHeight == 0 || destinationWidth == 0 || destinationHeight == 0 || rowCount == 0) {
+        return NO;
+    }
+
+    IOSurfaceLock(sourceSurface, kIOSurfaceLockReadOnly, nullptr);
+    IOSurfaceLock(destinationSurface, 0, nullptr);
+
+    const auto *sourceBaseAddress = static_cast<const uint8_t *>(IOSurfaceGetBaseAddress(sourceSurface));
+    auto *destinationBaseAddress = static_cast<uint8_t *>(IOSurfaceGetBaseAddress(destinationSurface));
+    const size_t sourceBytesPerRow = IOSurfaceGetBytesPerRow(sourceSurface);
+    const size_t destinationBytesPerRow = IOSurfaceGetBytesPerRow(destinationSurface);
+    const size_t copyBytesPerRow = std::min(sourceBytesPerRow, destinationBytesPerRow);
+    const BOOL copied = sourceBaseAddress != nullptr &&
+        destinationBaseAddress != nullptr &&
+        copyBytesPerRow > 0;
+    if (copied) {
+        for (size_t row = 0; row < rowCount; row += 1) {
+            memcpy(
+                destinationBaseAddress + (row * destinationBytesPerRow),
+                sourceBaseAddress + (row * sourceBytesPerRow),
+                copyBytesPerRow
+            );
+        }
+    }
+
+    IOSurfaceUnlock(destinationSurface, 0, nullptr);
+    IOSurfaceUnlock(sourceSurface, kIOSurfaceLockReadOnly, nullptr);
+    return copied;
+}
+
+static void MDKOverlayCursorOnIOSurface(
+    IOSurfaceRef surface,
+    CGDirectDisplayID displayID,
+    CGImageRef cursorImage,
+    CGPoint cursorHotSpot,
+    CGSize cursorLogicalSize
+) {
+    if (surface == nil || cursorImage == nil) {
+        return;
+    }
+
+    const CGRect displayBounds = CGDisplayBounds(displayID);
+    if (CGRectIsEmpty(displayBounds)) {
+        return;
+    }
+
+    CGEventRef event = CGEventCreate(nullptr);
+    if (event == nil) {
+        return;
+    }
+    const CGPoint cursorLocation = CGEventGetLocation(event);
+    CFRelease(event);
+
+    if (!CGRectContainsPoint(displayBounds, cursorLocation)) {
+        return;
+    }
+
+    const size_t surfaceWidth = IOSurfaceGetWidth(surface);
+    const size_t surfaceHeight = IOSurfaceGetHeight(surface);
+    if (surfaceWidth == 0 || surfaceHeight == 0) {
+        return;
+    }
+
+    const CGFloat displayScaleX = CGRectGetWidth(displayBounds) > 0.0 ?
+        static_cast<CGFloat>(surfaceWidth) / CGRectGetWidth(displayBounds) :
+        1.0;
+    const CGFloat displayScaleY = CGRectGetHeight(displayBounds) > 0.0 ?
+        static_cast<CGFloat>(surfaceHeight) / CGRectGetHeight(displayBounds) :
+        1.0;
+
+    const CGFloat imageScaleX = cursorLogicalSize.width > 0.0 ?
+        static_cast<CGFloat>(CGImageGetWidth(cursorImage)) / cursorLogicalSize.width :
+        1.0;
+    const CGFloat imageScaleY = cursorLogicalSize.height > 0.0 ?
+        static_cast<CGFloat>(CGImageGetHeight(cursorImage)) / cursorLogicalSize.height :
+        1.0;
+
+    const CGFloat localX = (cursorLocation.x - CGRectGetMinX(displayBounds)) * displayScaleX;
+    const CGFloat localY = (cursorLocation.y - CGRectGetMinY(displayBounds)) * displayScaleY;
+    const CGRect drawRect = CGRectMake(
+        std::floor(localX - cursorHotSpot.x * imageScaleX),
+        std::floor(localY - cursorHotSpot.y * imageScaleY),
+        static_cast<CGFloat>(CGImageGetWidth(cursorImage)),
+        static_cast<CGFloat>(CGImageGetHeight(cursorImage))
+    );
+    const CGRect surfaceRect = CGRectMake(0.0, 0.0, static_cast<CGFloat>(surfaceWidth), static_cast<CGFloat>(surfaceHeight));
+    if (CGRectIsEmpty(CGRectIntersection(drawRect, surfaceRect))) {
+        return;
+    }
+
+    IOSurfaceLock(surface, 0, nullptr);
+    void *baseAddress = IOSurfaceGetBaseAddress(surface);
+    const size_t bytesPerRow = IOSurfaceGetBytesPerRow(surface);
+    if (baseAddress == nullptr || bytesPerRow == 0) {
+        IOSurfaceUnlock(surface, 0, nullptr);
+        return;
+    }
+
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(
+        baseAddress,
+        surfaceWidth,
+        surfaceHeight,
+        8,
+        bytesPerRow,
+        colorSpace,
+        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little
+    );
+    CGColorSpaceRelease(colorSpace);
+
+    if (context == nullptr) {
+        IOSurfaceUnlock(surface, 0, nullptr);
+        return;
+    }
+
+    CGContextSetBlendMode(context, kCGBlendModeNormal);
+    CGContextTranslateCTM(context, 0.0, static_cast<CGFloat>(surfaceHeight));
+    CGContextScaleCTM(context, 1.0, -1.0);
+    CGContextDrawImage(context, drawRect, cursorImage);
+    CGContextRelease(context);
+    IOSurfaceUnlock(surface, 0, nullptr);
+}
+
+@interface MDKShimPrivateDisplayIOSurfaceCaptureSession () {
+    dispatch_source_t _timer;
+    dispatch_queue_t _queue;
+    MDKShimPrivateDisplayIOSurfaceCaptureFrameHandler _frameHandler;
+    std::vector<IOSurfaceRef> _surfaces;
+    std::vector<mach_port_t> _surfacePorts;
+    BOOL _useProxyCapture;
+    NSUInteger _nextSurfaceIndex;
+    std::uint32_t _connectionID;
+    std::uint32_t _optionsBits;
+    MDKPrivateCaptureDisplayIntoIOSurfaceWithOptionsFn _captureSymbol;
+    MDKPrivateCaptureDisplayIntoIOSurfaceProxyFn _proxyCaptureSymbol;
+    NSUInteger _lastCleanSurfaceIndex;
+    CGImageRef _cursorImage;
+    CGPoint _cursorHotSpot;
+    CGSize _cursorLogicalSize;
+    CFAbsoluteTime _nextCursorRefreshDeadline;
+}
+@end
+
+@implementation MDKShimPrivateDisplayIOSurfaceCaptureSession
+
+- (instancetype)initWithDisplayID:(NSUInteger)displayID
+                  targetFrameRate:(NSInteger)targetFrameRate
+             requestExtendedRange:(BOOL)requestExtendedRange
+                  useProxyCapture:(BOOL)useProxyCapture
+                       showCursor:(BOOL)showCursor
+                      outputWidth:(NSUInteger)outputWidth
+                     outputHeight:(NSUInteger)outputHeight
+                     surfaceCount:(NSInteger)surfaceCount
+                     frameHandler:(MDKShimPrivateDisplayIOSurfaceCaptureFrameHandler)frameHandler {
+    self = [super init];
+    if (self == nil) {
+        return nil;
+    }
+
+    _displayID = displayID;
+    _targetFrameRate = std::max<NSInteger>(targetFrameRate, 1);
+    _requestExtendedRange = requestExtendedRange;
+    _useProxyCapture = useProxyCapture;
+    _showCursor = showCursor;
+    _outputWidth = outputWidth;
+    _outputHeight = outputHeight;
+    _surfaceCount = std::max<NSInteger>(surfaceCount, 1);
+    _frameHandler = [frameHandler copy];
+    dispatch_queue_attr_t queueAttributes = dispatch_queue_attr_make_with_qos_class(
+        DISPATCH_QUEUE_SERIAL,
+        QOS_CLASS_USER_INTERACTIVE,
+        0
+    );
+    _queue = dispatch_queue_create("com.skyline23.MacDisplayKit.private.display-iosurface.session", queueAttributes);
+    _nextSurfaceIndex = 0;
+    _lastCleanSurfaceIndex = NSNotFound;
+    _connectionID = MDKMainConnectionID();
+    _optionsBits = requestExtendedRange ? MDKPrivateCaptureExtendedRangeBit : 0;
+    _captureSymbol = MDKPrivateCaptureDisplayIntoIOSurfaceWithOptionsSymbol();
+    _proxyCaptureSymbol = reinterpret_cast<MDKPrivateCaptureDisplayIntoIOSurfaceProxyFn>(
+        MDKLookupScreenCaptureKitSymbol("SLSHWCaptureDisplayIntoIOSurfaceProxying")
+    );
+    return self;
+}
+
+- (void)dealloc {
+    [self stop];
+    [self destroySurfaceRing];
+    if (_cursorImage != nil) {
+        CGImageRelease(_cursorImage);
+        _cursorImage = nil;
+    }
+}
+
+- (void)destroySurfaceRing {
+    for (mach_port_t port : _surfacePorts) {
+        if (port != MACH_PORT_NULL) {
+            mach_port_deallocate(mach_task_self(), port);
+        }
+    }
+    _surfacePorts.clear();
+    for (IOSurfaceRef surface : _surfaces) {
+        if (surface != nil) {
+            CFRelease(surface);
+        }
+    }
+    _surfaces.clear();
+    _nextSurfaceIndex = 0;
+    _lastCleanSurfaceIndex = NSNotFound;
+}
+
+- (BOOL)prepareSurfaceRingWithWidth:(size_t)width
+                             height:(size_t)height
+                              error:(NSError * _Nullable * _Nullable)error {
+    [self destroySurfaceRing];
+
+    for (NSInteger index = 0; index < _surfaceCount; index += 1) {
+        IOSurfaceRef surface = MDKCreatePrivateCaptureIOSurface(width, height);
+        if (surface == nil) {
+            [self destroySurfaceRing];
+            if (error != nullptr) {
+                *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                             code:3
+                                         userInfo:@{
+                                             NSLocalizedDescriptionKey: @"Failed to allocate an IOSurface for the private direct capture session."
+                                         }];
+            }
+            return NO;
+        }
+        _surfaces.push_back(surface);
+        if (_useProxyCapture) {
+            mach_port_t surfacePort = IOSurfaceCreateMachPort(surface);
+            if (surfacePort == MACH_PORT_NULL) {
+                [self destroySurfaceRing];
+                if (error != nullptr) {
+                    *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                                 code:4
+                                             userInfo:@{
+                                                 NSLocalizedDescriptionKey: @"Failed to create a mach port for the private proxy IOSurface capture session."
+                                             }];
+                }
+                return NO;
+            }
+            _surfacePorts.push_back(surfacePort);
+        }
+    }
+
+    std::uint32_t captureValue = 0;
+    BOOL proxiedFrameAvailable = NO;
+    const int warmupStatus = _useProxyCapture
+        ? _proxyCaptureSymbol(
+            _connectionID,
+            static_cast<std::uint32_t>(_displayID),
+            _optionsBits,
+            _surfacePorts.front(),
+            &captureValue,
+            &proxiedFrameAvailable
+        )
+        : _captureSymbol(
+            _connectionID,
+            static_cast<std::uint32_t>(_displayID),
+            _optionsBits,
+            _surfaces.front(),
+            &captureValue
+        );
+    if (warmupStatus == 0) {
+        return YES;
+    }
+
+    [self destroySurfaceRing];
+    if (error != nullptr) {
+        *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                     code:warmupStatus
+                                 userInfo:@{
+                                     NSLocalizedDescriptionKey: @"The private direct IOSurface capture session warmup call returned a non-zero status."
+                                 }];
+    }
+    return NO;
+}
+
+- (BOOL)prepareSurfaceRing:(NSError * _Nullable * _Nullable)error {
+    size_t resolvedWidth = std::max(static_cast<size_t>(_outputWidth), static_cast<size_t>(0));
+    size_t resolvedHeight = std::max(static_cast<size_t>(_outputHeight), static_cast<size_t>(0));
+    if (resolvedWidth > 0 && resolvedHeight > 0) {
+        if ([self prepareSurfaceRingWithWidth:resolvedWidth height:resolvedHeight error:error]) {
+            return YES;
+        }
+        return NO;
+    }
+
+    size_t fallbackWidth = 0;
+    size_t fallbackHeight = 0;
+    if (MDKResolveDisplayModeSize(_displayID, &fallbackWidth, &fallbackHeight)) {
+        if ([self prepareSurfaceRingWithWidth:fallbackWidth height:fallbackHeight error:error]) {
+            return YES;
+        }
+        return NO;
+    }
+
+    if (error != nullptr) {
+        *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                     code:2
+                                 userInfo:@{
+                                     NSLocalizedDescriptionKey: @"Unable to resolve a working private direct capture surface size."
+                                 }];
+    }
+    return NO;
+}
+
+- (BOOL)start:(NSError * _Nullable * _Nullable)error {
+    if (_timer != nil) {
+        _running = YES;
+        return YES;
+    }
+
+    if ((!_useProxyCapture && _captureSymbol == nullptr) ||
+        (_useProxyCapture && _proxyCaptureSymbol == nullptr)) {
+        if (error != nullptr) {
+            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                         code:1
+                                     userInfo:@{
+                                         NSLocalizedDescriptionKey: _useProxyCapture
+                                             ? @"SLSHWCaptureDisplayIntoIOSurfaceProxying is unavailable."
+                                             : @"CGSHWCaptureDisplayIntoIOSurfaceWithOptions is unavailable."
+                                     }];
+        }
+        return NO;
+    }
+
+    if (_surfaces.empty() && ![self prepareSurfaceRing:error]) {
+        return NO;
+    }
+
+    const uint64_t frameIntervalNanoseconds =
+        static_cast<uint64_t>(NSEC_PER_SEC / static_cast<uint64_t>(std::max<NSInteger>(_targetFrameRate, 1)));
+    const uint64_t leewayNanoseconds = std::min<uint64_t>(frameIntervalNanoseconds / 40, 250000ULL);
+
+    __weak MDKShimPrivateDisplayIOSurfaceCaptureSession *weakSelf = self;
+    _timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _queue);
+    dispatch_source_set_timer(
+        _timer,
+        dispatch_time(DISPATCH_TIME_NOW, 0),
+        frameIntervalNanoseconds,
+        leewayNanoseconds
+    );
+    dispatch_source_set_event_handler(_timer, ^{
+        MDKShimPrivateDisplayIOSurfaceCaptureSession *strongSelf = weakSelf;
+        if (strongSelf == nil ||
+            strongSelf->_frameHandler == nil ||
+            (!strongSelf->_useProxyCapture && strongSelf->_captureSymbol == nullptr) ||
+            (strongSelf->_useProxyCapture && strongSelf->_proxyCaptureSymbol == nullptr) ||
+            strongSelf->_surfaces.empty()) {
+            return;
+        }
+
+        const NSUInteger previousCleanSurfaceIndex = strongSelf->_lastCleanSurfaceIndex;
+        NSUInteger captureSurfaceIndex = strongSelf->_nextSurfaceIndex;
+        if (strongSelf->_surfaces.size() > 1 &&
+            previousCleanSurfaceIndex != NSNotFound &&
+            captureSurfaceIndex == previousCleanSurfaceIndex) {
+            captureSurfaceIndex = (captureSurfaceIndex + 1) % strongSelf->_surfaces.size();
+        }
+        IOSurfaceRef captureSurface = strongSelf->_surfaces[captureSurfaceIndex];
+        mach_port_t surfacePort = MACH_PORT_NULL;
+        if (strongSelf->_useProxyCapture && captureSurfaceIndex < strongSelf->_surfacePorts.size()) {
+            surfacePort = strongSelf->_surfacePorts[captureSurfaceIndex];
+        }
+        strongSelf->_nextSurfaceIndex = (captureSurfaceIndex + 1) % strongSelf->_surfaces.size();
+
+        std::uint32_t captureValue = 0;
+        BOOL proxiedFrameAvailable = NO;
+        const int status = strongSelf->_useProxyCapture
+            ? strongSelf->_proxyCaptureSymbol(
+                strongSelf->_connectionID,
+                static_cast<std::uint32_t>(strongSelf->_displayID),
+                strongSelf->_optionsBits,
+                surfacePort,
+                &captureValue,
+                &proxiedFrameAvailable
+            )
+            : strongSelf->_captureSymbol(
+                strongSelf->_connectionID,
+                static_cast<std::uint32_t>(strongSelf->_displayID),
+                strongSelf->_optionsBits,
+                captureSurface,
+                &captureValue
+            );
+        const BOOL captureSucceeded = status == 0 && (!strongSelf->_useProxyCapture || proxiedFrameAvailable);
+        if (captureSucceeded) {
+            strongSelf->_lastCleanSurfaceIndex = captureSurfaceIndex;
+        }
+
+        IOSurfaceRef baseSurface = nil;
+        if (captureSucceeded) {
+            baseSurface = captureSurface;
+        } else if (previousCleanSurfaceIndex != NSNotFound &&
+                   previousCleanSurfaceIndex < strongSelf->_surfaces.size()) {
+            baseSurface = strongSelf->_surfaces[previousCleanSurfaceIndex];
+        }
+
+        IOSurfaceRef emittedSurface = baseSurface;
+        if (baseSurface != nil) {
+            BOOL requiresCompositeSurface = strongSelf->_showCursor ||
+                (!captureSucceeded && previousCleanSurfaceIndex != NSNotFound);
+            if (requiresCompositeSurface && strongSelf->_surfaces.size() > 1) {
+                NSUInteger compositeSurfaceIndex = strongSelf->_nextSurfaceIndex;
+                while ((compositeSurfaceIndex == captureSurfaceIndex ||
+                        compositeSurfaceIndex == previousCleanSurfaceIndex ||
+                        compositeSurfaceIndex == strongSelf->_lastCleanSurfaceIndex) &&
+                       strongSelf->_surfaces.size() > 1) {
+                    compositeSurfaceIndex = (compositeSurfaceIndex + 1) % strongSelf->_surfaces.size();
+                    if (compositeSurfaceIndex == strongSelf->_nextSurfaceIndex) {
+                        compositeSurfaceIndex = NSNotFound;
+                        break;
+                    }
+                }
+                if (compositeSurfaceIndex != NSNotFound) {
+                    IOSurfaceRef compositeSurface = strongSelf->_surfaces[compositeSurfaceIndex];
+                    if (MDKCopyIOSurfaceContents(baseSurface, compositeSurface)) {
+                        emittedSurface = compositeSurface;
+                        strongSelf->_nextSurfaceIndex = (compositeSurfaceIndex + 1) % strongSelf->_surfaces.size();
+                    }
+                }
+            }
+        }
+
+        if (emittedSurface != nil && strongSelf->_showCursor) {
+            const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+            if (strongSelf->_cursorImage == nil || now >= strongSelf->_nextCursorRefreshDeadline) {
+                CGPoint hotSpot = CGPointZero;
+                CGSize logicalSize = CGSizeZero;
+                CGImageRef refreshedCursor = MDKCopyCurrentSystemCursorImage(&hotSpot, &logicalSize);
+                if (refreshedCursor != nil) {
+                    if (strongSelf->_cursorImage != nil) {
+                        CGImageRelease(strongSelf->_cursorImage);
+                    }
+                    strongSelf->_cursorImage = refreshedCursor;
+                    strongSelf->_cursorHotSpot = hotSpot;
+                    strongSelf->_cursorLogicalSize = logicalSize;
+                }
+                strongSelf->_nextCursorRefreshDeadline = now + 0.1;
+            }
+
+            MDKOverlayCursorOnIOSurface(
+                emittedSurface,
+                static_cast<CGDirectDisplayID>(strongSelf->_displayID),
+                strongSelf->_cursorImage,
+                strongSelf->_cursorHotSpot,
+                strongSelf->_cursorLogicalSize
+            );
+        }
+        const std::uint64_t displayTime = mach_absolute_time();
+        strongSelf->_frameHandler(emittedSurface != nil ? 0 : status, displayTime, emittedSurface);
+    });
+    dispatch_resume(_timer);
+    _running = YES;
+    return YES;
+}
+
+- (int32_t)stop {
+    if (_timer != nil) {
+        dispatch_source_cancel(_timer);
+        dispatch_sync(_queue, ^{
+        });
+        _timer = nil;
+    }
+    _running = NO;
+    return 0;
+}
+
+@end
 
 @interface MDKShimSkyLightDisplayStreamSession () {
     CGDisplayStreamRef _stream;
@@ -12644,6 +13194,7 @@ static BOOL MDKPopulateSkyLightDisplayStreamProperties(
                       outputWidth:(NSUInteger)outputWidth
                      outputHeight:(NSUInteger)outputHeight
                       pixelFormat:(uint32_t)pixelFormat
+                      yCbCrMatrix:(NSString * _Nullable)yCbCrMatrix
                      frameHandler:(MDKShimSkyLightDisplayStreamFrameHandler)frameHandler {
     self = [super init];
     if (self == nil) {
@@ -12657,6 +13208,7 @@ static BOOL MDKPopulateSkyLightDisplayStreamProperties(
     _outputWidth = outputWidth;
     _outputHeight = outputHeight;
     _pixelFormat = pixelFormat;
+    _yCbCrMatrix = [yCbCrMatrix copy];
     _frameHandler = [frameHandler copy];
     _queue = dispatch_queue_create("com.skyline23.MacDisplayKit.skylight.displaystream.session", DISPATCH_QUEUE_SERIAL);
     return self;
@@ -12716,7 +13268,14 @@ static BOOL MDKPopulateSkyLightDisplayStreamProperties(
     }
 
     NSMutableDictionary *streamProperties = [NSMutableDictionary dictionary];
-    MDKPopulateSkyLightDisplayStreamProperties(_minimumFrameTime, _queueDepth, _showCursor, streamProperties, nullptr);
+    MDKPopulateSkyLightDisplayStreamProperties(
+        _minimumFrameTime,
+        _queueDepth,
+        _showCursor,
+        _yCbCrMatrix,
+        streamProperties,
+        nullptr
+    );
     const CFDictionaryRef streamPropertiesRef =
         streamProperties.count > 0 ? (__bridge CFDictionaryRef) streamProperties : nil;
 
@@ -12850,6 +13409,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
         requestedMinimumFrameTime,
         requestedQueueDepth,
         requestedShowCursor,
+        nil,
         streamProperties,
         &appliedPropertyCount
     );

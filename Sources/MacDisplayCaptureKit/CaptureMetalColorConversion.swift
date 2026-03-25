@@ -56,6 +56,12 @@ private struct MDKMetalYCbCrTargetDescription {
     let chromaOffset: Float
 }
 
+private struct MDKMetalYCbCrCoefficientSet {
+    let yCoefficients: SIMD4<Float>
+    let cbCoefficients: SIMD4<Float>
+    let crCoefficients: SIMD4<Float>
+}
+
 final class MDKMetalBGRAToYCbCrConverter {
     private let device: any MTLDevice
     private let lumaPipeline: any MTLComputePipelineState
@@ -88,7 +94,8 @@ final class MDKMetalBGRAToYCbCrConverter {
         commandBuffer: any MTLCommandBuffer,
         sourceTextures: [MTLTexture],
         destinationTextures: [MTLTexture],
-        destinationPixelFormat: UInt32
+        destinationPixelFormat: UInt32,
+        hdrConfiguration: MDKVideoHDRConfiguration? = nil
     ) throws {
         guard sourceTextures.count == 1,
               destinationTextures.count == 2 else {
@@ -98,7 +105,10 @@ final class MDKMetalBGRAToYCbCrConverter {
             throw MDKMetalColorConversionError.unsupportedSourcePixelFormat(kCVPixelFormatType_32BGRA)
         }
 
-        let target = try Self.targetDescription(for: destinationPixelFormat)
+        let target = try Self.targetDescription(
+            for: destinationPixelFormat,
+            hdrConfiguration: hdrConfiguration
+        )
         var parameters = MDKMetalYCbCrConversionParameters(
             sourceSize: SIMD2(UInt32(sourceTextures[0].width), UInt32(sourceTextures[0].height)),
             destinationLumaSize: SIMD2(UInt32(destinationTextures[0].width), UInt32(destinationTextures[0].height)),
@@ -159,7 +169,7 @@ final class MDKMetalBGRAToYCbCrConverter {
         encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
     }
 
-    private static func targetDescription(for pixelFormat: UInt32) throws -> MDKMetalYCbCrTargetDescription {
+    private static func defaultTargetDescription(for pixelFormat: UInt32) throws -> MDKMetalYCbCrTargetDescription {
         switch pixelFormat {
         case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
             return MDKMetalYCbCrTargetDescription(
@@ -259,6 +269,46 @@ final class MDKMetalBGRAToYCbCrConverter {
             )
         default:
             throw MDKMetalColorConversionError.unsupportedDestinationPixelFormat(pixelFormat)
+        }
+    }
+
+    private static func targetDescription(
+        for pixelFormat: UInt32,
+        hdrConfiguration: MDKVideoHDRConfiguration?
+    ) throws -> MDKMetalYCbCrTargetDescription {
+        let target = try defaultTargetDescription(for: pixelFormat)
+        guard let hdrConfiguration else {
+            return target
+        }
+
+        let coefficients = coefficients(for: hdrConfiguration.yCbCrMatrix)
+        return MDKMetalYCbCrTargetDescription(
+            pixelFormat: target.pixelFormat,
+            chromaSubsampling: target.chromaSubsampling,
+            yCoefficients: coefficients.yCoefficients,
+            cbCoefficients: coefficients.cbCoefficients,
+            crCoefficients: coefficients.crCoefficients,
+            lumaScale: target.lumaScale,
+            lumaOffset: target.lumaOffset,
+            chromaScale: target.chromaScale,
+            chromaOffset: target.chromaOffset
+        )
+    }
+
+    private static func coefficients(for matrix: MDKVideoYCbCrMatrix) -> MDKMetalYCbCrCoefficientSet {
+        switch matrix {
+        case .ituR709:
+            return MDKMetalYCbCrCoefficientSet(
+                yCoefficients: SIMD4(0.2126, 0.7152, 0.0722, 0),
+                cbCoefficients: SIMD4(-0.114572, -0.385428, 0.5, 0.5),
+                crCoefficients: SIMD4(0.5, -0.454153, -0.045847, 0.5)
+            )
+        case .ituR2020:
+            return MDKMetalYCbCrCoefficientSet(
+                yCoefficients: SIMD4(0.2627, 0.6780, 0.0593, 0),
+                cbCoefficients: SIMD4(-0.13963, -0.36037, 0.5, 0.5),
+                crCoefficients: SIMD4(0.5, -0.459786, -0.040214, 0.5)
+            )
         }
     }
 

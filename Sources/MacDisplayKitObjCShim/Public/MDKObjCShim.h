@@ -10,6 +10,12 @@ typedef void (^MDKShimSkyLightDisplayStreamFrameHandler)(
     IOSurfaceRef _Nullable frameSurface
 );
 
+typedef void (^MDKShimPrivateDisplayIOSurfaceCaptureFrameHandler)(
+    int32_t status,
+    uint64_t displayTime,
+    IOSurfaceRef _Nullable frameSurface
+);
+
 @interface MDKShimSkyLightDisplayStreamSession : NSObject
 
 - (instancetype)init NS_UNAVAILABLE;
@@ -22,6 +28,7 @@ typedef void (^MDKShimSkyLightDisplayStreamFrameHandler)(
                       outputWidth:(NSUInteger)outputWidth
                      outputHeight:(NSUInteger)outputHeight
                       pixelFormat:(uint32_t)pixelFormat
+                      yCbCrMatrix:(NSString * _Nullable)yCbCrMatrix
                      frameHandler:(MDKShimSkyLightDisplayStreamFrameHandler)frameHandler NS_DESIGNATED_INITIALIZER;
 
 @property (nonatomic, readonly) NSUInteger displayID;
@@ -31,6 +38,37 @@ typedef void (^MDKShimSkyLightDisplayStreamFrameHandler)(
 @property (nonatomic, readonly) NSUInteger outputWidth;
 @property (nonatomic, readonly) NSUInteger outputHeight;
 @property (nonatomic, readonly) uint32_t pixelFormat;
+@property (nonatomic, readonly, nullable) NSString *yCbCrMatrix;
+@property (nonatomic, readonly, getter=isRunning) BOOL running;
+
+- (BOOL)start:(NSError * _Nullable * _Nullable)error;
+- (int32_t)stop;
+
+@end
+
+@interface MDKShimPrivateDisplayIOSurfaceCaptureSession : NSObject
+
+- (instancetype)init NS_UNAVAILABLE;
++ (instancetype)new NS_UNAVAILABLE;
+
+- (instancetype)initWithDisplayID:(NSUInteger)displayID
+                  targetFrameRate:(NSInteger)targetFrameRate
+             requestExtendedRange:(BOOL)requestExtendedRange
+                  useProxyCapture:(BOOL)useProxyCapture
+                       showCursor:(BOOL)showCursor
+                      outputWidth:(NSUInteger)outputWidth
+                     outputHeight:(NSUInteger)outputHeight
+                     surfaceCount:(NSInteger)surfaceCount
+                     frameHandler:(MDKShimPrivateDisplayIOSurfaceCaptureFrameHandler)frameHandler NS_DESIGNATED_INITIALIZER;
+
+@property (nonatomic, readonly) NSUInteger displayID;
+@property (nonatomic, readonly) NSInteger targetFrameRate;
+@property (nonatomic, readonly) BOOL requestExtendedRange;
+@property (nonatomic, readonly) BOOL useProxyCapture;
+@property (nonatomic, readonly) BOOL showCursor;
+@property (nonatomic, readonly) NSUInteger outputWidth;
+@property (nonatomic, readonly) NSUInteger outputHeight;
+@property (nonatomic, readonly) NSInteger surfaceCount;
 @property (nonatomic, readonly, getter=isRunning) BOOL running;
 
 - (BOOL)start:(NSError * _Nullable * _Nullable)error;

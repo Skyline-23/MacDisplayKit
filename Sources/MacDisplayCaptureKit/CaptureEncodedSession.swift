@@ -1,19 +1,37 @@
+import CoreVideo
 import Foundation
 import MacDisplayKitObjCShim
 
+enum MDKEncodedCaptureSourceBackend: String, Sendable {
+    case privateDirectIOSurface = "private-direct-iosurface"
+    case privateProxyIOSurface = "private-proxy-iosurface"
+    case skyLightDisplayStream = "skylight-display-stream"
+}
+
 protocol MDKEncodedCaptureSourceRuntime: AnyObject, Sendable {
+    var runtimeDescription: String { get }
     func start() throws
     func stop() -> Int32
 }
 
+struct MDKEncodedCaptureSourcePreparation: Sendable {
+    let recommendedPendingFrameCount: Int
+    let diagnosticNotes: [String]
+    let skyLightTuningSelection: MDKSkyLightDisplayStreamAutotuningSelection?
+}
+
 protocol MDKEncodedCaptureProcessorRuntime: AnyObject, Sendable {
-    func process(frame: MDKCaptureFrame) throws
+    func process(
+        frame: MDKCaptureFrame,
+        releaseSourceFrame: @escaping @Sendable () -> Void
+    ) throws
     func finalize() -> MDKCaptureFrameProcessingSummary?
     func liveSummary() -> MDKCaptureFrameProcessingSummary?
 }
 
 typealias MDKEncodedCaptureSourceFactory = @Sendable (
     MDKEncodedCaptureConfiguration,
+    MDKEncodedCaptureSourcePreparation,
     @escaping @Sendable (MDKCaptureFrame) -> Void
 ) -> any MDKEncodedCaptureSourceRuntime
 
@@ -23,21 +41,36 @@ typealias MDKEncodedCaptureProcessorFactory = @Sendable (
     @escaping @Sendable (String) -> Void
 ) -> any MDKEncodedCaptureProcessorRuntime
 
-private final class MDKShimEncodedCaptureSourceRuntime: MDKEncodedCaptureSourceRuntime, @unchecked Sendable {
+private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSourceRuntime, @unchecked Sendable {
     private let shimSession: MDKShimSkyLightDisplayStreamSession
+    private let tuningSelection: MDKSkyLightDisplayStreamAutotuningSelection?
+
+    var runtimeDescription: String {
+        guard let tuningSelection else {
+            return MDKEncodedCaptureSourceBackend.skyLightDisplayStream.rawValue
+        }
+
+        return "\(MDKEncodedCaptureSourceBackend.skyLightDisplayStream.rawValue)[candidate=\(tuningSelection.candidate.identifier),queueDepth=\(tuningSelection.candidate.queueDepth),minimumFrameTime=\(String(format: "%.6f", tuningSelection.candidate.minimumFrameTime))]"
+    }
 
     init(
         configuration: MDKEncodedCaptureConfiguration,
+        tuningSelection: MDKSkyLightDisplayStreamAutotuningSelection?,
         frameHandler: @escaping @Sendable (MDKCaptureFrame) -> Void
     ) {
+        self.tuningSelection = tuningSelection
+        let tunedQueueDepth = tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth
+        let tunedMinimumFrameTime = tuningSelection?.candidate.minimumFrameTime ?? 0
+        let tunedShowCursor = tuningSelection?.candidate.showCursor ?? configuration.streamConfiguration.resolvedShowCursor
         self.shimSession = MDKShimSkyLightDisplayStreamSession(
             displayID: UInt(configuration.displayID),
-            minimumFrameTime: 0,
-            queueDepth: configuration.streamConfiguration.resolvedQueueDepth,
-            showCursor: configuration.streamConfiguration.resolvedShowCursor,
+            minimumFrameTime: tunedMinimumFrameTime,
+            queueDepth: tunedQueueDepth,
+            showCursor: tunedShowCursor,
             outputWidth: UInt(configuration.streamConfiguration.resolvedOutputWidth),
             outputHeight: UInt(configuration.streamConfiguration.resolvedOutputHeight),
-            pixelFormat: configuration.resolvedCapturePixelFormat
+            pixelFormat: configuration.resolvedCapturePixelFormat,
+            yCbCrMatrix: configuration.resolvedSkyLightDisplayStreamYCbCrMatrix.map { $0.imageBufferValue as String }
         ) { status, displayTime, frameSurface in
             guard status == .frameComplete, let frameSurface else {
                 return
@@ -67,6 +100,83 @@ private final class MDKShimEncodedCaptureSourceRuntime: MDKEncodedCaptureSourceR
     }
 }
 
+private final class MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime: MDKEncodedCaptureSourceRuntime, @unchecked Sendable {
+    private let shimSession: MDKShimPrivateDisplayIOSurfaceCaptureSession
+    private let sourceBackend: MDKEncodedCaptureSourceBackend
+
+    var runtimeDescription: String {
+        sourceBackend.rawValue
+    }
+
+    init(
+        configuration: MDKEncodedCaptureConfiguration,
+        frameHandler: @escaping @Sendable (MDKCaptureFrame) -> Void
+    ) {
+        self.sourceBackend = configuration.resolvedSourceBackend
+        let requestExtendedRange = configuration.resolvedEncodedHDRConfiguration.map {
+            $0.transferFunction != .ituR709
+        } ?? false
+        self.shimSession = MDKShimPrivateDisplayIOSurfaceCaptureSession(
+            displayID: UInt(configuration.displayID),
+            targetFrameRate: configuration.targetFrameRate,
+            requestExtendedRange: requestExtendedRange,
+            useProxyCapture: sourceBackend == .privateProxyIOSurface,
+            showCursor: configuration.streamConfiguration.resolvedShowCursor,
+            outputWidth: UInt(configuration.streamConfiguration.resolvedOutputWidth),
+            outputHeight: UInt(configuration.streamConfiguration.resolvedOutputHeight),
+            surfaceCount: configuration.resolvedPrivateCaptureSurfaceCount
+        ) { status, displayTime, frameSurface in
+            guard status == 0, let frameSurface else {
+                return
+            }
+
+            let captureSurface = MDKCaptureSurface(ioSurface: frameSurface)
+            frameHandler(
+                MDKCaptureFrame(
+                    sequenceNumber: displayTime,
+                    displayTime: displayTime,
+                    surfaceID: captureSurface.id,
+                    width: captureSurface.width,
+                    height: captureSurface.height,
+                    pixelFormat: captureSurface.pixelFormat,
+                    surface: captureSurface
+                )
+            )
+        }
+    }
+
+    func start() throws {
+        try shimSession.start()
+    }
+
+    func stop() -> Int32 {
+        shimSession.stop()
+    }
+}
+
+// Safety: all mutable state is protected by `lock`, and callers only interact through
+// value-free acquire/release operations that do not expose shared mutable storage.
+private final class MDKEncodedCapturePendingFrameTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func tryAcquire(limit: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard count < limit else {
+            return false
+        }
+        count += 1
+        return true
+    }
+
+    func releaseOne() {
+        lock.lock()
+        count = max(count - 1, 0)
+        lock.unlock()
+    }
+}
+
 extension MDKVideoToolboxEncodingProcessor: MDKEncodedCaptureProcessorRuntime {}
 
 public struct MDKEncodedCaptureSessionStatistics: Codable, Equatable, Sendable {
@@ -77,6 +187,9 @@ public struct MDKEncodedCaptureSessionStatistics: Codable, Equatable, Sendable {
     public let lastErrorDescription: String?
     public let lastStopStatus: Int32?
     public let isRunning: Bool
+    public let minOutputCallbackLatencyMilliseconds: Double?
+    public let maxOutputCallbackLatencyMilliseconds: Double?
+    public let notes: [String]
 
     public init(
         emittedFrameCount: UInt64 = 0,
@@ -85,7 +198,10 @@ public struct MDKEncodedCaptureSessionStatistics: Codable, Equatable, Sendable {
         automaticRestartCount: UInt64 = 0,
         lastErrorDescription: String? = nil,
         lastStopStatus: Int32? = nil,
-        isRunning: Bool = false
+        isRunning: Bool = false,
+        minOutputCallbackLatencyMilliseconds: Double? = nil,
+        maxOutputCallbackLatencyMilliseconds: Double? = nil,
+        notes: [String] = []
     ) {
         self.emittedFrameCount = emittedFrameCount
         self.droppedFrameCount = droppedFrameCount
@@ -94,6 +210,9 @@ public struct MDKEncodedCaptureSessionStatistics: Codable, Equatable, Sendable {
         self.lastErrorDescription = lastErrorDescription
         self.lastStopStatus = lastStopStatus
         self.isRunning = isRunning
+        self.minOutputCallbackLatencyMilliseconds = minOutputCallbackLatencyMilliseconds
+        self.maxOutputCallbackLatencyMilliseconds = maxOutputCallbackLatencyMilliseconds
+        self.notes = notes
     }
 }
 
@@ -191,25 +310,36 @@ public actor MDKEncodedCaptureSession {
     private var eventContinuations: [UInt64: AsyncStream<MDKEncodedCaptureSessionEvent>.Continuation] = [:]
     private var callbacks: MDKEncodedCaptureCallbacks?
     private var statistics = MDKEncodedCaptureSessionStatistics()
+    private var runtimeDiagnosticNotes: [String] = []
     private var scheduledRestartTask: Task<Void, Never>?
     private var scheduledRestartGeneration: UInt64?
 
     public init(configuration: MDKEncodedCaptureConfiguration) {
         self.configuration = configuration
-        self.sourceFactory = { configuration, frameHandler in
-            MDKShimEncodedCaptureSourceRuntime(
-                configuration: configuration,
-                frameHandler: frameHandler
-            )
+        self.sourceFactory = { configuration, preparation, frameHandler in
+            switch configuration.resolvedSourceBackend {
+            case .privateProxyIOSurface, .privateDirectIOSurface:
+                return MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime(
+                    configuration: configuration,
+                    frameHandler: frameHandler
+                )
+            case .skyLightDisplayStream:
+                return MDKSkyLightEncodedCaptureSourceRuntime(
+                    configuration: configuration,
+                    tuningSelection: preparation.skyLightTuningSelection,
+                    frameHandler: frameHandler
+                )
+            }
         }
         self.processorFactory = { configuration, outputHandler, failureHandler in
             MDKVideoToolboxEncodingProcessor(
                 codec: configuration.codec,
                 preprocessStrategy: configuration.preprocessStrategy,
                 targetFrameRate: configuration.targetFrameRate,
+                encoderInputStrategy: configuration.resolvedEncoderInputStrategy,
                 outputHandler: outputHandler,
                 failureHandler: failureHandler,
-                hdrConfiguration: configuration.hdrConfiguration
+                hdrConfiguration: configuration.resolvedEncodedHDRConfiguration
             )
         }
     }
@@ -222,6 +352,29 @@ public actor MDKEncodedCaptureSession {
         self.configuration = configuration
         self.sourceFactory = sourceFactory
         self.processorFactory = processorFactory
+    }
+
+    private static func makeSourcePreparation(
+        for configuration: MDKEncodedCaptureConfiguration
+    ) async -> MDKEncodedCaptureSourcePreparation {
+        switch configuration.resolvedSourceBackend {
+        case .privateDirectIOSurface, .privateProxyIOSurface:
+            return MDKEncodedCaptureSourcePreparation(
+                recommendedPendingFrameCount: max(configuration.resolvedPrivateCaptureSurfaceCount - 1, 1),
+                diagnosticNotes: [],
+                skyLightTuningSelection: nil
+            )
+        case .skyLightDisplayStream:
+            let tuningSelection = await MDKSkyLightDisplayStreamAutotuner.shared.resolveSelection(for: configuration)
+            return MDKEncodedCaptureSourcePreparation(
+                recommendedPendingFrameCount: max(
+                    tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth,
+                    1
+                ),
+                diagnosticNotes: tuningSelection?.notes ?? [],
+                skyLightTuningSelection: tuningSelection
+            )
+        }
     }
 
     public func frames() -> AsyncThrowingStream<MDKEncodedFrame, Error> {
@@ -295,19 +448,19 @@ public actor MDKEncodedCaptureSession {
         return stream
     }
 
-    public func start() throws {
-        try start(callbacks: callbacks)
+    public func start() async throws {
+        try await start(callbacks: callbacks)
     }
 
-    public func start(callbacks: MDKEncodedCaptureCallbacks) throws {
-        try start(callbacks: Optional(callbacks))
+    public func start(callbacks: MDKEncodedCaptureCallbacks) async throws {
+        try await start(callbacks: Optional(callbacks))
     }
 
     public func installCallbacks(_ callbacks: MDKEncodedCaptureCallbacks?) {
         self.callbacks = callbacks
     }
 
-    private func start(callbacks: MDKEncodedCaptureCallbacks?) throws {
+    private func start(callbacks: MDKEncodedCaptureCallbacks?) async throws {
         guard runtime == nil else {
             throw MDKEncodedCaptureSessionError.alreadyRunning
         }
@@ -319,6 +472,14 @@ public actor MDKEncodedCaptureSession {
         runtimeGeneration &+= 1
         let currentRuntimeGeneration = runtimeGeneration
         let callbackOnlyDelivery = configuration.deliveryMode == .callbackOnly && callbacks != nil
+        let processingQueue = DispatchQueue(
+            label: "com.skyline23.MacDisplayKit.encoded-capture.processing",
+            qos: .userInteractive,
+            attributes: .concurrent
+        )
+        let pendingFrameTracker = MDKEncodedCapturePendingFrameTracker()
+        let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
+        let maximumPendingFrameCount = sourcePreparation.recommendedPendingFrameCount
 
         let outputHandler: @Sendable (MDKEncodedFrame) -> Void = { [weak self] encodedFrame in
             guard let self else {
@@ -346,20 +507,36 @@ public actor MDKEncodedCaptureSession {
         }
 
         let processor = processorFactory(configuration, outputHandler, failureHandler)
-        let source = sourceFactory(configuration) { [weak self, weak processor] frame in
+        let source = sourceFactory(configuration, sourcePreparation) { [weak self, weak processor] frame in
             guard let self, let processor else {
                 return
             }
 
-            do {
-                try processor.process(frame: frame)
-            } catch {
-                let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
-                    await self.handleProcessingFailure(description, runtimeGeneration: currentRuntimeGeneration)
+                    await self.handleSourceFrameDropped(
+                        sourceDisplayTime: frame.displayTime,
+                        runtimeGeneration: currentRuntimeGeneration
+                    )
+                }
+                return
+            }
+
+            processingQueue.async {
+                do {
+                    try processor.process(frame: frame) {
+                        pendingFrameTracker.releaseOne()
+                    }
+                } catch {
+                    pendingFrameTracker.releaseOne()
+                    let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                    Task {
+                        await self.handleProcessingFailure(description, runtimeGeneration: currentRuntimeGeneration)
+                    }
                 }
             }
         }
+        runtimeDiagnosticNotes = sourcePreparation.diagnosticNotes
 
         do {
             try source.start()
@@ -381,12 +558,18 @@ public actor MDKEncodedCaptureSession {
             emittedFrameCount: statistics.emittedFrameCount,
             droppedFrameCount: statistics.droppedFrameCount,
             processingFailureCount: statistics.processingFailureCount,
-            automaticRestartCount: statistics.automaticRestartCount,
-            lastErrorDescription: statistics.lastErrorDescription,
-            lastStopStatus: nil,
-            isRunning: true
+                automaticRestartCount: statistics.automaticRestartCount,
+                lastErrorDescription: statistics.lastErrorDescription,
+                lastStopStatus: nil,
+                isRunning: true,
+                notes: mergedRuntimeNotes(with: statistics.notes)
+            )
+        emitEvent(
+            .init(
+                kind: .started,
+                message: "Encoded capture session started using \(source.runtimeDescription)."
+            )
         )
-        emitEvent(.init(kind: .started, message: "Encoded capture session started."))
     }
 
     public func stop() async {
@@ -394,9 +577,9 @@ public actor MDKEncodedCaptureSession {
         await drainDeferredDeliveryWork()
     }
 
-    public func restart() throws {
+    public func restart() async throws {
         stopRuntime(finishingStream: false, emitStopEvent: false)
-        try start()
+        try await start()
     }
 
     public func statisticsSnapshot() -> MDKEncodedCaptureSessionStatistics {
@@ -617,7 +800,30 @@ public actor MDKEncodedCaptureSession {
         }
     }
 
-    private func performScheduledRestart(lastErrorDescription: String, restartGeneration: UInt64) {
+    private func handleSourceFrameDropped(sourceDisplayTime: UInt64, runtimeGeneration: UInt64) {
+        guard runtime != nil, self.runtimeGeneration == runtimeGeneration else {
+            return
+        }
+
+        statistics = MDKEncodedCaptureSessionStatistics(
+            emittedFrameCount: statistics.emittedFrameCount,
+            droppedFrameCount: statistics.droppedFrameCount + 1,
+            processingFailureCount: statistics.processingFailureCount,
+            automaticRestartCount: statistics.automaticRestartCount,
+            lastErrorDescription: statistics.lastErrorDescription,
+            lastStopStatus: statistics.lastStopStatus,
+            isRunning: statistics.isRunning
+        )
+        emitEvent(
+            .init(
+                kind: .droppedFrame,
+                message: "Source frame dropped before processing because the capture processing queue is saturated.",
+                sourceDisplayTime: sourceDisplayTime
+            )
+        )
+    }
+
+    private func performScheduledRestart(lastErrorDescription: String, restartGeneration: UInt64) async {
         guard runtime != nil,
               self.runtimeGeneration == restartGeneration,
               scheduledRestartGeneration == restartGeneration else {
@@ -630,7 +836,7 @@ public actor MDKEncodedCaptureSession {
 
         stopRuntime(finishingStream: false, emitStopEvent: false)
         do {
-            try start()
+            try await start()
             statistics = MDKEncodedCaptureSessionStatistics(
                 emittedFrameCount: statistics.emittedFrameCount,
                 droppedFrameCount: statistics.droppedFrameCount,
@@ -722,7 +928,10 @@ public actor MDKEncodedCaptureSession {
             automaticRestartCount: statistics.automaticRestartCount,
             lastErrorDescription: statistics.lastErrorDescription,
             lastStopStatus: stopStatus,
-            isRunning: false
+            isRunning: false,
+            minOutputCallbackLatencyMilliseconds: processingSummary?.minOutputCallbackLatencyMilliseconds,
+            maxOutputCallbackLatencyMilliseconds: processingSummary?.maxOutputCallbackLatencyMilliseconds,
+            notes: mergedRuntimeNotes(with: processingSummary?.notes ?? statistics.notes)
         )
         if emitStopEvent {
             emitEvent(
@@ -749,8 +958,25 @@ public actor MDKEncodedCaptureSession {
             automaticRestartCount: statistics.automaticRestartCount,
             lastErrorDescription: statistics.lastErrorDescription,
             lastStopStatus: statistics.lastStopStatus,
-            isRunning: isRunning
+            isRunning: isRunning,
+            minOutputCallbackLatencyMilliseconds: summary.minOutputCallbackLatencyMilliseconds,
+            maxOutputCallbackLatencyMilliseconds: summary.maxOutputCallbackLatencyMilliseconds,
+            notes: mergedRuntimeNotes(with: summary.notes)
         )
+    }
+
+    private func mergedRuntimeNotes(with notes: [String]) -> [String] {
+        var merged: [String] = []
+        var seen: Set<String> = []
+
+        for note in runtimeDiagnosticNotes + notes {
+            guard seen.insert(note).inserted else {
+                continue
+            }
+            merged.append(note)
+        }
+
+        return merged
     }
 
     private func emitEvent(_ event: MDKEncodedCaptureSessionEvent) {

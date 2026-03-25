@@ -76,19 +76,157 @@ final class MacDisplayKitTests: XCTestCase {
         )
     }
 
+    func testHEVCPrefersLowLatencyRateControlAndSingleReferenceBuffer() {
+        XCTAssertTrue(MDKVideoEncoderCodec.hevc.lowLatencyRateControlSupported)
+        XCTAssertEqual(MDKVideoEncoderCodec.hevc.referenceBufferCount, 1)
+    }
+
     func testCodecPreferredInputPixelFormatsFavorEncoderFriendlyTargets() {
         XCTAssertEqual(
-            MDKVideoEncoderCodec.hevc.preferredInputPixelFormat(for: kCVPixelFormatType_32BGRA),
+            MDKVideoEncoderCodec.hevc.preferredInputPixelFormat(
+                for: kCVPixelFormatType_32BGRA,
+                hdrConfiguration: nil,
+                strategy: .auto
+            ),
+            kCVPixelFormatType_32BGRA
+        )
+        XCTAssertEqual(
+            MDKVideoEncoderCodec.hevc.preferredInputPixelFormat(
+                for: kCVPixelFormatType_32BGRA,
+                hdrConfiguration: .hdr10(),
+                strategy: .auto
+            ),
             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        )
+        XCTAssertEqual(
+            MDKVideoEncoderCodec.hevc.preferredInputPixelFormat(
+                for: kCVPixelFormatType_32BGRA,
+                hdrConfiguration: nil,
+                strategy: .yuv420v10
+            ),
+            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        )
+        XCTAssertEqual(
+            MDKVideoEncoderCodec.hevc.preferredInputPixelFormat(
+                for: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+                hdrConfiguration: nil,
+                strategy: .yuv420v8
+            ),
+            kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
         )
         XCTAssertEqual(
             MDKVideoEncoderCodec.h264.preferredInputPixelFormat(for: kCVPixelFormatType_32BGRA),
             kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         )
         XCTAssertEqual(
+            MDKVideoEncoderCodec.h264.preferredInputPixelFormat(
+                for: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                hdrConfiguration: nil,
+                strategy: .yuv420v10
+            ),
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        )
+        XCTAssertEqual(
             MDKVideoEncoderCodec.proResProxy.preferredInputPixelFormat(for: kCVPixelFormatType_32BGRA),
             kCVPixelFormatType_32BGRA
         )
+        XCTAssertEqual(
+            MDKVideoEncoderCodec.proResProxy.preferredInputPixelFormat(
+                for: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                hdrConfiguration: nil,
+                strategy: .yuv420v8
+            ),
+            kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange
+        )
+    }
+
+    func testSkyLightDisplayStreamAutoEncoderInputStrategyPreservesAutomaticSelection() {
+        let baseStreamConfiguration = MDKSkyLightDisplayStreamConfiguration(
+            queueDepth: 2,
+            queueProfile: .q2,
+            showCursor: false,
+            outputWidth: 3512,
+            outputHeight: 2290,
+            pixelFormat: kCVPixelFormatType_32BGRA
+        )
+
+        let hevcSDRConfiguration = MDKEncodedCaptureConfiguration(
+            displayID: 7,
+            streamConfiguration: baseStreamConfiguration,
+            codec: .hevc,
+            targetFrameRate: 120,
+            encoderInputStrategy: .auto,
+            hdrConfiguration: nil
+        )
+        XCTAssertEqual(
+            hevcSDRConfiguration.resolvedEncoderInputStrategy,
+            MDKEncodedCaptureEncoderInputStrategy.auto
+        )
+
+        let hevcHDRConfiguration = MDKEncodedCaptureConfiguration(
+            displayID: 7,
+            streamConfiguration: baseStreamConfiguration,
+            codec: .hevc,
+            targetFrameRate: 120,
+            encoderInputStrategy: .auto,
+            hdrConfiguration: .hdr10()
+        )
+        XCTAssertEqual(
+            hevcHDRConfiguration.resolvedEncoderInputStrategy,
+            MDKEncodedCaptureEncoderInputStrategy.auto
+        )
+
+        let h264Configuration = MDKEncodedCaptureConfiguration(
+            displayID: 7,
+            streamConfiguration: baseStreamConfiguration,
+            codec: .h264,
+            targetFrameRate: 120,
+            encoderInputStrategy: .auto,
+            hdrConfiguration: nil
+        )
+        XCTAssertEqual(
+            h264Configuration.resolvedEncoderInputStrategy,
+            MDKEncodedCaptureEncoderInputStrategy.auto
+        )
+
+        let proResConfiguration = MDKEncodedCaptureConfiguration(
+            displayID: 7,
+            streamConfiguration: baseStreamConfiguration,
+            codec: .proResProxy,
+            targetFrameRate: 120,
+            encoderInputStrategy: .auto,
+            hdrConfiguration: nil
+        )
+        XCTAssertEqual(
+            proResConfiguration.resolvedEncoderInputStrategy,
+            MDKEncodedCaptureEncoderInputStrategy.auto
+        )
+    }
+
+    func testHEVCHDRNegotiationPreservesDisplayP3WhenRequested() {
+        let requested = MDKVideoHDRConfiguration(
+            colorPrimaries: .p3D65,
+            transferFunction: .smpteSt2084PQ,
+            yCbCrMatrix: .ituR709,
+            metadataInsertionMode: .automatic,
+            masteringDisplayColorVolume: .hdr10Default(),
+            contentLightLevelInfo: .hdr10Default()
+        )
+
+        let negotiated = requested.negotiatedForEncodedDelivery(codec: .hevc)
+
+        XCTAssertEqual(negotiated.colorPrimaries, .p3D65)
+        XCTAssertEqual(negotiated.transferFunction, .smpteSt2084PQ)
+        XCTAssertEqual(negotiated.yCbCrMatrix, .ituR709)
+    }
+
+    func testHEVCHDRNegotiationKeepsBT2020HDR10ProfilesStable() {
+        let requested = MDKVideoHDRConfiguration.hdr10()
+        let negotiated = requested.negotiatedForEncodedDelivery(codec: .hevc)
+
+        XCTAssertEqual(negotiated.colorPrimaries, .ituR2020)
+        XCTAssertEqual(negotiated.transferFunction, .smpteSt2084PQ)
+        XCTAssertEqual(negotiated.yCbCrMatrix, .ituR2020)
     }
 
     func testDefaultRawProcessingMatrixKeepsOptInCodecsOutOfBand() {

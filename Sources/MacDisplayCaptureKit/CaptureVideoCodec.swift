@@ -87,7 +87,70 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         }
     }
 
-    func preferredInputPixelFormat(for sourcePixelFormat: UInt32) -> UInt32 {
+    func preferredInputPixelFormat(
+        for sourcePixelFormat: UInt32,
+        hdrConfiguration: MDKVideoHDRConfiguration? = nil,
+        strategy: MDKEncodedCaptureEncoderInputStrategy = .auto
+    ) -> UInt32 {
+        let usesHDRTransfer = hdrConfiguration.map { $0.transferFunction != .ituR709 } ?? false
+
+        switch strategy {
+        case .auto:
+            return autoPreferredInputPixelFormat(
+                for: sourcePixelFormat,
+                usesHDRTransfer: usesHDRTransfer
+            )
+        case .bgra:
+            return kCVPixelFormatType_32BGRA
+        case .yuv420v8:
+            return preferred420InputPixelFormat(
+                for: sourcePixelFormat,
+                preferredBitDepth: 8
+            )
+        case .yuv420v10:
+            return preferred420InputPixelFormat(
+                for: sourcePixelFormat,
+                preferredBitDepth: 10
+            )
+        }
+    }
+
+    private func autoPreferredInputPixelFormat(
+        for sourcePixelFormat: UInt32,
+        usesHDRTransfer: Bool
+    ) -> UInt32 {
+        switch self {
+        case .hevc:
+            if !usesHDRTransfer {
+                switch sourcePixelFormat {
+                case kCVPixelFormatType_32BGRA,
+                     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                     kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+                     kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                     kCVPixelFormatType_420YpCbCr10BiPlanarFullRange:
+                    return sourcePixelFormat
+                default:
+                    return kCVPixelFormatType_32BGRA
+                }
+            }
+            return preferred420InputPixelFormat(
+                for: sourcePixelFormat,
+                preferredBitDepth: 10
+            )
+        case .h264:
+            return preferred420InputPixelFormat(
+                for: sourcePixelFormat,
+                preferredBitDepth: 8
+            )
+        case .proResProxy:
+            return preferred422InputPixelFormat(for: sourcePixelFormat)
+        }
+    }
+
+    private func preferred420InputPixelFormat(
+        for sourcePixelFormat: UInt32,
+        preferredBitDepth: Int
+    ) -> UInt32 {
         switch self {
         case .hevc:
             switch sourcePixelFormat {
@@ -97,7 +160,9 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
                  kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
                 return sourcePixelFormat
             default:
-                return kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                return preferredBitDepth >= 10
+                    ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                    : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
             }
         case .h264:
             switch sourcePixelFormat {
@@ -108,16 +173,22 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
                 return kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
             }
         case .proResProxy:
-            switch sourcePixelFormat {
-            case kCVPixelFormatType_32BGRA,
-                 kCVPixelFormatType_422YpCbCr8BiPlanarVideoRange,
-                 kCVPixelFormatType_422YpCbCr8BiPlanarFullRange,
-                 kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
-                 kCVPixelFormatType_422YpCbCr10BiPlanarFullRange:
-                return sourcePixelFormat
-            default:
-                return kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange
-            }
+            return preferred422InputPixelFormat(for: sourcePixelFormat)
+        }
+    }
+
+    private func preferred422InputPixelFormat(
+        for sourcePixelFormat: UInt32
+    ) -> UInt32 {
+        switch sourcePixelFormat {
+        case kCVPixelFormatType_32BGRA,
+             kCVPixelFormatType_422YpCbCr8BiPlanarVideoRange,
+             kCVPixelFormatType_422YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
+             kCVPixelFormatType_422YpCbCr10BiPlanarFullRange:
+            return sourcePixelFormat
+        default:
+            return kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange
         }
     }
 
@@ -140,9 +211,9 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
 
     var lowLatencyRateControlSupported: Bool {
         switch self {
-        case .h264:
+        case .h264, .hevc:
             return true
-        case .hevc, .proResProxy:
+        case .proResProxy:
             return false
         }
     }
@@ -202,7 +273,7 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         case .h264:
             return 1
         case .hevc:
-            return 2
+            return 1
         case .proResProxy:
             return 0
         }

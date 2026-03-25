@@ -83,7 +83,8 @@ private actor MDKSkyLightDisplayStreamSessionDriver {
             showCursor: configuration.resolvedShowCursor,
             outputWidth: UInt(configuration.resolvedOutputWidth),
             outputHeight: UInt(configuration.resolvedOutputHeight),
-            pixelFormat: configuration.resolvedPixelFormatOverride
+            pixelFormat: configuration.resolvedPixelFormatOverride,
+            yCbCrMatrix: configuration.resolvedYCbCrMatrixOverride
         ) { [weak self] status, displayTime, frameSurface in
             guard let self else {
                 return

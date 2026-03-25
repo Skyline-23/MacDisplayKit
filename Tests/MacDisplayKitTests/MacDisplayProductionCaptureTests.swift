@@ -22,6 +22,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
             configuration.resolvedCapturePixelFormat,
             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
         )
+        XCTAssertEqual(configuration.resolvedSourceBackend, .skyLightDisplayStream)
     }
 
     func testEncodedCaptureConfigurationPreservesExplicitCapturePixelFormatOverride() {
@@ -436,7 +437,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         )
         let session = MDKEncodedCaptureSession(
             configuration: configuration,
-            sourceFactory: { _, frameHandler in
+            sourceFactory: { _, _, frameHandler in
                 factory.makeSource(frameHandler: frameHandler)
             },
             processorFactory: { _, outputHandler, failureHandler in
@@ -634,6 +635,47 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         XCTAssertEqual(stopped?.kind, .stopped)
     }
 
+    func testEncodedCaptureSessionKeepsSourceFramesPendingUntilProcessorReleasesThem() async throws {
+        let source = TestSourceSession()
+        let processor = BlockingReleaseProcessor()
+        let configuration = MDKEncodedCaptureConfiguration.panelNative(displayID: 11)
+        let expectedPendingLimit = switch configuration.resolvedSourceBackend {
+        case .privateDirectIOSurface, .privateProxyIOSurface:
+            max(configuration.resolvedPrivateCaptureSurfaceCount - 1, 1)
+        case .skyLightDisplayStream:
+            max(configuration.streamConfiguration.resolvedQueueDepth, 1)
+        }
+        let expectedDroppedCount = UInt64(10 - expectedPendingLimit)
+        let session = makeTestSession(
+            configuration: configuration,
+            source: source,
+            processorFactory: { _, _ in
+                processor
+            }
+        )
+
+        try await session.start()
+
+        for displayTime in 1...10 {
+            source.emitFrame(displayTime: UInt64(displayTime), surface: Self.makeTestSurface())
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let saturatedStats = await session.statisticsSnapshot()
+        XCTAssertEqual(saturatedStats.droppedFrameCount, expectedDroppedCount)
+        XCTAssertEqual(processor.pendingReleaseCount, expectedPendingLimit)
+
+        processor.releaseOne()
+        source.emitFrame(displayTime: 11, surface: Self.makeTestSurface())
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let resumedStats = await session.statisticsSnapshot()
+        XCTAssertEqual(resumedStats.droppedFrameCount, expectedDroppedCount)
+        XCTAssertEqual(processor.pendingReleaseCount, expectedPendingLimit)
+
+        await session.stop()
+    }
+
     func testEncodedCaptureSessionDeliversFramesThroughCallbackConsumer() async throws {
         let source = TestSourceSession()
         let sampleBuffer = TestSendableSampleBufferBox(sampleBuffer: try Self.makeTestSampleBuffer())
@@ -700,7 +742,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
     ) -> MDKEncodedCaptureSession {
         MDKEncodedCaptureSession(
             configuration: configuration,
-            sourceFactory: { _, frameHandler in
+            sourceFactory: { _, _, frameHandler in
                 source.frameHandler = frameHandler
                 return source
             },
@@ -882,6 +924,7 @@ private final class TestSourceSession: MDKEncodedCaptureSourceRuntime, @unchecke
     var frameHandler: (@Sendable (MDKCaptureFrame) -> Void)?
     var startCallCount: Int = 0
     var stopCallCount: Int = 0
+    var runtimeDescription: String = "test-source"
 
     func start() throws {
         startCallCount += 1
@@ -956,7 +999,10 @@ private final class TestProcessor: MDKEncodedCaptureProcessorRuntime, @unchecked
         self.failureHandler = failureHandler
     }
 
-    func process(frame: MDKCaptureFrame) throws {
+    func process(
+        frame: MDKCaptureFrame,
+        releaseSourceFrame: @escaping @Sendable () -> Void
+    ) throws {
         guard let outputHandler, let failureHandler else {
             XCTFail("Test processor was not bound before use.")
             return
@@ -970,6 +1016,7 @@ private final class TestProcessor: MDKEncodedCaptureProcessorRuntime, @unchecked
             failureHandler(description)
         }
         behavior(countingOutputHandler, countingFailureHandler)
+        releaseSourceFrame()
     }
 
     func finalize() -> MDKCaptureFrameProcessingSummary? {
@@ -989,6 +1036,57 @@ private final class TestProcessor: MDKEncodedCaptureProcessorRuntime, @unchecked
             maxOutputCallbackLatencyMilliseconds: nil,
             notes: []
         )
+    }
+}
+
+private final class BlockingReleaseProcessor: MDKEncodedCaptureProcessorRuntime, @unchecked Sendable {
+    private let lock = NSLock()
+    private var pendingReleaseHandlers: [@Sendable () -> Void] = []
+
+    var pendingReleaseCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return pendingReleaseHandlers.count
+    }
+
+    func process(
+        frame: MDKCaptureFrame,
+        releaseSourceFrame: @escaping @Sendable () -> Void
+    ) throws {
+        lock.lock()
+        pendingReleaseHandlers.append(releaseSourceFrame)
+        lock.unlock()
+    }
+
+    func finalize() -> MDKCaptureFrameProcessingSummary? {
+        liveSummary()
+    }
+
+    func liveSummary() -> MDKCaptureFrameProcessingSummary? {
+        MDKCaptureFrameProcessingSummary(
+            processedFrameCount: 0,
+            processingFailureCount: 0,
+            processingErrorHistogram: [:],
+            outputCallbackCount: 0,
+            completedOutputFrameCount: 0,
+            outputCallbackStatusHistogram: [:],
+            outputCallbackLatencyHistogram: [:],
+            minOutputCallbackLatencyMilliseconds: nil,
+            maxOutputCallbackLatencyMilliseconds: nil,
+            notes: []
+        )
+    }
+
+    func releaseOne() {
+        let releaseHandler: (@Sendable () -> Void)?
+        lock.lock()
+        if pendingReleaseHandlers.isEmpty {
+            releaseHandler = nil
+        } else {
+            releaseHandler = pendingReleaseHandlers.removeFirst()
+        }
+        lock.unlock()
+        releaseHandler?()
     }
 }
 

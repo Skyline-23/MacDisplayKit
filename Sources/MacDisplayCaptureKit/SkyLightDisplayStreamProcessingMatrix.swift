@@ -123,7 +123,7 @@ public enum MDKSkyLightDisplayStreamProcessingMatrix {
             "Each candidate runs in a fresh child process to avoid in-process stream state contaminating later measurements.",
             "The none processing mode is kept as a raw control and is not eligible for default winner selection.",
             "The ProRes Proxy experimental processing mode remains opt-in and is excluded from the default ranking set.",
-            "Ranking order: realtime floor >= 60 fps, meets120LikeTarget, fewer >100ms/>33ms/>16ms stalls, cadence classification, effective output frame rate, processed frame ratio, then complete-frame count."
+            "Ranking order: realtime floor >= 60 fps, meets120LikeTarget, fewer >100ms/>33ms/>16ms stalls, cadence classification, lower max output callback latency, lower queue depth, effective output frame rate, processed frame ratio, then complete-frame count."
         ]
         if let bestIndex,
            evaluations.indices.contains(bestIndex),
@@ -165,12 +165,14 @@ public enum MDKSkyLightDisplayStreamProcessingMatrix {
 
     private static func score(
         _ result: MDKSkyLightDisplayStreamProcessingBenchmarkResult
-    ) -> (Int, Int, Int, Int, Double, Double, UInt64) {
+    ) -> (Int, Int, Int, Int, Int, Int, Double, Double, UInt64) {
         (
             result.meetsRealtimeFloor ? 1 : 0,
             result.meets120LikeTarget ? 1 : 0,
             -stallPenalty(result),
             cadenceRank(result.cadenceClassification),
+            -normalizedLatencyScore(result.maxOutputCallbackLatencyMilliseconds),
+            -result.requestedQueueDepth,
             result.effectiveOutputFrameRate,
             result.processedFrameRatio,
             result.completeFrameCount
@@ -184,8 +186,8 @@ public enum MDKSkyLightDisplayStreamProcessingMatrix {
     }
 
     private static func isScore(
-        _ lhs: (Int, Int, Int, Int, Double, Double, UInt64),
-        lessThan rhs: (Int, Int, Int, Int, Double, Double, UInt64)
+        _ lhs: (Int, Int, Int, Int, Int, Int, Double, Double, UInt64),
+        lessThan rhs: (Int, Int, Int, Int, Int, Int, Double, Double, UInt64)
     ) -> Bool {
         if lhs.0 != rhs.0 { return lhs.0 < rhs.0 }
         if lhs.1 != rhs.1 { return lhs.1 < rhs.1 }
@@ -193,7 +195,14 @@ public enum MDKSkyLightDisplayStreamProcessingMatrix {
         if lhs.3 != rhs.3 { return lhs.3 < rhs.3 }
         if lhs.4 != rhs.4 { return lhs.4 < rhs.4 }
         if lhs.5 != rhs.5 { return lhs.5 < rhs.5 }
-        return lhs.6 < rhs.6
+        if lhs.6 != rhs.6 { return lhs.6 < rhs.6 }
+        if lhs.7 != rhs.7 { return lhs.7 < rhs.7 }
+        return lhs.8 < rhs.8
+    }
+
+    private static func normalizedLatencyScore(_ latencyMilliseconds: Double?) -> Int {
+        let clamped = min(max(latencyMilliseconds ?? 1_000.0, 0.0), 1_000.0)
+        return Int((clamped * 1_000).rounded())
     }
 
     private static func cadenceRank(_ cadenceClassification: String) -> Int {

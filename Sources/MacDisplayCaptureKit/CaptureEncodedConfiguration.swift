@@ -45,6 +45,13 @@ public struct MDKEncodedCaptureRecoveryPolicy: Codable, Equatable, Sendable {
     )
 }
 
+public enum MDKEncodedCaptureEncoderInputStrategy: String, Codable, Equatable, Sendable {
+    case auto
+    case bgra
+    case yuv420v8 = "420v8"
+    case yuv420v10 = "420v10"
+}
+
 public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
     public let displayID: UInt32
     public let streamConfiguration: MDKSkyLightDisplayStreamConfiguration
@@ -53,6 +60,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
     public let targetFrameRate: Int
     public let deliveryMode: MDKEncodedCaptureDeliveryMode
     public let capturePixelFormat: UInt32?
+    public let encoderInputStrategy: MDKEncodedCaptureEncoderInputStrategy
     public let hdrConfiguration: MDKVideoHDRConfiguration?
     public let backpressurePolicy: MDKEncodedCaptureBackpressurePolicy
     public let recoveryPolicy: MDKEncodedCaptureRecoveryPolicy
@@ -65,6 +73,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         targetFrameRate: Int = 120,
         deliveryMode: MDKEncodedCaptureDeliveryMode = .multiplexed,
         capturePixelFormat: UInt32? = nil,
+        encoderInputStrategy: MDKEncodedCaptureEncoderInputStrategy = .auto,
         hdrConfiguration: MDKVideoHDRConfiguration? = nil,
         backpressurePolicy: MDKEncodedCaptureBackpressurePolicy = .dropOldest(limit: 8),
         recoveryPolicy: MDKEncodedCaptureRecoveryPolicy = MDKEncodedCaptureRecoveryPolicy()
@@ -76,6 +85,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         self.targetFrameRate = max(targetFrameRate, 1)
         self.deliveryMode = deliveryMode
         self.capturePixelFormat = capturePixelFormat
+        self.encoderInputStrategy = encoderInputStrategy
         self.hdrConfiguration = hdrConfiguration
         self.backpressurePolicy = backpressurePolicy
         self.recoveryPolicy = recoveryPolicy
@@ -91,6 +101,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         targetFrameRate: Int = 120,
         deliveryMode: MDKEncodedCaptureDeliveryMode = .multiplexed,
         capturePixelFormat: UInt32? = nil,
+        encoderInputStrategy: MDKEncodedCaptureEncoderInputStrategy = .auto,
         hdrConfiguration: MDKVideoHDRConfiguration? = nil,
         backpressurePolicy: MDKEncodedCaptureBackpressurePolicy = .dropOldest(limit: 8),
         recoveryPolicy: MDKEncodedCaptureRecoveryPolicy = MDKEncodedCaptureRecoveryPolicy()
@@ -108,6 +119,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
             targetFrameRate: targetFrameRate,
             deliveryMode: deliveryMode,
             capturePixelFormat: capturePixelFormat,
+            encoderInputStrategy: encoderInputStrategy,
             hdrConfiguration: hdrConfiguration,
             backpressurePolicy: backpressurePolicy,
             recoveryPolicy: recoveryPolicy
@@ -116,5 +128,76 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
 
     var resolvedCapturePixelFormat: UInt32 {
         capturePixelFormat ?? streamConfiguration.pixelFormat ?? codec.preferredCapturePixelFormat
+    }
+
+    var resolvedSourceBackend: MDKEncodedCaptureSourceBackend {
+        // Encoded sessions need a continuous private producer, not a snapshot-style poller.
+        return .skyLightDisplayStream
+    }
+
+    var resolvedPrivateCaptureSurfaceCount: Int {
+        let width = max(streamConfiguration.resolvedOutputWidth, 1)
+        let height = max(streamConfiguration.resolvedOutputHeight, 1)
+        let estimatedSurfaceBytes = width * height * 4
+        if estimatedSurfaceBytes >= 20_000_000 {
+            return targetFrameRate >= 100 ? 8 : 6
+        }
+        return targetFrameRate >= 100 ? 10 : 6
+    }
+
+    var resolvedEncodedHDRConfiguration: MDKVideoHDRConfiguration? {
+        hdrConfiguration?.negotiatedForEncodedDelivery(codec: codec)
+    }
+
+    var resolvedEncoderInputStrategy: MDKEncodedCaptureEncoderInputStrategy {
+        guard encoderInputStrategy == .auto else {
+            return encoderInputStrategy
+        }
+
+        switch resolvedSourceBackend {
+        case .privateDirectIOSurface, .privateProxyIOSurface:
+            switch codec {
+            case .h264:
+                return .yuv420v8
+            case .hevc:
+                let usesHDRTransfer = resolvedEncodedHDRConfiguration.map { $0.transferFunction != .ituR709 } ?? false
+                return usesHDRTransfer ? .yuv420v10 : .yuv420v8
+            case .proResProxy:
+                return .bgra
+            }
+        case .skyLightDisplayStream:
+            return .auto
+        }
+    }
+
+    var resolvedSkyLightDisplayStreamYCbCrMatrix: MDKVideoYCbCrMatrix? {
+        switch resolvedCapturePixelFormat {
+        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+             kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr8BiPlanarVideoRange,
+             kCVPixelFormatType_422YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
+             kCVPixelFormatType_422YpCbCr10BiPlanarFullRange:
+            return resolvedEncodedHDRConfiguration?.yCbCrMatrix ?? .ituR709
+        default:
+            return nil
+        }
+    }
+
+    var resolvedSkyLightProcessingMode: MDKCaptureBenchmarkProcessingMode? {
+        switch (codec, preprocessStrategy) {
+        case (.hevc, .none):
+            return .videoToolboxEncode
+        case (.hevc, .downscale2x):
+            return .videoToolboxEncodeDownscale2x
+        case (.h264, .none):
+            return .videoToolboxEncodeH264
+        case (.h264, .downscale2x):
+            return .videoToolboxEncodeH264Downscale2x
+        case (.proResProxy, _):
+            return .videoToolboxEncodeProResProxyExperimental
+        }
     }
 }

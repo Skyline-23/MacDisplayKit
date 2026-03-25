@@ -27,6 +27,7 @@ public struct MDKSkyLightDisplayStreamConfiguration: Codable, Equatable, Sendabl
     public let outputWidth: Int?
     public let outputHeight: Int?
     public let pixelFormat: UInt32?
+    public let yCbCrMatrix: MDKVideoYCbCrMatrix?
 
     public init(
         queueDepth: Int = 2,
@@ -34,7 +35,8 @@ public struct MDKSkyLightDisplayStreamConfiguration: Codable, Equatable, Sendabl
         showCursor: Bool = false,
         outputWidth: Int? = nil,
         outputHeight: Int? = nil,
-        pixelFormat: UInt32? = nil
+        pixelFormat: UInt32? = nil,
+        yCbCrMatrix: MDKVideoYCbCrMatrix? = nil
     ) {
         self.queueDepth = queueDepth
         self.queueProfile = queueProfile
@@ -42,13 +44,15 @@ public struct MDKSkyLightDisplayStreamConfiguration: Codable, Equatable, Sendabl
         self.outputWidth = outputWidth
         self.outputHeight = outputHeight
         self.pixelFormat = pixelFormat
+        self.yCbCrMatrix = yCbCrMatrix
     }
 
     public static func panelNative(
         queueDepth: Int = 2,
         queueProfile: MDKSkyLightDisplayStreamQueueProfile? = nil,
         showCursor: Bool = false,
-        pixelFormat: UInt32? = nil
+        pixelFormat: UInt32? = nil,
+        yCbCrMatrix: MDKVideoYCbCrMatrix? = nil
     ) -> Self {
         Self(
             queueDepth: queueDepth,
@@ -56,7 +60,8 @@ public struct MDKSkyLightDisplayStreamConfiguration: Codable, Equatable, Sendabl
             showCursor: showCursor,
             outputWidth: nil,
             outputHeight: nil,
-            pixelFormat: pixelFormat
+            pixelFormat: pixelFormat,
+            yCbCrMatrix: yCbCrMatrix
         )
     }
 
@@ -78,5 +83,9 @@ public struct MDKSkyLightDisplayStreamConfiguration: Codable, Equatable, Sendabl
 
     public var resolvedPixelFormatOverride: UInt32 {
         pixelFormat ?? 0
+    }
+
+    public var resolvedYCbCrMatrixOverride: String? {
+        yCbCrMatrix.map { $0.imageBufferValue as String }
     }
 }

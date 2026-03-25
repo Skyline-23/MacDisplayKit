@@ -221,13 +221,115 @@ public struct MDKVideoHDRConfiguration: Codable, Equatable, Sendable {
 }
 
 extension MDKVideoHDRConfiguration {
+    func negotiatedForEncodedDelivery(codec: MDKVideoEncoderCodec) -> Self {
+        guard transferFunction != .ituR709 else {
+            return self
+        }
+        let candidates = encodedDeliveryCandidates(for: codec)
+        let supportedCandidates = candidates.filter { $0.isSupportedEncodedDeliveryProfile(for: codec) }
+        return supportedCandidates.min {
+            encodedDeliveryCompatibilityScore(to: $0) < encodedDeliveryCompatibilityScore(to: $1)
+        } ?? self
+    }
+
+    private func encodedDeliveryCandidates(for codec: MDKVideoEncoderCodec) -> [Self] {
+        switch codec {
+        case .hevc:
+            var candidates = [self]
+            let wideGamutP3Candidate = Self(
+                colorPrimaries: .p3D65,
+                transferFunction: encodedDeliveryTransferFallback,
+                yCbCrMatrix: .ituR709,
+                metadataInsertionMode: metadataInsertionMode,
+                masteringDisplayColorVolume: masteringDisplayColorVolume,
+                contentLightLevelInfo: contentLightLevelInfo
+            )
+            if wideGamutP3Candidate != self {
+                candidates.append(wideGamutP3Candidate)
+            }
+            let bt2020Candidate = Self(
+                colorPrimaries: .ituR2020,
+                transferFunction: encodedDeliveryTransferFallback,
+                yCbCrMatrix: .ituR2020,
+                metadataInsertionMode: metadataInsertionMode,
+                masteringDisplayColorVolume: masteringDisplayColorVolume,
+                contentLightLevelInfo: contentLightLevelInfo
+            )
+            if bt2020Candidate != self {
+                candidates.append(bt2020Candidate)
+            }
+            return candidates
+        case .h264, .proResProxy:
+            return [self]
+        }
+    }
+
+    private func isSupportedEncodedDeliveryProfile(for codec: MDKVideoEncoderCodec) -> Bool {
+        switch codec {
+        case .hevc:
+            let hdrTransferSupported = transferFunction == .smpteSt2084PQ || transferFunction == .ituR2100HLG
+            guard hdrTransferSupported else {
+                return false
+            }
+            switch colorPrimaries {
+            case .ituR2020:
+                return yCbCrMatrix == .ituR2020
+            case .p3D65, .ituR709:
+                return yCbCrMatrix == .ituR709
+            }
+        case .h264, .proResProxy:
+            return true
+        }
+    }
+
+    private var encodedDeliveryTransferFallback: MDKVideoTransferFunction {
+        switch transferFunction {
+        case .ituR2100HLG:
+            return .ituR2100HLG
+        case .ituR709, .smpteSt2084PQ:
+            return .smpteSt2084PQ
+        }
+    }
+
+    private func encodedDeliveryCompatibilityScore(to candidate: Self) -> Int {
+        var score = 0
+        if colorPrimaries != candidate.colorPrimaries {
+            score += 8
+        }
+        if yCbCrMatrix != candidate.yCbCrMatrix {
+            score += 8
+        }
+        if transferFunction != candidate.transferFunction {
+            score += 4
+        }
+        if metadataInsertionMode != candidate.metadataInsertionMode {
+            score += 2
+        }
+        if (masteringDisplayColorVolume != nil) != (candidate.masteringDisplayColorVolume != nil) {
+            score += 1
+        }
+        if (contentLightLevelInfo != nil) != (candidate.contentLightLevelInfo != nil) {
+            score += 1
+        }
+        return score
+    }
+
     var sessionProperties: [(CFString, CFTypeRef, String)] {
         var properties: [(CFString, CFTypeRef, String)] = [
             (kVTCompressionPropertyKey_ColorPrimaries, colorPrimaries.vtValue, "ColorPrimaries"),
             (kVTCompressionPropertyKey_TransferFunction, transferFunction.vtValue, "TransferFunction"),
-            (kVTCompressionPropertyKey_YCbCrMatrix, yCbCrMatrix.vtValue, "YCbCrMatrix"),
-            (kVTCompressionPropertyKey_HDRMetadataInsertionMode, metadataInsertionMode.vtValue, "HDRMetadataInsertionMode")
+            (kVTCompressionPropertyKey_YCbCrMatrix, yCbCrMatrix.vtValue, "YCbCrMatrix")
         ]
+
+        if transferFunction != .ituR709 {
+            properties.append(
+                (
+                    kVTCompressionPropertyKey_HDRMetadataInsertionMode,
+                    metadataInsertionMode.vtValue,
+                    "HDRMetadataInsertionMode"
+                )
+            )
+        }
 
         if let masteringDisplayColorVolume {
             properties.append(
