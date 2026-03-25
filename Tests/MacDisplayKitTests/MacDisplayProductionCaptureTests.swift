@@ -643,7 +643,19 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         case .privateDirectIOSurface, .privateProxyIOSurface:
             max(configuration.resolvedPrivateCaptureSurfaceCount - 1, 1)
         case .skyLightDisplayStream:
-            max(configuration.streamConfiguration.resolvedQueueDepth, 1)
+            {
+                let effectiveQueueDepth = max(configuration.streamConfiguration.resolvedQueueDepth, 1)
+                let latencyFloor: Int
+                if configuration.targetFrameRate >= 100 {
+                    latencyFloor = 4
+                } else if configuration.targetFrameRate >= 60 {
+                    latencyFloor = 3
+                } else {
+                    latencyFloor = 2
+                }
+
+                return min(max(effectiveQueueDepth * 2, latencyFloor), 8)
+            }()
         }
         let expectedDroppedCount = UInt64(10 - expectedPendingLimit)
         let session = makeTestSession(

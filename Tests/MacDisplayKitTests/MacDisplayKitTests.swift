@@ -747,7 +747,8 @@ final class MacDisplayKitTests: XCTestCase {
 
     func testTuningAdvisorKeeps120LikeCandidateForHEVC() {
         let candidates = MDKSkyLightDisplayStreamTuningAdvisor.recommendedCandidates(
-            for: .videoToolboxEncode
+            for: .videoToolboxEncode,
+            targetFrameRate: 120
         )
 
         XCTAssertEqual(candidates.first?.identifier, "baseline-q2")
@@ -755,6 +756,20 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertTrue(candidates.contains(where: { $0.identifier == "baseline-q1" }))
         XCTAssertTrue(candidates.contains(where: { $0.identifier == "min-frame-240hz-q1" }))
         XCTAssertTrue(candidates.contains(where: { $0.identifier == "baseline-q4" }))
+        XCTAssertTrue(candidates.contains(where: { $0.identifier == "baseline-q8" }))
+        XCTAssertTrue(candidates.contains(where: { $0.identifier == "min-frame-240hz-q8" }))
+        XCTAssertTrue(candidates.contains(where: { $0.identifier == "legacy-120hz-request" }))
+    }
+
+    func testTuningAdvisorKeepsHighRefreshCandidatesOutOf60FPSHEVCList() {
+        let candidates = MDKSkyLightDisplayStreamTuningAdvisor.recommendedCandidates(
+            for: .videoToolboxEncode,
+            targetFrameRate: 60
+        )
+
+        XCTAssertFalse(candidates.contains(where: { $0.identifier == "baseline-q8" }))
+        XCTAssertFalse(candidates.contains(where: { $0.identifier == "min-frame-240hz-q8" }))
+        XCTAssertFalse(candidates.contains(where: { $0.identifier == "legacy-120hz-request" }))
     }
 
     func testSkyLightDisplayStreamProcessingBenchmarkResultRoundTripsThroughJSON() throws {

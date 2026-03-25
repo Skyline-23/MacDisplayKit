@@ -94,6 +94,13 @@ public enum MDKSkyLightDisplayStreamTuningMatrix {
         showCursor: false
     )
 
+    public static let baselineQueue8Candidate = MDKSkyLightDisplayStreamTuningCandidate(
+        identifier: "baseline-q8",
+        minimumFrameTime: 0,
+        queueDepth: 8,
+        showCursor: false
+    )
+
     public static let request120LikeCandidate = MDKSkyLightDisplayStreamTuningCandidate(
         identifier: "min-frame-240hz-q1",
         minimumFrameTime: 1.0 / 240.0,
@@ -101,33 +108,34 @@ public enum MDKSkyLightDisplayStreamTuningMatrix {
         showCursor: false
     )
 
+    public static let request120LikeQueue8Candidate = MDKSkyLightDisplayStreamTuningCandidate(
+        identifier: "min-frame-240hz-q8",
+        minimumFrameTime: 1.0 / 240.0,
+        queueDepth: 8,
+        showCursor: false
+    )
+
+    public static let legacy120HzRequestCandidate = MDKSkyLightDisplayStreamTuningCandidate(
+        identifier: "legacy-120hz-request",
+        minimumFrameTime: 1.0 / 120.0,
+        queueDepth: 8,
+        showCursor: false
+    )
+
+    public static let legacy120HzQueue3Candidate = MDKSkyLightDisplayStreamTuningCandidate(
+        identifier: "legacy-120hz-q3",
+        minimumFrameTime: 1.0 / 120.0,
+        queueDepth: 3,
+        showCursor: false
+    )
+
     public static let defaultCandidates: [MDKSkyLightDisplayStreamTuningCandidate] = [
         baselineQueue3Candidate,
-        MDKSkyLightDisplayStreamTuningCandidate(
-            identifier: "baseline-q8",
-            minimumFrameTime: 0,
-            queueDepth: 8,
-            showCursor: false
-        ),
+        baselineQueue8Candidate,
         request120LikeCandidate,
-        MDKSkyLightDisplayStreamTuningCandidate(
-            identifier: "min-frame-240hz-q8",
-            minimumFrameTime: 1.0 / 240.0,
-            queueDepth: 8,
-            showCursor: false
-        ),
-        MDKSkyLightDisplayStreamTuningCandidate(
-            identifier: "legacy-120hz-request",
-            minimumFrameTime: 1.0 / 120.0,
-            queueDepth: 8,
-            showCursor: false
-        ),
-        MDKSkyLightDisplayStreamTuningCandidate(
-            identifier: "legacy-120hz-q3",
-            minimumFrameTime: 1.0 / 120.0,
-            queueDepth: 3,
-            showCursor: false
-        )
+        request120LikeQueue8Candidate,
+        legacy120HzRequestCandidate,
+        legacy120HzQueue3Candidate
     ]
 
     public static func bestEvaluationIndex(
@@ -185,8 +193,11 @@ public enum MDKSkyLightDisplayStreamTuningMatrix {
 
 public enum MDKSkyLightDisplayStreamTuningAdvisor {
     public static func recommendedCandidates(
-        for processingMode: MDKCaptureBenchmarkProcessingMode
+        for processingMode: MDKCaptureBenchmarkProcessingMode,
+        targetFrameRate: Int? = nil
     ) -> [MDKSkyLightDisplayStreamTuningCandidate] {
+        let prefersHighRefreshCandidates = (targetFrameRate ?? 0) >= 100
+
         switch processingMode {
         case .videoToolboxEncodeProResProxyExperimental:
             return [
@@ -198,13 +209,22 @@ public enum MDKSkyLightDisplayStreamTuningAdvisor {
              .videoToolboxEncodeDownscale2x,
              .videoToolboxEncodeH264,
              .videoToolboxEncodeH264Downscale2x:
-            return [
+            var candidates = [
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue2Candidate,
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue3Candidate,
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue1Candidate,
                 MDKSkyLightDisplayStreamTuningMatrix.request120LikeCandidate,
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue4Candidate
             ]
+            if prefersHighRefreshCandidates {
+                candidates.append(contentsOf: [
+                    MDKSkyLightDisplayStreamTuningMatrix.baselineQueue8Candidate,
+                    MDKSkyLightDisplayStreamTuningMatrix.request120LikeQueue8Candidate,
+                    MDKSkyLightDisplayStreamTuningMatrix.legacy120HzRequestCandidate,
+                    MDKSkyLightDisplayStreamTuningMatrix.legacy120HzQueue3Candidate
+                ])
+            }
+            return candidates
         case .none, .metalBind, .metalCopy:
             return MDKSkyLightDisplayStreamTuningMatrix.defaultCandidates
         }

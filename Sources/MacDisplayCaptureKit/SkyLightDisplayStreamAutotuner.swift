@@ -164,7 +164,10 @@ actor MDKSkyLightDisplayStreamAutotuner {
     ) -> [MDKSkyLightDisplayStreamTuningCandidate] {
         let showCursor = configuration.streamConfiguration.resolvedShowCursor
         return MDKSkyLightDisplayStreamTuningAdvisor
-            .recommendedCandidates(for: processingMode)
+            .recommendedCandidates(
+                for: processingMode,
+                targetFrameRate: configuration.targetFrameRate
+            )
             .map {
                 MDKSkyLightDisplayStreamTuningCandidate(
                     identifier: $0.identifier,
