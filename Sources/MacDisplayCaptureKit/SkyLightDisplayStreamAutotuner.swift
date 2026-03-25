@@ -12,7 +12,7 @@ actor MDKSkyLightDisplayStreamAutotuner {
     private static let highRefreshBenchmarkSampleDuration: TimeInterval = 0.75
     private static let highRefreshTargetFrameRateFloor = 100
     private static let highRefreshDisplayRefreshRateFloor = 100.0
-    private static let highRefreshGuardrailMinimumOutputFrameRate = 72.0
+    private static let highRefreshGuardrailMinimumOutputFrameRate = 48.0
 
     func resolveSelection(
         for configuration: MDKEncodedCaptureConfiguration
