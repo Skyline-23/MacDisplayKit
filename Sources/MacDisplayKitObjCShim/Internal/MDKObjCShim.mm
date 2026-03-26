@@ -12673,7 +12673,37 @@ static CGImageRef _Nullable MDKCopyCurrentSystemCursorImage(CGPoint * _Nullable 
             return;
         }
 
-        cursorImage = CGImageRetain(cgImage);
+        const size_t width = static_cast<size_t>(CGImageGetWidth(cgImage));
+        const size_t height = static_cast<size_t>(CGImageGetHeight(cgImage));
+        if (width == 0 || height == 0) {
+            return;
+        }
+
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        CGContextRef context = CGBitmapContextCreate(
+            nullptr,
+            width,
+            height,
+            8,
+            width * 4,
+            colorSpace,
+            kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little
+        );
+        CGColorSpaceRelease(colorSpace);
+        if (context == nullptr) {
+            return;
+        }
+
+        CGContextDrawImage(
+            context,
+            CGRectMake(0.0, 0.0, static_cast<CGFloat>(width), static_cast<CGFloat>(height)),
+            cgImage
+        );
+        cursorImage = CGBitmapContextCreateImage(context);
+        CGContextRelease(context);
+        if (cursorImage == nil) {
+            return;
+        }
         hotSpot = cursor.hotSpot;
         logicalSize = image.size;
     };
@@ -12691,6 +12721,61 @@ static CGImageRef _Nullable MDKCopyCurrentSystemCursorImage(CGPoint * _Nullable 
         *logicalSizeOut = logicalSize;
     }
     return cursorImage;
+}
+
+static IOSurfaceRef _Nullable MDKCreateCursorIOSurface(CGImageRef cursorImage) {
+    if (cursorImage == nil) {
+        return nil;
+    }
+
+    const size_t width = static_cast<size_t>(CGImageGetWidth(cursorImage));
+    const size_t height = static_cast<size_t>(CGImageGetHeight(cursorImage));
+    if (width == 0 || height == 0) {
+        return nil;
+    }
+
+    IOSurfaceRef surface = MDKCreatePrivateCaptureIOSurface(width, height);
+    if (surface == nil) {
+        return nil;
+    }
+
+    IOSurfaceLock(surface, 0, nullptr);
+    void *baseAddress = IOSurfaceGetBaseAddress(surface);
+    const size_t bytesPerRow = IOSurfaceGetBytesPerRow(surface);
+    if (baseAddress == nullptr || bytesPerRow == 0) {
+        IOSurfaceUnlock(surface, 0, nullptr);
+        CFRelease(surface);
+        return nil;
+    }
+
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(
+        baseAddress,
+        width,
+        height,
+        8,
+        bytesPerRow,
+        colorSpace,
+        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little
+    );
+    CGColorSpaceRelease(colorSpace);
+    if (context == nullptr) {
+        IOSurfaceUnlock(surface, 0, nullptr);
+        CFRelease(surface);
+        return nil;
+    }
+
+    CGContextClearRect(context, CGRectMake(0.0, 0.0, static_cast<CGFloat>(width), static_cast<CGFloat>(height)));
+    CGContextTranslateCTM(context, 0.0, static_cast<CGFloat>(height));
+    CGContextScaleCTM(context, 1.0, -1.0);
+    CGContextDrawImage(
+        context,
+        CGRectMake(0.0, 0.0, static_cast<CGFloat>(width), static_cast<CGFloat>(height)),
+        cursorImage
+    );
+    CGContextRelease(context);
+    IOSurfaceUnlock(surface, 0, nullptr);
+    return surface;
 }
 
 static BOOL MDKCopyIOSurfaceContents(
@@ -12736,37 +12821,37 @@ static BOOL MDKCopyIOSurfaceContents(
     return copied;
 }
 
-static void MDKOverlayCursorOnIOSurface(
+static CGRect MDKCreateCursorDrawRect(
     IOSurfaceRef surface,
     CGDirectDisplayID displayID,
-    CGImageRef cursorImage,
+    IOSurfaceRef cursorSurface,
     CGPoint cursorHotSpot,
     CGSize cursorLogicalSize
 ) {
-    if (surface == nil || cursorImage == nil) {
-        return;
+    if (surface == nil || cursorSurface == nil) {
+        return CGRectNull;
     }
 
     const CGRect displayBounds = CGDisplayBounds(displayID);
     if (CGRectIsEmpty(displayBounds)) {
-        return;
+        return CGRectNull;
     }
 
     CGEventRef event = CGEventCreate(nullptr);
     if (event == nil) {
-        return;
+        return CGRectNull;
     }
     const CGPoint cursorLocation = CGEventGetLocation(event);
     CFRelease(event);
 
     if (!CGRectContainsPoint(displayBounds, cursorLocation)) {
-        return;
+        return CGRectNull;
     }
 
     const size_t surfaceWidth = IOSurfaceGetWidth(surface);
     const size_t surfaceHeight = IOSurfaceGetHeight(surface);
     if (surfaceWidth == 0 || surfaceHeight == 0) {
-        return;
+        return CGRectNull;
     }
 
     const CGFloat displayScaleX = CGRectGetWidth(displayBounds) > 0.0 ?
@@ -12777,10 +12862,10 @@ static void MDKOverlayCursorOnIOSurface(
         1.0;
 
     const CGFloat imageScaleX = cursorLogicalSize.width > 0.0 ?
-        static_cast<CGFloat>(CGImageGetWidth(cursorImage)) / cursorLogicalSize.width :
+        static_cast<CGFloat>(IOSurfaceGetWidth(cursorSurface)) / cursorLogicalSize.width :
         1.0;
     const CGFloat imageScaleY = cursorLogicalSize.height > 0.0 ?
-        static_cast<CGFloat>(CGImageGetHeight(cursorImage)) / cursorLogicalSize.height :
+        static_cast<CGFloat>(IOSurfaceGetHeight(cursorSurface)) / cursorLogicalSize.height :
         1.0;
 
     const CGFloat localX = (cursorLocation.x - CGRectGetMinX(displayBounds)) * displayScaleX;
@@ -12788,49 +12873,15 @@ static void MDKOverlayCursorOnIOSurface(
     CGRect drawRect = CGRectMake(
         std::floor(localX - cursorHotSpot.x * imageScaleX),
         std::floor(localY - cursorHotSpot.y * imageScaleY),
-        static_cast<CGFloat>(CGImageGetWidth(cursorImage)),
-        static_cast<CGFloat>(CGImageGetHeight(cursorImage))
+        static_cast<CGFloat>(IOSurfaceGetWidth(cursorSurface)),
+        static_cast<CGFloat>(IOSurfaceGetHeight(cursorSurface))
     );
-    drawRect.origin.y = static_cast<CGFloat>(surfaceHeight) - CGRectGetMaxY(drawRect);
     const CGRect surfaceRect = CGRectMake(0.0, 0.0, static_cast<CGFloat>(surfaceWidth), static_cast<CGFloat>(surfaceHeight));
     if (CGRectIsEmpty(CGRectIntersection(drawRect, surfaceRect))) {
-        return;
+        return CGRectNull;
     }
 
-    IOSurfaceLock(surface, 0, nullptr);
-    void *baseAddress = IOSurfaceGetBaseAddress(surface);
-    const size_t bytesPerRow = IOSurfaceGetBytesPerRow(surface);
-    if (baseAddress == nullptr || bytesPerRow == 0) {
-        IOSurfaceUnlock(surface, 0, nullptr);
-        return;
-    }
-
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    CGContextRef context = CGBitmapContextCreate(
-        baseAddress,
-        surfaceWidth,
-        surfaceHeight,
-        8,
-        bytesPerRow,
-        colorSpace,
-        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little
-    );
-    CGColorSpaceRelease(colorSpace);
-
-    if (context == nullptr) {
-        IOSurfaceUnlock(surface, 0, nullptr);
-        return;
-    }
-
-    CGContextSetBlendMode(context, kCGBlendModeNormal);
-    // Keep the cursor hotspot placement but flip the image vertically for Quartz bitmap contexts.
-    CGContextSaveGState(context);
-    CGContextTranslateCTM(context, 0.0, CGRectGetMinY(drawRect) + CGRectGetMaxY(drawRect));
-    CGContextScaleCTM(context, 1.0, -1.0);
-    CGContextDrawImage(context, drawRect, cursorImage);
-    CGContextRestoreGState(context);
-    CGContextRelease(context);
-    IOSurfaceUnlock(surface, 0, nullptr);
+    return drawRect;
 }
 
 @interface MDKShimPrivateDisplayIOSurfaceCaptureSession () {
@@ -12847,6 +12898,7 @@ static void MDKOverlayCursorOnIOSurface(
     MDKPrivateCaptureDisplayIntoIOSurfaceProxyFn _proxyCaptureSymbol;
     NSUInteger _lastCleanSurfaceIndex;
     CGImageRef _cursorImage;
+    IOSurfaceRef _cursorSurface;
     CGPoint _cursorHotSpot;
     CGSize _cursorLogicalSize;
     CFAbsoluteTime _nextCursorRefreshDeadline;
@@ -12901,6 +12953,10 @@ static void MDKOverlayCursorOnIOSurface(
     if (_cursorImage != nil) {
         CGImageRelease(_cursorImage);
         _cursorImage = nil;
+    }
+    if (_cursorSurface != nil) {
+        CFRelease(_cursorSurface);
+        _cursorSurface = nil;
     }
 }
 
@@ -13084,6 +13140,7 @@ static void MDKOverlayCursorOnIOSurface(
 
         std::uint32_t captureValue = 0;
         BOOL proxiedFrameAvailable = NO;
+        const uint64_t captureStart = mach_absolute_time();
         const int status = strongSelf->_useProxyCapture
             ? strongSelf->_proxyCaptureSymbol(
                 strongSelf->_connectionID,
@@ -13100,52 +13157,41 @@ static void MDKOverlayCursorOnIOSurface(
                 captureSurface,
                 &captureValue
             );
+        const uint64_t captureEnd = mach_absolute_time();
         const BOOL captureSucceeded = status == 0 && (!strongSelf->_useProxyCapture || proxiedFrameAvailable);
         if (captureSucceeded) {
             strongSelf->_lastCleanSurfaceIndex = captureSurfaceIndex;
         }
 
-        IOSurfaceRef baseSurface = nil;
+        IOSurfaceRef emittedSurface = nil;
         if (captureSucceeded) {
-            baseSurface = captureSurface;
+            emittedSurface = captureSurface;
         } else if (previousCleanSurfaceIndex != NSNotFound &&
                    previousCleanSurfaceIndex < strongSelf->_surfaces.size()) {
-            baseSurface = strongSelf->_surfaces[previousCleanSurfaceIndex];
+            emittedSurface = strongSelf->_surfaces[previousCleanSurfaceIndex];
         }
 
-        IOSurfaceRef emittedSurface = baseSurface;
-        if (baseSurface != nil) {
-            BOOL requiresCompositeSurface = strongSelf->_showCursor ||
-                (!captureSucceeded && previousCleanSurfaceIndex != NSNotFound);
-            if (requiresCompositeSurface && strongSelf->_surfaces.size() > 1) {
-                NSUInteger compositeSurfaceIndex = strongSelf->_nextSurfaceIndex;
-                while ((compositeSurfaceIndex == captureSurfaceIndex ||
-                        compositeSurfaceIndex == previousCleanSurfaceIndex ||
-                        compositeSurfaceIndex == strongSelf->_lastCleanSurfaceIndex) &&
-                       strongSelf->_surfaces.size() > 1) {
-                    compositeSurfaceIndex = (compositeSurfaceIndex + 1) % strongSelf->_surfaces.size();
-                    if (compositeSurfaceIndex == strongSelf->_nextSurfaceIndex) {
-                        compositeSurfaceIndex = NSNotFound;
-                        break;
-                    }
-                }
-                if (compositeSurfaceIndex != NSNotFound) {
-                    IOSurfaceRef compositeSurface = strongSelf->_surfaces[compositeSurfaceIndex];
-                    if (MDKCopyIOSurfaceContents(baseSurface, compositeSurface)) {
-                        emittedSurface = compositeSurface;
-                        strongSelf->_nextSurfaceIndex = (compositeSurfaceIndex + 1) % strongSelf->_surfaces.size();
-                    }
-                }
-            }
-        }
-
+        uint64_t cursorCompositeDurationNanoseconds = 0;
+        IOSurfaceRef emittedCursorSurface = nil;
+        CGRect emittedCursorRect = CGRectNull;
+        BOOL emittedCursorSurfaceIsVerticallyFlipped = NO;
         if (emittedSurface != nil && strongSelf->_showCursor) {
+            const uint64_t cursorCompositeStart = mach_absolute_time();
             const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-            if (strongSelf->_cursorImage == nil || now >= strongSelf->_nextCursorRefreshDeadline) {
+            if (strongSelf->_cursorImage == nil ||
+                strongSelf->_cursorSurface == nil ||
+                now >= strongSelf->_nextCursorRefreshDeadline) {
                 CGPoint hotSpot = CGPointZero;
                 CGSize logicalSize = CGSizeZero;
                 CGImageRef refreshedCursor = MDKCopyCurrentSystemCursorImage(&hotSpot, &logicalSize);
                 if (refreshedCursor != nil) {
+                    IOSurfaceRef refreshedCursorSurface = MDKCreateCursorIOSurface(refreshedCursor);
+                    if (refreshedCursorSurface != nil) {
+                        if (strongSelf->_cursorSurface != nil) {
+                            CFRelease(strongSelf->_cursorSurface);
+                        }
+                        strongSelf->_cursorSurface = refreshedCursorSurface;
+                    }
                     if (strongSelf->_cursorImage != nil) {
                         CGImageRelease(strongSelf->_cursorImage);
                     }
@@ -13156,16 +13202,52 @@ static void MDKOverlayCursorOnIOSurface(
                 strongSelf->_nextCursorRefreshDeadline = now + 0.1;
             }
 
-            MDKOverlayCursorOnIOSurface(
+            emittedCursorSurface = strongSelf->_cursorSurface;
+            emittedCursorRect = MDKCreateCursorDrawRect(
                 emittedSurface,
                 static_cast<CGDirectDisplayID>(strongSelf->_displayID),
-                strongSelf->_cursorImage,
+                strongSelf->_cursorSurface,
                 strongSelf->_cursorHotSpot,
                 strongSelf->_cursorLogicalSize
             );
+            emittedCursorSurfaceIsVerticallyFlipped = NO;
+            const uint64_t cursorCompositeEnd = mach_absolute_time();
+            mach_timebase_info_data_t timebase;
+            mach_timebase_info(&timebase);
+            if (timebase.denom != 0) {
+                cursorCompositeDurationNanoseconds =
+                    static_cast<uint64_t>(
+                        (static_cast<long double>(cursorCompositeEnd - cursorCompositeStart) *
+                        static_cast<long double>(timebase.numer)) /
+                        static_cast<long double>(timebase.denom)
+                    );
+            }
         }
         const std::uint64_t displayTime = mach_absolute_time();
-        strongSelf->_frameHandler(emittedSurface != nil ? 0 : status, displayTime, emittedSurface);
+        uint64_t captureDurationNanoseconds = 0;
+        mach_timebase_info_data_t timebase;
+        mach_timebase_info(&timebase);
+        if (timebase.denom != 0) {
+            captureDurationNanoseconds =
+                static_cast<uint64_t>(
+                    (static_cast<long double>(captureEnd - captureStart) *
+                    static_cast<long double>(timebase.numer)) /
+                    static_cast<long double>(timebase.denom)
+                );
+        }
+        strongSelf->_frameHandler(
+            emittedSurface != nil ? 0 : status,
+            displayTime,
+            emittedSurface,
+            CGRectIsNull(emittedCursorRect) ? nil : emittedCursorSurface,
+            CGRectIsNull(emittedCursorRect) ? 0.0 : CGRectGetMinX(emittedCursorRect),
+            CGRectIsNull(emittedCursorRect) ? 0.0 : CGRectGetMinY(emittedCursorRect),
+            CGRectIsNull(emittedCursorRect) ? 0.0 : CGRectGetWidth(emittedCursorRect),
+            CGRectIsNull(emittedCursorRect) ? 0.0 : CGRectGetHeight(emittedCursorRect),
+            CGRectIsNull(emittedCursorRect) ? NO : emittedCursorSurfaceIsVerticallyFlipped,
+            captureDurationNanoseconds,
+            cursorCompositeDurationNanoseconds
+        );
     });
     dispatch_resume(_timer);
     _running = YES;

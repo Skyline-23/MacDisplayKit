@@ -109,6 +109,9 @@ public struct MDKCaptureFrame: Sendable, Equatable {
     public let height: Int
     public let pixelFormat: UInt32
     public let surface: MDKCaptureSurface?
+    public let cursorOverlaySample: MDKCursorOverlaySample?
+    public let sourceCaptureDurationNanoseconds: UInt64?
+    public let sourceCursorCompositeDurationNanoseconds: UInt64?
 
     public init(
         sequenceNumber: UInt64,
@@ -117,7 +120,10 @@ public struct MDKCaptureFrame: Sendable, Equatable {
         width: Int,
         height: Int,
         pixelFormat: UInt32,
-        surface: MDKCaptureSurface? = nil
+        surface: MDKCaptureSurface? = nil,
+        cursorOverlaySample: MDKCursorOverlaySample? = nil,
+        sourceCaptureDurationNanoseconds: UInt64? = nil,
+        sourceCursorCompositeDurationNanoseconds: UInt64? = nil
     ) {
         self.sequenceNumber = sequenceNumber
         self.displayTime = displayTime
@@ -126,6 +132,25 @@ public struct MDKCaptureFrame: Sendable, Equatable {
         self.height = height
         self.pixelFormat = pixelFormat
         self.surface = surface
+        self.cursorOverlaySample = cursorOverlaySample
+        self.sourceCaptureDurationNanoseconds = sourceCaptureDurationNanoseconds
+        self.sourceCursorCompositeDurationNanoseconds = sourceCursorCompositeDurationNanoseconds
+    }
+}
+
+public struct MDKCursorOverlaySample: Sendable, Equatable {
+    public let surface: MDKCaptureSurface
+    public let rect: CGRect
+    public let isVerticallyFlipped: Bool
+
+    public init(
+        surface: MDKCaptureSurface,
+        rect: CGRect,
+        isVerticallyFlipped: Bool = false
+    ) {
+        self.surface = surface
+        self.rect = rect
+        self.isVerticallyFlipped = isVerticallyFlipped
     }
 }
 

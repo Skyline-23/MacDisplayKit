@@ -169,6 +169,7 @@ public struct MDKVideoContentLightLevelInfo: Codable, Equatable, Sendable {
 }
 
 public struct MDKVideoHDRConfiguration: Codable, Equatable, Sendable {
+    public let sourceColorPrimaries: MDKVideoColorPrimaries?
     public let colorPrimaries: MDKVideoColorPrimaries
     public let transferFunction: MDKVideoTransferFunction
     public let yCbCrMatrix: MDKVideoYCbCrMatrix
@@ -177,6 +178,7 @@ public struct MDKVideoHDRConfiguration: Codable, Equatable, Sendable {
     public let contentLightLevelInfo: MDKVideoContentLightLevelInfo?
 
     public init(
+        sourceColorPrimaries: MDKVideoColorPrimaries? = nil,
         colorPrimaries: MDKVideoColorPrimaries,
         transferFunction: MDKVideoTransferFunction,
         yCbCrMatrix: MDKVideoYCbCrMatrix,
@@ -184,6 +186,7 @@ public struct MDKVideoHDRConfiguration: Codable, Equatable, Sendable {
         masteringDisplayColorVolume: MDKVideoMasteringDisplayColorVolume? = nil,
         contentLightLevelInfo: MDKVideoContentLightLevelInfo? = nil
     ) {
+        self.sourceColorPrimaries = sourceColorPrimaries
         self.colorPrimaries = colorPrimaries
         self.transferFunction = transferFunction
         self.yCbCrMatrix = yCbCrMatrix
@@ -193,10 +196,12 @@ public struct MDKVideoHDRConfiguration: Codable, Equatable, Sendable {
     }
 
     public static func hdr10(
+        sourceColorPrimaries: MDKVideoColorPrimaries? = nil,
         masteringDisplayColorVolume: MDKVideoMasteringDisplayColorVolume = .hdr10Default(),
         contentLightLevelInfo: MDKVideoContentLightLevelInfo = .hdr10Default()
     ) -> Self {
         Self(
+            sourceColorPrimaries: sourceColorPrimaries,
             colorPrimaries: .ituR2020,
             transferFunction: .smpteSt2084PQ,
             yCbCrMatrix: .ituR2020,
@@ -207,9 +212,11 @@ public struct MDKVideoHDRConfiguration: Codable, Equatable, Sendable {
     }
 
     public static func hlg(
+        sourceColorPrimaries: MDKVideoColorPrimaries? = nil,
         contentLightLevelInfo: MDKVideoContentLightLevelInfo? = nil
     ) -> Self {
         Self(
+            sourceColorPrimaries: sourceColorPrimaries,
             colorPrimaries: .ituR2020,
             transferFunction: .ituR2100HLG,
             yCbCrMatrix: .ituR2020,
@@ -237,6 +244,7 @@ extension MDKVideoHDRConfiguration {
         case .hevc:
             var candidates = [self]
             let wideGamutP3Candidate = Self(
+                sourceColorPrimaries: sourceColorPrimaries,
                 colorPrimaries: .p3D65,
                 transferFunction: encodedDeliveryTransferFallback,
                 yCbCrMatrix: .ituR709,
@@ -248,6 +256,7 @@ extension MDKVideoHDRConfiguration {
                 candidates.append(wideGamutP3Candidate)
             }
             let bt2020Candidate = Self(
+                sourceColorPrimaries: sourceColorPrimaries,
                 colorPrimaries: .ituR2020,
                 transferFunction: encodedDeliveryTransferFallback,
                 yCbCrMatrix: .ituR2020,

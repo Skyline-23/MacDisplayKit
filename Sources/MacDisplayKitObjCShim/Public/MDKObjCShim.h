@@ -13,7 +13,15 @@ typedef void (^MDKShimSkyLightDisplayStreamFrameHandler)(
 typedef void (^MDKShimPrivateDisplayIOSurfaceCaptureFrameHandler)(
     int32_t status,
     uint64_t displayTime,
-    IOSurfaceRef _Nullable frameSurface
+    IOSurfaceRef _Nullable frameSurface,
+    IOSurfaceRef _Nullable cursorSurface,
+    double cursorRectX,
+    double cursorRectY,
+    double cursorRectWidth,
+    double cursorRectHeight,
+    BOOL cursorSurfaceIsVerticallyFlipped,
+    uint64_t captureDurationNanoseconds,
+    uint64_t cursorCompositeDurationNanoseconds
 );
 
 @interface MDKShimSkyLightDisplayStreamSession : NSObject

@@ -1,3 +1,4 @@
+import CoreGraphics
 import CoreMedia
 import CoreVideo
 import Foundation
@@ -269,7 +270,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             width: frame.width,
             height: frame.height,
             pixelFormat: frame.pixelFormat,
-            surface: surface
+            surface: surface,
+            cursorOverlaySample: frame.cursorOverlaySample,
+            sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
+            sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
         )
         let submitFrame = { [self, retainedFrame] in
             do {
@@ -402,6 +406,23 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         frame: MDKCaptureFrame,
         releaseSourceFrame: @escaping @Sendable () -> Void
     ) throws {
+        if !sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxSourcePixelFormat=") }) {
+            sessionConfigurationNotes.append(
+                String(format: "videoToolboxSourcePixelFormat=0x%08X", frame.pixelFormat)
+            )
+        }
+        if let hdrConfiguration {
+            if !sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxSourceColorPrimaries=") }) {
+                sessionConfigurationNotes.append(
+                    "videoToolboxSourceColorPrimaries=\((hdrConfiguration.sourceColorPrimaries ?? hdrConfiguration.colorPrimaries).rawValue)"
+                )
+            }
+            if !sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxSignalColorPrimaries=") }) {
+                sessionConfigurationNotes.append(
+                    "videoToolboxSignalColorPrimaries=\(hdrConfiguration.colorPrimaries.rawValue)"
+                )
+            }
+        }
         let targetPixelFormat = codec.preferredInputPixelFormat(
             for: frame.pixelFormat,
             hdrConfiguration: hdrConfiguration,
@@ -481,6 +502,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             surface: surface,
             device: device
         )
+        let cursorTexture = try makeCursorTexture(
+            for: frame.cursorOverlaySample,
+            device: device
+        )
         let outputDimensions = preprocessStrategy.outputDimensions(
             sourceWidth: frame.width,
             sourceHeight: frame.height,
@@ -526,7 +551,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 sourceTextures: sourceTextures,
                 destinationTextures: slot.textures,
                 destinationPixelFormat: targetPixelFormat,
-                hdrConfiguration: hdrConfiguration
+                hdrConfiguration: hdrConfiguration,
+                cursorTexture: cursorTexture,
+                cursorOverlaySample: frame.cursorOverlaySample
             )
         } else if requiresScaling(sourceTextures: sourceTextures, destinationTextures: slot.textures) {
             guard let scaler else {
@@ -539,6 +566,29 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 sourceTextures: sourceTextures,
                 destinationTextures: slot.textures
             )
+            if let cursorOverlaySample = scaledCursorOverlaySample(
+                from: frame.cursorOverlaySample,
+                sourceWidth: frame.width,
+                sourceHeight: frame.height,
+                destinationWidth: outputDimensions.x,
+                destinationHeight: outputDimensions.y
+            ), let cursorTexture {
+                guard let colorConverter else {
+                    stagingSubmissionGroup.leave()
+                    releaseStagingSlot(identifier: slotIdentifier)
+                    throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
+                        sourcePixelFormat: frame.pixelFormat,
+                        targetPixelFormat: targetPixelFormat
+                    )
+                }
+                try colorConverter.overlayCursorOnBGRA(
+                    commandBuffer: commandBuffer,
+                    destinationTexture: slot.textures[0],
+                    cursorTexture: cursorTexture,
+                    cursorRect: cursorOverlaySample.rect,
+                    cursorVerticallyFlipped: cursorOverlaySample.isVerticallyFlipped
+                )
+            }
         } else {
             guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
                 stagingSubmissionGroup.leave()
@@ -561,6 +611,24 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 )
             }
             blitEncoder.endEncoding()
+            if let cursorOverlaySample = frame.cursorOverlaySample,
+               let cursorTexture {
+                guard let colorConverter else {
+                    stagingSubmissionGroup.leave()
+                    releaseStagingSlot(identifier: slotIdentifier)
+                    throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
+                        sourcePixelFormat: frame.pixelFormat,
+                        targetPixelFormat: targetPixelFormat
+                    )
+                }
+                try colorConverter.overlayCursorOnBGRA(
+                    commandBuffer: commandBuffer,
+                    destinationTexture: slot.textures[0],
+                    cursorTexture: cursorTexture,
+                    cursorRect: cursorOverlaySample.rect,
+                    cursorVerticallyFlipped: cursorOverlaySample.isVerticallyFlipped
+                )
+            }
         }
         commandBuffer.addCompletedHandler { [weak self] commandBuffer in
             guard let self else {
@@ -946,8 +1014,36 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         surface: MDKCaptureSurface,
         device: any MTLDevice
     ) throws -> [MTLTexture] {
+        try makeSourceTextures(
+            forSurfaceID: frame.surfaceID,
+            surface: surface,
+            device: device
+        )
+    }
+
+    private func makeCursorTexture(
+        for cursorOverlaySample: MDKCursorOverlaySample?,
+        device: any MTLDevice
+    ) throws -> MTLTexture? {
+        guard let cursorOverlaySample else {
+            return nil
+        }
+
+        let textures = try makeSourceTextures(
+            forSurfaceID: cursorOverlaySample.surface.id,
+            surface: cursorOverlaySample.surface,
+            device: device
+        )
+        return textures.first
+    }
+
+    private func makeSourceTextures(
+        forSurfaceID surfaceID: UInt32,
+        surface: MDKCaptureSurface,
+        device: any MTLDevice
+    ) throws -> [MTLTexture] {
         let descriptors = try makePlaneDescriptors(for: surface)
-        if let cachedEntry = sourceTextureCache[frame.surfaceID],
+        if let cachedEntry = sourceTextureCache[surfaceID],
            cachedEntry.descriptors == descriptors {
             return cachedEntry.textures
         }
@@ -957,18 +1053,46 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             device: device,
             usage: [.shaderRead]
         )
-        sourceTextureCache[frame.surfaceID] = MDKVideoToolboxSourceTextureCacheEntry(
+        sourceTextureCache[surfaceID] = MDKVideoToolboxSourceTextureCacheEntry(
             descriptors: descriptors,
             textures: textures
         )
         if sourceTextureCache.count > maxInflightStagingSlots {
             sourceTextureCache.removeAll(keepingCapacity: true)
-            sourceTextureCache[frame.surfaceID] = MDKVideoToolboxSourceTextureCacheEntry(
+            sourceTextureCache[surfaceID] = MDKVideoToolboxSourceTextureCacheEntry(
                 descriptors: descriptors,
                 textures: textures
             )
         }
         return textures
+    }
+
+    private func scaledCursorOverlaySample(
+        from cursorOverlaySample: MDKCursorOverlaySample?,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        destinationWidth: Int,
+        destinationHeight: Int
+    ) -> MDKCursorOverlaySample? {
+        guard let cursorOverlaySample else {
+            return nil
+        }
+        guard sourceWidth > 0, sourceHeight > 0 else {
+            return cursorOverlaySample
+        }
+
+        let scaleX = CGFloat(destinationWidth) / CGFloat(sourceWidth)
+        let scaleY = CGFloat(destinationHeight) / CGFloat(sourceHeight)
+        return MDKCursorOverlaySample(
+            surface: cursorOverlaySample.surface,
+            rect: CGRect(
+                x: cursorOverlaySample.rect.minX * scaleX,
+                y: cursorOverlaySample.rect.minY * scaleY,
+                width: cursorOverlaySample.rect.width * scaleX,
+                height: cursorOverlaySample.rect.height * scaleY
+            ),
+            isVerticallyFlipped: cursorOverlaySample.isVerticallyFlipped
+        )
     }
 
     private func makePlaneDescriptors(

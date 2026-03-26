@@ -125,12 +125,38 @@ private final class MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime: MDKEnc
             outputWidth: UInt(configuration.streamConfiguration.resolvedOutputWidth),
             outputHeight: UInt(configuration.streamConfiguration.resolvedOutputHeight),
             surfaceCount: configuration.resolvedPrivateCaptureSurfaceCount
-        ) { status, displayTime, frameSurface in
+        ) { status,
+            displayTime,
+            frameSurface,
+            cursorSurface,
+            cursorRectX,
+            cursorRectY,
+            cursorRectWidth,
+            cursorRectHeight,
+            cursorSurfaceIsVerticallyFlipped,
+            captureDurationNanoseconds,
+            cursorCompositeDurationNanoseconds in
             guard status == 0, let frameSurface else {
                 return
             }
 
             let captureSurface = MDKCaptureSurface(ioSurface: frameSurface)
+            let cursorOverlaySample = cursorSurface.flatMap { cursorSurface -> MDKCursorOverlaySample? in
+                guard cursorRectWidth > 0, cursorRectHeight > 0 else {
+                    return nil
+                }
+                let cursorSurface = MDKCaptureSurface(ioSurface: cursorSurface)
+                return MDKCursorOverlaySample(
+                    surface: cursorSurface,
+                    rect: CGRect(
+                        x: cursorRectX,
+                        y: cursorRectY,
+                        width: cursorRectWidth,
+                        height: cursorRectHeight
+                    ),
+                    isVerticallyFlipped: cursorSurfaceIsVerticallyFlipped
+                )
+            }
             frameHandler(
                 MDKCaptureFrame(
                     sequenceNumber: displayTime,
@@ -139,7 +165,10 @@ private final class MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime: MDKEnc
                     width: captureSurface.width,
                     height: captureSurface.height,
                     pixelFormat: captureSurface.pixelFormat,
-                    surface: captureSurface
+                    surface: captureSurface,
+                    cursorOverlaySample: cursorOverlaySample,
+                    sourceCaptureDurationNanoseconds: captureDurationNanoseconds,
+                    sourceCursorCompositeDurationNanoseconds: cursorCompositeDurationNanoseconds
                 )
             )
         }
@@ -262,6 +291,92 @@ private final class MDKEncodedCaptureSourceCadenceTracker: @unchecked Sendable {
         default:
             return "sub-30hz"
         }
+    }
+}
+
+private final class MDKEncodedCaptureSourceTimingTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var captureSampleCount: UInt64 = 0
+    private var cumulativeCaptureMilliseconds: Double = 0
+    private var minCaptureMilliseconds: Double?
+    private var maxCaptureMilliseconds: Double?
+    private var cursorCompositeSampleCount: UInt64 = 0
+    private var cumulativeCursorCompositeMilliseconds: Double = 0
+    private var minCursorCompositeMilliseconds: Double?
+    private var maxCursorCompositeMilliseconds: Double?
+
+    func record(frame: MDKCaptureFrame) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if let captureDurationNanoseconds = frame.sourceCaptureDurationNanoseconds {
+            let captureMilliseconds = Double(captureDurationNanoseconds) / 1_000_000
+            captureSampleCount += 1
+            cumulativeCaptureMilliseconds += captureMilliseconds
+            minCaptureMilliseconds = min(minCaptureMilliseconds ?? captureMilliseconds, captureMilliseconds)
+            maxCaptureMilliseconds = max(maxCaptureMilliseconds ?? captureMilliseconds, captureMilliseconds)
+        }
+
+        if let cursorCompositeDurationNanoseconds = frame.sourceCursorCompositeDurationNanoseconds {
+            let cursorCompositeMilliseconds = Double(cursorCompositeDurationNanoseconds) / 1_000_000
+            guard cursorCompositeMilliseconds > 0 else {
+                return
+            }
+            cursorCompositeSampleCount += 1
+            cumulativeCursorCompositeMilliseconds += cursorCompositeMilliseconds
+            minCursorCompositeMilliseconds = min(
+                minCursorCompositeMilliseconds ?? cursorCompositeMilliseconds,
+                cursorCompositeMilliseconds
+            )
+            maxCursorCompositeMilliseconds = max(
+                maxCursorCompositeMilliseconds ?? cursorCompositeMilliseconds,
+                cursorCompositeMilliseconds
+            )
+        }
+    }
+
+    func snapshotNotes() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var notes: [String] = []
+        if captureSampleCount > 0 {
+            notes.append("sourceCaptureSampleCount=\(captureSampleCount)")
+            if let minCaptureMilliseconds {
+                notes.append(String(format: "sourceMinCaptureMilliseconds=%.3f", minCaptureMilliseconds))
+            }
+            if let maxCaptureMilliseconds {
+                notes.append(String(format: "sourceMaxCaptureMilliseconds=%.3f", maxCaptureMilliseconds))
+            }
+            notes.append(
+                String(
+                    format: "sourceAverageCaptureMilliseconds=%.3f",
+                    cumulativeCaptureMilliseconds / Double(captureSampleCount)
+                )
+            )
+        }
+
+        if cursorCompositeSampleCount > 0 {
+            notes.append("sourceCursorCompositeSampleCount=\(cursorCompositeSampleCount)")
+            if let minCursorCompositeMilliseconds {
+                notes.append(
+                    String(format: "sourceMinCursorCompositeMilliseconds=%.3f", minCursorCompositeMilliseconds)
+                )
+            }
+            if let maxCursorCompositeMilliseconds {
+                notes.append(
+                    String(format: "sourceMaxCursorCompositeMilliseconds=%.3f", maxCursorCompositeMilliseconds)
+                )
+            }
+            notes.append(
+                String(
+                    format: "sourceAverageCursorCompositeMilliseconds=%.3f",
+                    cumulativeCursorCompositeMilliseconds / Double(cursorCompositeSampleCount)
+                )
+            )
+        }
+
+        return notes
     }
 }
 
@@ -400,6 +515,7 @@ public actor MDKEncodedCaptureSession {
     private var statistics = MDKEncodedCaptureSessionStatistics()
     private var runtimeDiagnosticNotes: [String] = []
     private var sourceCadenceTracker: MDKEncodedCaptureSourceCadenceTracker?
+    private var sourceTimingTracker: MDKEncodedCaptureSourceTimingTracker?
     private var scheduledRestartTask: Task<Void, Never>?
     private var scheduledRestartGeneration: UInt64?
 
@@ -448,9 +564,20 @@ public actor MDKEncodedCaptureSession {
     ) async -> MDKEncodedCaptureSourcePreparation {
         switch configuration.resolvedSourceBackend {
         case .privateDirectIOSurface:
+            let requestsExtendedRange = configuration.resolvedEncodedHDRConfiguration.map {
+                $0.transferFunction != .ituR709
+            } ?? false
+            let cursorComposition = configuration.streamConfiguration.resolvedShowCursor
+                ? "metal-overlay-on-encode"
+                : "disabled"
             return MDKEncodedCaptureSourcePreparation(
                 recommendedPendingFrameCount: max(configuration.resolvedPrivateCaptureSurfaceCount - 1, 1),
-                diagnosticNotes: [],
+                diagnosticNotes: [
+                    String(format: "privateCaptureSourcePixelFormat=0x%08X", kCVPixelFormatType_32BGRA),
+                    String(format: "privateCaptureRequestedPixelFormat=0x%08X", configuration.resolvedCapturePixelFormat),
+                    "privateCaptureExtendedRange=\(requestsExtendedRange)",
+                    "privateCaptureCursorComposition=\(cursorComposition)"
+                ],
                 skyLightTuningSelection: nil
             )
         case .skyLightDisplayStream:
@@ -606,6 +733,7 @@ public actor MDKEncodedCaptureSession {
         )
         let pendingFrameTracker = MDKEncodedCapturePendingFrameTracker()
         let sourceCadenceTracker = MDKEncodedCaptureSourceCadenceTracker()
+        let sourceTimingTracker = MDKEncodedCaptureSourceTimingTracker()
         let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
         let maximumPendingFrameCount = sourcePreparation.recommendedPendingFrameCount
 
@@ -641,6 +769,7 @@ public actor MDKEncodedCaptureSession {
             }
 
             sourceCadenceTracker.record(displayTime: frame.displayTime)
+            sourceTimingTracker.record(frame: frame)
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
                     await self.handleSourceFrameDropped(
@@ -666,12 +795,14 @@ public actor MDKEncodedCaptureSession {
             }
         }
         self.sourceCadenceTracker = sourceCadenceTracker
+        self.sourceTimingTracker = sourceTimingTracker
         runtimeDiagnosticNotes = sourcePreparation.diagnosticNotes
 
         do {
             try source.start()
         } catch {
             self.sourceCadenceTracker = nil
+            self.sourceTimingTracker = nil
             statistics = preservedStatistics(
                 lastErrorDescription: (error as? LocalizedError)?.errorDescription ?? String(describing: error),
                 isRunning: false
@@ -713,7 +844,7 @@ public actor MDKEncodedCaptureSession {
         return mergedStatistics(
             with: summary,
             isRunning: statistics.isRunning,
-            sourceNotes: sourceCadenceTracker?.snapshotNotes() ?? []
+            sourceNotes: combinedSourceNotes()
         )
     }
 
@@ -945,6 +1076,7 @@ public actor MDKEncodedCaptureSession {
 
         guard let runtime else {
             sourceCadenceTracker = nil
+            sourceTimingTracker = nil
             if finishingStream {
                 continuation?.finish()
                 continuation = nil
@@ -976,7 +1108,7 @@ public actor MDKEncodedCaptureSession {
 
         let stopStatus = runtime.source.stop()
         let processingSummary = runtime.processor.finalize()
-        let sourceNotes = sourceCadenceTracker?.snapshotNotes() ?? []
+        let sourceNotes = combinedSourceNotes()
         self.runtime = nil
         if finishingStream {
             continuation?.finish()
@@ -1005,6 +1137,7 @@ public actor MDKEncodedCaptureSession {
             notes: mergedRuntimeNotes(with: (processingSummary?.notes ?? statistics.notes) + sourceNotes)
         )
         sourceCadenceTracker = nil
+        sourceTimingTracker = nil
         if emitStopEvent {
             emitEvent(
                 .init(
@@ -1074,6 +1207,10 @@ public actor MDKEncodedCaptureSession {
         }
 
         return merged
+    }
+
+    private func combinedSourceNotes() -> [String] {
+        (sourceCadenceTracker?.snapshotNotes() ?? []) + (sourceTimingTracker?.snapshotNotes() ?? [])
     }
 
     private func emitEvent(_ event: MDKEncodedCaptureSessionEvent) {
