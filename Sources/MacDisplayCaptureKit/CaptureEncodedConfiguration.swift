@@ -160,7 +160,33 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
     }
 
     var resolvedEncodedHDRConfiguration: MDKVideoHDRConfiguration? {
-        hdrConfiguration?.negotiatedForEncodedDelivery(codec: codec)
+        resolvedEncodedHDRConfiguration(using: MDKPrivateCaptureCapabilityProbe.current())
+    }
+
+    func resolvedEncodedHDRConfiguration(
+        using capabilities: MDKPrivateCaptureCapabilities
+    ) -> MDKVideoHDRConfiguration? {
+        guard let negotiatedConfiguration = hdrConfiguration?.negotiatedForEncodedDelivery(codec: codec) else {
+            return nil
+        }
+
+        guard resolvedSourceBackend(using: capabilities) == .privateDirectIOSurface,
+              negotiatedConfiguration.transferFunction != .ituR709 else {
+            return negotiatedConfiguration
+        }
+
+        // The private direct path exposes BGRA IOSurfaces without reliable source
+        // color metadata. Treat the source gamut as unknown and avoid remapping
+        // from negotiated display primaries into the HDR signal primaries.
+        return MDKVideoHDRConfiguration(
+            sourceColorPrimaries: nil,
+            colorPrimaries: negotiatedConfiguration.colorPrimaries,
+            transferFunction: negotiatedConfiguration.transferFunction,
+            yCbCrMatrix: negotiatedConfiguration.yCbCrMatrix,
+            metadataInsertionMode: negotiatedConfiguration.metadataInsertionMode,
+            masteringDisplayColorVolume: negotiatedConfiguration.masteringDisplayColorVolume,
+            contentLightLevelInfo: negotiatedConfiguration.contentLightLevelInfo
+        )
     }
 
     private func shouldPreferPrivateIOSurfaceSource(

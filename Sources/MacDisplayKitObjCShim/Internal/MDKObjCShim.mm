@@ -13210,7 +13210,7 @@ static CGRect MDKCreateCursorDrawRect(
                 strongSelf->_cursorHotSpot,
                 strongSelf->_cursorLogicalSize
             );
-            emittedCursorSurfaceIsVerticallyFlipped = NO;
+            emittedCursorSurfaceIsVerticallyFlipped = YES;
             const uint64_t cursorCompositeEnd = mach_absolute_time();
             mach_timebase_info_data_t timebase;
             mach_timebase_info(&timebase);

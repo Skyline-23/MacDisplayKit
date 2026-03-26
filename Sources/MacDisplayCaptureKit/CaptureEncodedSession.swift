@@ -570,13 +570,16 @@ public actor MDKEncodedCaptureSession {
             let cursorComposition = configuration.streamConfiguration.resolvedShowCursor
                 ? "metal-overlay-on-encode"
                 : "disabled"
+            let sourceColorTransform =
+                requestsExtendedRange ? "identity-signal-primaries" : "negotiated-source-primaries"
             return MDKEncodedCaptureSourcePreparation(
                 recommendedPendingFrameCount: max(configuration.resolvedPrivateCaptureSurfaceCount - 1, 1),
                 diagnosticNotes: [
                     String(format: "privateCaptureSourcePixelFormat=0x%08X", kCVPixelFormatType_32BGRA),
                     String(format: "privateCaptureRequestedPixelFormat=0x%08X", configuration.resolvedCapturePixelFormat),
                     "privateCaptureExtendedRange=\(requestsExtendedRange)",
-                    "privateCaptureCursorComposition=\(cursorComposition)"
+                    "privateCaptureCursorComposition=\(cursorComposition)",
+                    "privateCaptureSourceColorTransform=\(sourceColorTransform)"
                 ],
                 skyLightTuningSelection: nil
             )

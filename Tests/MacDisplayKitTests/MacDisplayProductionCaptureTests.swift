@@ -99,6 +99,48 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         )
     }
 
+    func testPrivateDirectHDRBGRASourceBypassesNegotiatedSourcePrimariesRemap() {
+        let configuration = MDKEncodedCaptureConfiguration.panelNative(
+            displayID: 7,
+            hdrConfiguration: .hdr10(sourceColorPrimaries: .p3D65)
+        )
+        let privateCapabilities = MDKPrivateCaptureCapabilities(
+            desktopCaptureAvailable: true,
+            displayIOSurfaceCaptureAvailable: true,
+            displayIOSurfaceCaptureWithOptionsAvailable: true,
+            displayIOSurfaceProxyCaptureAvailable: false,
+            displayStreamProxyAvailable: false,
+            extendedRangeOptionAvailable: true
+        )
+
+        let hdrConfiguration = configuration.resolvedEncodedHDRConfiguration(using: privateCapabilities)
+
+        XCTAssertNil(hdrConfiguration?.sourceColorPrimaries)
+        XCTAssertEqual(hdrConfiguration?.colorPrimaries, .ituR2020)
+        XCTAssertEqual(hdrConfiguration?.transferFunction, .smpteSt2084PQ)
+        XCTAssertEqual(hdrConfiguration?.yCbCrMatrix, .ituR2020)
+    }
+
+    func testSkyLightHDRPreservesNegotiatedSourcePrimariesRemap() {
+        let configuration = MDKEncodedCaptureConfiguration.panelNative(
+            displayID: 7,
+            hdrConfiguration: .hdr10(sourceColorPrimaries: .p3D65)
+        )
+        let skyLightCapabilities = MDKPrivateCaptureCapabilities(
+            desktopCaptureAvailable: true,
+            displayIOSurfaceCaptureAvailable: false,
+            displayIOSurfaceCaptureWithOptionsAvailable: false,
+            displayIOSurfaceProxyCaptureAvailable: false,
+            displayStreamProxyAvailable: true,
+            extendedRangeOptionAvailable: false
+        )
+
+        let hdrConfiguration = configuration.resolvedEncodedHDRConfiguration(using: skyLightCapabilities)
+
+        XCTAssertEqual(hdrConfiguration?.sourceColorPrimaries, .p3D65)
+        XCTAssertEqual(hdrConfiguration?.colorPrimaries, .ituR2020)
+    }
+
     func testEncodedCaptureConfigurationPreservesExplicitCapturePixelFormatOverride() {
         let configuration = MDKEncodedCaptureConfiguration.panelNative(
             displayID: 9,
