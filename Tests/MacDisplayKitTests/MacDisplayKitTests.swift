@@ -163,6 +163,36 @@ final class MacDisplayKitTests: XCTestCase {
         )
     }
 
+    func testHEVCRawYUVPassthroughDoesNotRequireDetachedSubmission() {
+        XCTAssertFalse(
+            MDKVideoEncoderCodec.hevc.requiresDetachedSubmissionSurface(
+                sourcePixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                targetPixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                needsScaling: false,
+                hasCursorOverlay: false
+            )
+        )
+        XCTAssertTrue(
+            MDKVideoEncoderCodec.hevc.requiresDetachedSubmissionSurface(
+                sourcePixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                targetPixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                needsScaling: false,
+                hasCursorOverlay: true
+            )
+        )
+    }
+
+    func testHEVCBGRASourceStillRequiresDetachedSubmission() {
+        XCTAssertTrue(
+            MDKVideoEncoderCodec.hevc.requiresDetachedSubmissionSurface(
+                sourcePixelFormat: kCVPixelFormatType_32BGRA,
+                targetPixelFormat: kCVPixelFormatType_32BGRA,
+                needsScaling: false,
+                hasCursorOverlay: false
+            )
+        )
+    }
+
     func testAutoEncoderInputStrategyTracksResolvedCaptureBackend() {
         let baseStreamConfiguration = MDKSkyLightDisplayStreamConfiguration(
             queueDepth: 2,

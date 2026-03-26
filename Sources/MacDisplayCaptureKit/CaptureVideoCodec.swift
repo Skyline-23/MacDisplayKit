@@ -218,9 +218,32 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         }
     }
 
-    var prefersDetachedSubmissionSurface: Bool {
+    func requiresDetachedSubmissionSurface(
+        sourcePixelFormat: UInt32,
+        targetPixelFormat: UInt32,
+        needsScaling: Bool,
+        hasCursorOverlay: Bool
+    ) -> Bool {
+        if needsScaling || sourcePixelFormat != targetPixelFormat || hasCursorOverlay {
+            return true
+        }
+
         switch self {
-        case .h264, .hevc, .proResProxy:
+        case .h264, .hevc:
+            switch sourcePixelFormat {
+            case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                 kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+                 kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                 kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+                 kCVPixelFormatType_422YpCbCr8BiPlanarVideoRange,
+                 kCVPixelFormatType_422YpCbCr8BiPlanarFullRange,
+                 kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
+                 kCVPixelFormatType_422YpCbCr10BiPlanarFullRange:
+                return false
+            default:
+                return true
+            }
+        case .proResProxy:
             return true
         }
     }

@@ -445,10 +445,15 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let needsPixelFormatConversion = frame.pixelFormat != targetPixelFormat
         let needsScaling = outputDimensions.x != frame.width || outputDimensions.y != frame.height
 
-        if let commandQueue, (needsPixelFormatConversion || needsScaling || codec.prefersDetachedSubmissionSurface) {
-            // Capture-owned IOSurfaces for HEVC/ProRes must be detached from the encoder.
-            // Direct submission pins the producer's surface pool behind VT output callbacks
-            // and collapses source fps even when the surface format already matches the encoder.
+        let hasCursorOverlay = frame.cursorOverlaySample != nil
+        let requiresDetachedSubmissionSurface = codec.requiresDetachedSubmissionSurface(
+            sourcePixelFormat: frame.pixelFormat,
+            targetPixelFormat: targetPixelFormat,
+            needsScaling: needsScaling,
+            hasCursorOverlay: hasCursorOverlay
+        )
+
+        if let commandQueue, requiresDetachedSubmissionSurface {
             try stageAndEncode(
                 frame: frame,
                 targetPixelFormat: targetPixelFormat,
@@ -766,13 +771,15 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             codec == .hevc &&
             targetFrameRate >= 100 &&
             hdrConfiguration?.transferFunction == .smpteSt2084PQ
+        let allowsTemporalCompression = codec != .proResProxy
+        let maxFrameDelayCount = codec == .proResProxy ? 0 : 1
 
         setSessionProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue, label: "RealTime")
         setSessionProperty(session, key: kVTCompressionPropertyKey_ProgressiveScan, value: kCFBooleanTrue, label: "ProgressiveScan")
         setSessionProperty(
             session,
             key: kVTCompressionPropertyKey_AllowTemporalCompression,
-            value: (codec == .proResProxy || isHighRefreshHDRHEVC) ? kCFBooleanFalse : kCFBooleanTrue,
+            value: allowsTemporalCompression ? kCFBooleanTrue : kCFBooleanFalse,
             label: "AllowTemporalCompression"
         )
         setSessionProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse, label: "AllowFrameReordering")
@@ -782,7 +789,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         setSessionProperty(
             session,
             key: kVTCompressionPropertyKey_MaxFrameDelayCount,
-            value: NSNumber(value: isHighRefreshHDRHEVC ? 0 : 1),
+            value: NSNumber(value: maxFrameDelayCount),
             label: "MaxFrameDelayCount"
         )
         setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedDuration, value: NSNumber(value: 1.0 / Double(targetFrameRate)), label: "ExpectedDuration")
@@ -859,6 +866,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         sessionConfigurationNotes.append("videoToolboxEncodedHeight=\(height)")
         sessionConfigurationNotes.append("videoToolboxTargetFrameRateHint=\(targetFrameRate)")
         sessionConfigurationNotes.append("videoToolboxHighRefreshHDRLowLatencyMode=\(isHighRefreshHDRHEVC ? "enabled" : "disabled")")
+        sessionConfigurationNotes.append("videoToolboxAllowTemporalCompression=\(allowsTemporalCompression ? "enabled" : "disabled")")
+        sessionConfigurationNotes.append("videoToolboxConfiguredMaxFrameDelayCount=\(maxFrameDelayCount)")
         if codec.supportsAverageBitRate {
             let averageBitRate = resolvedAverageBitRate(
                 width: width,
