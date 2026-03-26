@@ -241,6 +241,22 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    func lowLatencyAverageBitRate(
+        width: Int,
+        height: Int,
+        frameRate: Int
+    ) -> Int {
+        let pixelsPerSecond = max(width * height * frameRate, 1)
+        switch self {
+        case .h264:
+            return min(max(pixelsPerSecond / 10, 32_000_000), 90_000_000)
+        case .hevc:
+            return min(max(pixelsPerSecond / 4, 120_000_000), 240_000_000)
+        case .proResProxy:
+            return averageBitRate(width: width, height: height, frameRate: frameRate)
+        }
+    }
+
     func dataRateLimits(
         width: Int,
         height: Int,
@@ -249,6 +265,22 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         let averageBitRate = averageBitRate(width: width, height: height, frameRate: frameRate)
         let oneSecondLimitBytes = Int((Double(averageBitRate) / 8.0) * 1.50)
         let quarterSecondLimitBytes = Int((Double(averageBitRate) / 8.0) * 0.50)
+        return [
+            NSNumber(value: quarterSecondLimitBytes),
+            NSNumber(value: 0.25),
+            NSNumber(value: oneSecondLimitBytes),
+            NSNumber(value: 1.0)
+        ]
+    }
+
+    func lowLatencyDataRateLimits(
+        width: Int,
+        height: Int,
+        frameRate: Int
+    ) -> [NSNumber] {
+        let averageBitRate = lowLatencyAverageBitRate(width: width, height: height, frameRate: frameRate)
+        let oneSecondLimitBytes = Int((Double(averageBitRate) / 8.0) * 1.75)
+        let quarterSecondLimitBytes = Int((Double(averageBitRate) / 8.0) * 0.65)
         return [
             NSNumber(value: quarterSecondLimitBytes),
             NSNumber(value: 0.25),

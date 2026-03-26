@@ -759,14 +759,29 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: status)
         }
 
+        let isHighRefreshHDRHEVC =
+            codec == .hevc &&
+            targetFrameRate >= 100 &&
+            hdrConfiguration?.transferFunction == .smpteSt2084PQ
+
         setSessionProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue, label: "RealTime")
         setSessionProperty(session, key: kVTCompressionPropertyKey_ProgressiveScan, value: kCFBooleanTrue, label: "ProgressiveScan")
-        setSessionProperty(session, key: kVTCompressionPropertyKey_AllowTemporalCompression, value: codec == .proResProxy ? kCFBooleanFalse : kCFBooleanTrue, label: "AllowTemporalCompression")
+        setSessionProperty(
+            session,
+            key: kVTCompressionPropertyKey_AllowTemporalCompression,
+            value: (codec == .proResProxy || isHighRefreshHDRHEVC) ? kCFBooleanFalse : kCFBooleanTrue,
+            label: "AllowTemporalCompression"
+        )
         setSessionProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse, label: "AllowFrameReordering")
         setSessionProperty(session, key: kVTCompressionPropertyKey_AllowOpenGOP, value: kCFBooleanFalse, label: "AllowOpenGOP")
         setSessionProperty(session, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue, label: "PrioritizeEncodingSpeedOverQuality")
         setSessionProperty(session, key: kVTCompressionPropertyKey_MaximizePowerEfficiency, value: kCFBooleanFalse, label: "MaximizePowerEfficiency")
-        setSessionProperty(session, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: NSNumber(value: 1), label: "MaxFrameDelayCount")
+        setSessionProperty(
+            session,
+            key: kVTCompressionPropertyKey_MaxFrameDelayCount,
+            value: NSNumber(value: isHighRefreshHDRHEVC ? 0 : 1),
+            label: "MaxFrameDelayCount"
+        )
         setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedDuration, value: NSNumber(value: 1.0 / Double(targetFrameRate)), label: "ExpectedDuration")
         setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: targetFrameRate), label: "ExpectedFrameRate")
         setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: targetFrameRate), label: "MaxKeyFrameInterval")
@@ -781,22 +796,28 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             )
         }
         if codec.supportsAverageBitRate {
+            let averageBitRate = isHighRefreshHDRHEVC
+                ? codec.lowLatencyAverageBitRate(width: width, height: height, frameRate: targetFrameRate)
+                : codec.averageBitRate(width: width, height: height, frameRate: targetFrameRate)
             setSessionProperty(
                 session,
                 key: kVTCompressionPropertyKey_AverageBitRate,
-                value: NSNumber(value: codec.averageBitRate(width: width, height: height, frameRate: targetFrameRate)),
+                value: NSNumber(value: averageBitRate),
                 label: "AverageBitRate"
             )
         }
         if codec.supportsDataRateLimits {
+            let dataRateLimits = isHighRefreshHDRHEVC
+                ? codec.lowLatencyDataRateLimits(width: width, height: height, frameRate: targetFrameRate)
+                : codec.dataRateLimits(width: width, height: height, frameRate: targetFrameRate)
             setSessionProperty(
                 session,
                 key: kVTCompressionPropertyKey_DataRateLimits,
-                value: codec.dataRateLimits(width: width, height: height, frameRate: targetFrameRate) as CFArray,
+                value: dataRateLimits as CFArray,
                 label: "DataRateLimits"
             )
         }
-        if codec.supportsQualityProperty {
+        if codec.supportsQualityProperty && !isHighRefreshHDRHEVC {
             setSessionProperty(session, key: kVTCompressionPropertyKey_Quality, value: NSNumber(value: codec.targetQuality), label: "Quality")
         }
         if codec.supportsReferenceBufferCount {
@@ -830,15 +851,19 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         sessionConfigurationNotes.append("videoToolboxEncodedWidth=\(width)")
         sessionConfigurationNotes.append("videoToolboxEncodedHeight=\(height)")
         sessionConfigurationNotes.append("videoToolboxTargetFrameRateHint=\(targetFrameRate)")
+        sessionConfigurationNotes.append("videoToolboxHighRefreshHDRLowLatencyMode=\(isHighRefreshHDRHEVC ? "enabled" : "disabled")")
         if codec.supportsAverageBitRate {
-            let averageBitRate = codec.averageBitRate(width: width, height: height, frameRate: targetFrameRate)
+            let averageBitRate = isHighRefreshHDRHEVC
+                ? codec.lowLatencyAverageBitRate(width: width, height: height, frameRate: targetFrameRate)
+                : codec.averageBitRate(width: width, height: height, frameRate: targetFrameRate)
             sessionConfigurationNotes.append("videoToolboxConfiguredAverageBitRate=\(averageBitRate)")
         } else {
             sessionConfigurationNotes.append("videoToolboxConfiguredAverageBitRate=default")
         }
         if codec.supportsDataRateLimits {
-            let dataRateLimitsDescription = codec
-                .dataRateLimits(width: width, height: height, frameRate: targetFrameRate)
+            let dataRateLimitsDescription = (isHighRefreshHDRHEVC
+                ? codec.lowLatencyDataRateLimits(width: width, height: height, frameRate: targetFrameRate)
+                : codec.dataRateLimits(width: width, height: height, frameRate: targetFrameRate))
                 .map(\.stringValue)
                 .joined(separator: ",")
             sessionConfigurationNotes.append("videoToolboxConfiguredDataRateLimits=\(dataRateLimitsDescription)")
