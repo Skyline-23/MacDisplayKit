@@ -601,6 +601,7 @@ public actor MDKEncodedCaptureSession {
                 diagnosticNotes: (tuningSelection?.notes ?? []) + [
                     "rawPrivateDisplayStream=true",
                     String(format: "rawPrivateDisplayStreamRequestedPixelFormat=0x%08X", configuration.resolvedCapturePixelFormat),
+                    "rawPrivateDisplayStreamRequestedMatrix=\(configuration.resolvedSkyLightDisplayStreamYCbCrMatrix?.imageBufferValue as String? ?? "unset")",
                     "skyLightPendingPolicy=\(pendingPolicy)",
                     "skyLightRecommendedPendingFrameCount=\(recommendedPendingFrameCount)"
                 ],

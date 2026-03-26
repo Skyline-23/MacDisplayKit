@@ -378,6 +378,49 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(negotiated.yCbCrMatrix, .ituR2020)
     }
 
+    func testRawSkyLightEncodedCaptureLeavesStreamMatrixUnsetForHDR() {
+        let configuration = MDKEncodedCaptureConfiguration.panelNative(
+            displayID: 7,
+            codec: .hevc,
+            capturePixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+            hdrConfiguration: .hdr10()
+        )
+        let capabilities = MDKPrivateCaptureCapabilities(
+            desktopCaptureAvailable: false,
+            displayIOSurfaceCaptureAvailable: false,
+            displayIOSurfaceCaptureWithOptionsAvailable: false,
+            displayIOSurfaceProxyCaptureAvailable: false,
+            displayStreamProxyAvailable: false,
+            rawSkyLightDisplayStreamAvailable: true,
+            extendedRangeOptionAvailable: true
+        )
+
+        XCTAssertEqual(configuration.resolvedSourceBackend(using: capabilities), .skyLightDisplayStream)
+        XCTAssertEqual(configuration.resolvedEncodedHDRConfiguration(using: capabilities)?.yCbCrMatrix, .ituR2020)
+        XCTAssertNil(configuration.resolvedSkyLightDisplayStreamYCbCrMatrix)
+    }
+
+    func testRawSkyLightEncodedCaptureLeavesStreamMatrixUnsetForSDR() {
+        let configuration = MDKEncodedCaptureConfiguration.panelNative(
+            displayID: 7,
+            codec: .h264,
+            capturePixelFormat: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            hdrConfiguration: nil
+        )
+        let capabilities = MDKPrivateCaptureCapabilities(
+            desktopCaptureAvailable: false,
+            displayIOSurfaceCaptureAvailable: false,
+            displayIOSurfaceCaptureWithOptionsAvailable: false,
+            displayIOSurfaceProxyCaptureAvailable: false,
+            displayStreamProxyAvailable: false,
+            rawSkyLightDisplayStreamAvailable: true,
+            extendedRangeOptionAvailable: true
+        )
+
+        XCTAssertEqual(configuration.resolvedSourceBackend(using: capabilities), .skyLightDisplayStream)
+        XCTAssertNil(configuration.resolvedSkyLightDisplayStreamYCbCrMatrix)
+    }
+
     func testDefaultRawProcessingMatrixKeepsOptInCodecsOutOfBand() {
         XCTAssertFalse(MDKSkyLightDisplayStreamProcessingMatrix.defaultProcessingModes.contains(.videoToolboxEncodeProResProxyExperimental))
         XCTAssertTrue(MDKSkyLightDisplayStreamProcessingMatrix.optInProcessingModes.contains(.videoToolboxEncodeProResProxyExperimental))

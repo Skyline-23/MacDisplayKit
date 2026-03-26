@@ -253,19 +253,12 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
     }
 
     var resolvedSkyLightDisplayStreamYCbCrMatrix: MDKVideoYCbCrMatrix? {
-        switch resolvedCapturePixelFormat {
-        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
-             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
-             kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
-             kCVPixelFormatType_422YpCbCr8BiPlanarVideoRange,
-             kCVPixelFormatType_422YpCbCr8BiPlanarFullRange,
-             kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
-             kCVPixelFormatType_422YpCbCr10BiPlanarFullRange:
-            return resolvedEncodedHDRConfiguration?.yCbCrMatrix ?? .ituR709
-        default:
-            return nil
-        }
+        // Raw private SLDisplayStream paths are stable when they emit their native
+        // surface attachments and we describe the signal matrix at the VT/bitstream
+        // layer. Forcing kCGDisplayStreamYCbCrMatrix here is the main delta versus
+        // the benchmark path and has produced both callback crashes and mis-colored
+        // output on the real session path.
+        nil
     }
 
     var resolvedSkyLightProcessingMode: MDKCaptureBenchmarkProcessingMode? {
