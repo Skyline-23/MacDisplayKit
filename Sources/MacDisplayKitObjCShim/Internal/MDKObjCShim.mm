@@ -12785,12 +12785,13 @@ static void MDKOverlayCursorOnIOSurface(
 
     const CGFloat localX = (cursorLocation.x - CGRectGetMinX(displayBounds)) * displayScaleX;
     const CGFloat localY = (cursorLocation.y - CGRectGetMinY(displayBounds)) * displayScaleY;
-    const CGRect drawRect = CGRectMake(
+    CGRect drawRect = CGRectMake(
         std::floor(localX - cursorHotSpot.x * imageScaleX),
         std::floor(localY - cursorHotSpot.y * imageScaleY),
         static_cast<CGFloat>(CGImageGetWidth(cursorImage)),
         static_cast<CGFloat>(CGImageGetHeight(cursorImage))
     );
+    drawRect.origin.y = static_cast<CGFloat>(surfaceHeight) - CGRectGetMaxY(drawRect);
     const CGRect surfaceRect = CGRectMake(0.0, 0.0, static_cast<CGFloat>(surfaceWidth), static_cast<CGFloat>(surfaceHeight));
     if (CGRectIsEmpty(CGRectIntersection(drawRect, surfaceRect))) {
         return;
@@ -12822,8 +12823,6 @@ static void MDKOverlayCursorOnIOSurface(
     }
 
     CGContextSetBlendMode(context, kCGBlendModeNormal);
-    CGContextTranslateCTM(context, 0.0, static_cast<CGFloat>(surfaceHeight));
-    CGContextScaleCTM(context, 1.0, -1.0);
     CGContextDrawImage(context, drawRect, cursorImage);
     CGContextRelease(context);
     IOSurfaceUnlock(surface, 0, nullptr);
