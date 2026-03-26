@@ -12823,7 +12823,12 @@ static void MDKOverlayCursorOnIOSurface(
     }
 
     CGContextSetBlendMode(context, kCGBlendModeNormal);
+    // Keep the cursor hotspot placement but flip the image vertically for Quartz bitmap contexts.
+    CGContextSaveGState(context);
+    CGContextTranslateCTM(context, 0.0, CGRectGetMinY(drawRect) + CGRectGetMaxY(drawRect));
+    CGContextScaleCTM(context, 1.0, -1.0);
     CGContextDrawImage(context, drawRect, cursorImage);
+    CGContextRestoreGState(context);
     CGContextRelease(context);
     IOSurfaceUnlock(surface, 0, nullptr);
 }
