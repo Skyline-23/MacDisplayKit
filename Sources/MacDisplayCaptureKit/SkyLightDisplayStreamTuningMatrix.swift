@@ -101,6 +101,13 @@ public enum MDKSkyLightDisplayStreamTuningMatrix {
         showCursor: false
     )
 
+    public static let request120LikeQueue2Candidate = MDKSkyLightDisplayStreamTuningCandidate(
+        identifier: "min-frame-240hz-q2",
+        minimumFrameTime: 1.0 / 240.0,
+        queueDepth: 2,
+        showCursor: false
+    )
+
     public static let request120LikeCandidate = MDKSkyLightDisplayStreamTuningCandidate(
         identifier: "min-frame-240hz-q1",
         minimumFrameTime: 1.0 / 240.0,
@@ -211,6 +218,7 @@ public enum MDKSkyLightDisplayStreamTuningAdvisor {
              .videoToolboxEncodeH264Downscale2x:
             var candidates = [
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue2Candidate,
+                MDKSkyLightDisplayStreamTuningMatrix.request120LikeQueue2Candidate,
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue3Candidate,
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue1Candidate,
                 MDKSkyLightDisplayStreamTuningMatrix.request120LikeCandidate,
