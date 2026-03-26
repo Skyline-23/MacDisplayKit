@@ -87,6 +87,25 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(MDKVideoEncoderCodec.hevc.referenceBufferCount, 1)
     }
 
+    func testHighRefreshRealTimeEncodeUsesZeroFrameDelay() {
+        XCTAssertEqual(
+            MDKVideoToolboxLatencyPolicy.maxFrameDelayCount(codec: .hevc, targetFrameRate: 120),
+            0
+        )
+        XCTAssertEqual(
+            MDKVideoToolboxLatencyPolicy.maxFrameDelayCount(codec: .h264, targetFrameRate: 120),
+            0
+        )
+        XCTAssertEqual(
+            MDKVideoToolboxLatencyPolicy.maxFrameDelayCount(codec: .hevc, targetFrameRate: 60),
+            1
+        )
+        XCTAssertEqual(
+            MDKVideoToolboxLatencyPolicy.maxFrameDelayCount(codec: .proResProxy, targetFrameRate: 120),
+            0
+        )
+    }
+
     func testExplicitAverageBitRateProducesDeterministicDataRateLimits() {
         let lowLatencyLimits = MDKVideoEncoderCodec.hevc.dataRateLimits(
             forAverageBitRate: 41_000_000,

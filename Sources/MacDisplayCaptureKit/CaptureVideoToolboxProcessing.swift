@@ -98,6 +98,19 @@ private final class MDKVideoToolboxSendablePixelBuffer: @unchecked Sendable {
     }
 }
 
+enum MDKVideoToolboxLatencyPolicy {
+    static func maxFrameDelayCount(
+        codec: MDKVideoEncoderCodec,
+        targetFrameRate: Int
+    ) -> Int {
+        if codec == .proResProxy {
+            return 0
+        }
+
+        return targetFrameRate >= 100 ? 0 : 1
+    }
+}
+
 private struct MDKVideoToolboxReplayState {
     let imageBuffer: MDKVideoToolboxSendablePixelBuffer
     let frame: MDKCaptureFrame
@@ -854,7 +867,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             targetFrameRate >= 100 &&
             hdrConfiguration?.transferFunction == .smpteSt2084PQ
         let allowsTemporalCompression = codec != .proResProxy
-        let maxFrameDelayCount = codec == .proResProxy ? 0 : 1
+        let maxFrameDelayCount = MDKVideoToolboxLatencyPolicy.maxFrameDelayCount(
+            codec: codec,
+            targetFrameRate: targetFrameRate
+        )
 
         setSessionProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue, label: "RealTime")
         setSessionProperty(session, key: kVTCompressionPropertyKey_ProgressiveScan, value: kCFBooleanTrue, label: "ProgressiveScan")
