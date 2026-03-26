@@ -137,6 +137,10 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
     func resolvedSourceBackend(
         using capabilities: MDKPrivateCaptureCapabilities
     ) -> MDKEncodedCaptureSourceBackend {
+        if shouldPreferRawSkyLightDisplayStream(using: capabilities) {
+            return .skyLightDisplayStream
+        }
+
         guard shouldPreferPrivateIOSurfaceSource(using: capabilities) else {
             return .skyLightDisplayStream
         }
@@ -193,6 +197,20 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         using capabilities: MDKPrivateCaptureCapabilities
     ) -> Bool {
         capabilities.supportsIOSurfaceDisplayCapture
+    }
+
+    private func shouldPreferRawSkyLightDisplayStream(
+        using capabilities: MDKPrivateCaptureCapabilities
+    ) -> Bool {
+        guard capabilities.rawSkyLightDisplayStreamAvailable else {
+            return false
+        }
+
+        // The direct IOSurface path currently emits BGRA surfaces, so any YUV-
+        // oriented encoded session still pays a BGRA->YUV staging cost. The raw
+        // private SLDisplayStream path can emit YUV surfaces directly, which is
+        // the better production path for HEVC/H.264 and high-refresh HDR work.
+        return resolvedCapturePixelFormat != kCVPixelFormatType_32BGRA
     }
 
     var resolvedEncoderInputStrategy: MDKEncodedCaptureEncoderInputStrategy {

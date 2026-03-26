@@ -685,6 +685,12 @@ BOOL MDKShimVideoPrivateDisplayStreamProxyAvailable(void) {
     return MDKLookupScreenCaptureKitSymbol("SLSDisplayStreamCreateProxying") != nullptr;
 }
 
+BOOL MDKShimVideoRawSkyLightDisplayStreamAvailable(void) {
+    return MDKLookupCaptureSymbol("SLDisplayStreamCreateWithDispatchQueue") != nullptr &&
+        MDKLookupCaptureSymbol("SLDisplayStreamStart") != nullptr &&
+        MDKLookupCaptureSymbol("SLDisplayStreamStop") != nullptr;
+}
+
 BOOL MDKShimVideoPrivateCaptureExtendedRangeOptionAvailable(void) {
     return MDKLookupCaptureSymbol("kSLSCaptureExtendedRange") != nullptr;
 }

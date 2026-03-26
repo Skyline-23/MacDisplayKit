@@ -98,6 +98,7 @@ FOUNDATION_EXPORT BOOL MDKShimVideoPrivateDisplayIOSurfaceCaptureAvailable(void)
 FOUNDATION_EXPORT BOOL MDKShimVideoPrivateDisplayIOSurfaceCaptureWithOptionsAvailable(void);
 FOUNDATION_EXPORT BOOL MDKShimVideoPrivateDisplayIOSurfaceProxyCaptureAvailable(void);
 FOUNDATION_EXPORT BOOL MDKShimVideoPrivateDisplayStreamProxyAvailable(void);
+FOUNDATION_EXPORT BOOL MDKShimVideoRawSkyLightDisplayStreamAvailable(void);
 FOUNDATION_EXPORT BOOL MDKShimVideoPrivateCaptureExtendedRangeOptionAvailable(void);
 FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureSingleFrame(
     NSUInteger displayID,

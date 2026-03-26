@@ -598,6 +598,8 @@ public actor MDKEncodedCaptureSession {
             return MDKEncodedCaptureSourcePreparation(
                 recommendedPendingFrameCount: recommendedPendingFrameCount,
                 diagnosticNotes: (tuningSelection?.notes ?? []) + [
+                    "rawPrivateDisplayStream=true",
+                    String(format: "rawPrivateDisplayStreamRequestedPixelFormat=0x%08X", configuration.resolvedCapturePixelFormat),
                     "skyLightPendingPolicy=\(pendingPolicy)",
                     "skyLightRecommendedPendingFrameCount=\(recommendedPendingFrameCount)"
                 ],

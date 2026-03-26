@@ -7,6 +7,7 @@ public struct MDKPrivateCaptureCapabilities: Codable, Equatable, Sendable {
     public let displayIOSurfaceCaptureWithOptionsAvailable: Bool
     public let displayIOSurfaceProxyCaptureAvailable: Bool
     public let displayStreamProxyAvailable: Bool
+    public let rawSkyLightDisplayStreamAvailable: Bool
     public let extendedRangeOptionAvailable: Bool
 
     public init(
@@ -15,6 +16,7 @@ public struct MDKPrivateCaptureCapabilities: Codable, Equatable, Sendable {
         displayIOSurfaceCaptureWithOptionsAvailable: Bool,
         displayIOSurfaceProxyCaptureAvailable: Bool,
         displayStreamProxyAvailable: Bool,
+        rawSkyLightDisplayStreamAvailable: Bool = false,
         extendedRangeOptionAvailable: Bool
     ) {
         self.desktopCaptureAvailable = desktopCaptureAvailable
@@ -22,6 +24,7 @@ public struct MDKPrivateCaptureCapabilities: Codable, Equatable, Sendable {
         self.displayIOSurfaceCaptureWithOptionsAvailable = displayIOSurfaceCaptureWithOptionsAvailable
         self.displayIOSurfaceProxyCaptureAvailable = displayIOSurfaceProxyCaptureAvailable
         self.displayStreamProxyAvailable = displayStreamProxyAvailable
+        self.rawSkyLightDisplayStreamAvailable = rawSkyLightDisplayStreamAvailable
         self.extendedRangeOptionAvailable = extendedRangeOptionAvailable
     }
 
@@ -30,7 +33,8 @@ public struct MDKPrivateCaptureCapabilities: Codable, Equatable, Sendable {
             displayIOSurfaceCaptureAvailable ||
             displayIOSurfaceCaptureWithOptionsAvailable ||
             displayIOSurfaceProxyCaptureAvailable ||
-            displayStreamProxyAvailable
+            displayStreamProxyAvailable ||
+            rawSkyLightDisplayStreamAvailable
     }
 
     public var supportsIOSurfaceDisplayCapture: Bool {
@@ -52,6 +56,7 @@ public enum MDKPrivateCaptureCapabilityProbe {
             displayIOSurfaceCaptureWithOptionsAvailable: MDKShimVideoPrivateDisplayIOSurfaceCaptureWithOptionsAvailable(),
             displayIOSurfaceProxyCaptureAvailable: MDKShimVideoPrivateDisplayIOSurfaceProxyCaptureAvailable(),
             displayStreamProxyAvailable: MDKShimVideoPrivateDisplayStreamProxyAvailable(),
+            rawSkyLightDisplayStreamAvailable: MDKShimVideoRawSkyLightDisplayStreamAvailable(),
             extendedRangeOptionAvailable: MDKShimVideoPrivateCaptureExtendedRangeOptionAvailable()
         )
     }

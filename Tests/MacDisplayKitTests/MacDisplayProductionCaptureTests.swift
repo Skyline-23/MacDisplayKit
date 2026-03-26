@@ -24,7 +24,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         )
     }
 
-    func testEncodedCaptureConfigurationPrefersPrivateDirectIOSurfaceWhenAvailable() {
+    func testEncodedCaptureConfigurationPrefersRawPrivateDisplayStreamForYUVEncodedSessions() {
         let configuration = MDKEncodedCaptureConfiguration.panelNative(displayID: 7)
 
         XCTAssertEqual(
@@ -35,15 +35,20 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
                     displayIOSurfaceCaptureWithOptionsAvailable: true,
                     displayIOSurfaceProxyCaptureAvailable: true,
                     displayStreamProxyAvailable: true,
+                    rawSkyLightDisplayStreamAvailable: true,
                     extendedRangeOptionAvailable: true
                 )
             ),
-            .privateDirectIOSurface
+            .skyLightDisplayStream
         )
     }
 
-    func testEncodedCaptureConfigurationFallsBackToPrivateDirectIOSurfaceWithoutProxySupport() {
-        let configuration = MDKEncodedCaptureConfiguration.panelNative(displayID: 7)
+    func testEncodedCaptureConfigurationKeepsPrivateDirectIOSurfaceForBGRAEncodedSessions() {
+        let configuration = MDKEncodedCaptureConfiguration.panelNative(
+            displayID: 7,
+            codec: .proResProxy,
+            capturePixelFormat: kCVPixelFormatType_32BGRA
+        )
 
         XCTAssertEqual(
             configuration.resolvedSourceBackend(
@@ -53,10 +58,30 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
                     displayIOSurfaceCaptureWithOptionsAvailable: true,
                     displayIOSurfaceProxyCaptureAvailable: false,
                     displayStreamProxyAvailable: false,
+                    rawSkyLightDisplayStreamAvailable: true,
                     extendedRangeOptionAvailable: false
                 )
             ),
             .privateDirectIOSurface
+        )
+    }
+
+    func testEncodedCaptureConfigurationFallsBackToRawPrivateDisplayStreamWhenIOSurfaceSupportIsAbsent() {
+        let configuration = MDKEncodedCaptureConfiguration.panelNative(displayID: 7)
+
+        XCTAssertEqual(
+            configuration.resolvedSourceBackend(
+                using: .init(
+                    desktopCaptureAvailable: false,
+                    displayIOSurfaceCaptureAvailable: false,
+                    displayIOSurfaceCaptureWithOptionsAvailable: false,
+                    displayIOSurfaceProxyCaptureAvailable: false,
+                    displayStreamProxyAvailable: false,
+                    rawSkyLightDisplayStreamAvailable: true,
+                    extendedRangeOptionAvailable: false
+                )
+            ),
+            .skyLightDisplayStream
         )
     }
 
@@ -71,6 +96,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
                     displayIOSurfaceCaptureWithOptionsAvailable: false,
                     displayIOSurfaceProxyCaptureAvailable: false,
                     displayStreamProxyAvailable: true,
+                    rawSkyLightDisplayStreamAvailable: true,
                     extendedRangeOptionAvailable: false
                 )
             ),
@@ -78,7 +104,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         )
     }
 
-    func testEncodedCaptureConfigurationKeepsPrivateIOSurfaceForHDRWithoutExtendedRangeHints() {
+    func testEncodedCaptureConfigurationUsesRawPrivateDisplayStreamForHDRYUVSessions() {
         let configuration = MDKEncodedCaptureConfiguration.panelNative(
             displayID: 7,
             hdrConfiguration: .hdr10()
@@ -92,10 +118,11 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
                     displayIOSurfaceCaptureWithOptionsAvailable: false,
                     displayIOSurfaceProxyCaptureAvailable: false,
                     displayStreamProxyAvailable: false,
+                    rawSkyLightDisplayStreamAvailable: true,
                     extendedRangeOptionAvailable: false
                 )
             ),
-            .privateDirectIOSurface
+            .skyLightDisplayStream
         )
     }
 
@@ -110,6 +137,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
             displayIOSurfaceCaptureWithOptionsAvailable: true,
             displayIOSurfaceProxyCaptureAvailable: false,
             displayStreamProxyAvailable: false,
+            rawSkyLightDisplayStreamAvailable: false,
             extendedRangeOptionAvailable: true
         )
 
@@ -132,6 +160,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
             displayIOSurfaceCaptureWithOptionsAvailable: false,
             displayIOSurfaceProxyCaptureAvailable: false,
             displayStreamProxyAvailable: true,
+            rawSkyLightDisplayStreamAvailable: true,
             extendedRangeOptionAvailable: false
         )
 
