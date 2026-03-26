@@ -263,14 +263,7 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         frameRate: Int
     ) -> [NSNumber] {
         let averageBitRate = averageBitRate(width: width, height: height, frameRate: frameRate)
-        let oneSecondLimitBytes = Int((Double(averageBitRate) / 8.0) * 1.50)
-        let quarterSecondLimitBytes = Int((Double(averageBitRate) / 8.0) * 0.50)
-        return [
-            NSNumber(value: quarterSecondLimitBytes),
-            NSNumber(value: 0.25),
-            NSNumber(value: oneSecondLimitBytes),
-            NSNumber(value: 1.0)
-        ]
+        return dataRateLimits(forAverageBitRate: averageBitRate, lowLatency: false)
     }
 
     func lowLatencyDataRateLimits(
@@ -279,8 +272,25 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         frameRate: Int
     ) -> [NSNumber] {
         let averageBitRate = lowLatencyAverageBitRate(width: width, height: height, frameRate: frameRate)
+        return dataRateLimits(forAverageBitRate: averageBitRate, lowLatency: true)
+    }
+
+    func dataRateLimits(
+        forAverageBitRate averageBitRate: Int,
+        lowLatency: Bool
+    ) -> [NSNumber] {
         let oneSecondLimitBytes = Int((Double(averageBitRate) / 8.0) * 1.75)
         let quarterSecondLimitBytes = Int((Double(averageBitRate) / 8.0) * 0.65)
+        if !lowLatency {
+            let oneSecondLimitBytes = Int((Double(averageBitRate) / 8.0) * 1.50)
+            let quarterSecondLimitBytes = Int((Double(averageBitRate) / 8.0) * 0.50)
+            return [
+                NSNumber(value: quarterSecondLimitBytes),
+                NSNumber(value: 0.25),
+                NSNumber(value: oneSecondLimitBytes),
+                NSNumber(value: 1.0)
+            ]
+        }
         return [
             NSNumber(value: quarterSecondLimitBytes),
             NSNumber(value: 0.25),

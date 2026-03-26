@@ -544,7 +544,8 @@ public actor MDKEncodedCaptureSession {
                 encoderInputStrategy: configuration.resolvedEncoderInputStrategy,
                 outputHandler: outputHandler,
                 failureHandler: failureHandler,
-                hdrConfiguration: configuration.resolvedEncodedHDRConfiguration
+                hdrConfiguration: configuration.resolvedEncodedHDRConfiguration,
+                targetAverageBitRateBitsPerSecond: configuration.targetAverageBitRateBitsPerSecond
             )
         }
     }

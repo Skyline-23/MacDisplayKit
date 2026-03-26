@@ -81,6 +81,29 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(MDKVideoEncoderCodec.hevc.referenceBufferCount, 1)
     }
 
+    func testExplicitAverageBitRateProducesDeterministicDataRateLimits() {
+        let lowLatencyLimits = MDKVideoEncoderCodec.hevc.dataRateLimits(
+            forAverageBitRate: 41_000_000,
+            lowLatency: true
+        )
+        let defaultLimits = MDKVideoEncoderCodec.hevc.dataRateLimits(
+            forAverageBitRate: 41_000_000,
+            lowLatency: false
+        )
+
+        XCTAssertEqual(lowLatencyLimits.count, 4)
+        XCTAssertEqual(lowLatencyLimits[0].intValue, 3_331_250)
+        XCTAssertEqual(lowLatencyLimits[1].doubleValue, 0.25, accuracy: 0.0001)
+        XCTAssertEqual(lowLatencyLimits[2].intValue, 8_968_750)
+        XCTAssertEqual(lowLatencyLimits[3].doubleValue, 1.0, accuracy: 0.0001)
+
+        XCTAssertEqual(defaultLimits.count, 4)
+        XCTAssertEqual(defaultLimits[0].intValue, 2_562_500)
+        XCTAssertEqual(defaultLimits[1].doubleValue, 0.25, accuracy: 0.0001)
+        XCTAssertEqual(defaultLimits[2].intValue, 7_687_500)
+        XCTAssertEqual(defaultLimits[3].doubleValue, 1.0, accuracy: 0.0001)
+    }
+
     func testCodecPreferredInputPixelFormatsFavorEncoderFriendlyTargets() {
         XCTAssertEqual(
             MDKVideoEncoderCodec.hevc.preferredInputPixelFormat(

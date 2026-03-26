@@ -58,6 +58,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
     public let codec: MDKVideoEncoderCodec
     public let preprocessStrategy: MDKVideoPreprocessStrategy
     public let targetFrameRate: Int
+    public let targetAverageBitRateBitsPerSecond: Int?
     public let deliveryMode: MDKEncodedCaptureDeliveryMode
     public let capturePixelFormat: UInt32?
     public let encoderInputStrategy: MDKEncodedCaptureEncoderInputStrategy
@@ -71,6 +72,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         codec: MDKVideoEncoderCodec = .hevc,
         preprocessStrategy: MDKVideoPreprocessStrategy = .none,
         targetFrameRate: Int = 120,
+        targetAverageBitRateBitsPerSecond: Int? = nil,
         deliveryMode: MDKEncodedCaptureDeliveryMode = .multiplexed,
         capturePixelFormat: UInt32? = nil,
         encoderInputStrategy: MDKEncodedCaptureEncoderInputStrategy = .auto,
@@ -83,6 +85,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         self.codec = codec
         self.preprocessStrategy = preprocessStrategy
         self.targetFrameRate = max(targetFrameRate, 1)
+        self.targetAverageBitRateBitsPerSecond = Self.sanitizedAverageBitRate(targetAverageBitRateBitsPerSecond)
         self.deliveryMode = deliveryMode
         self.capturePixelFormat = capturePixelFormat
         self.encoderInputStrategy = encoderInputStrategy
@@ -99,6 +102,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         codec: MDKVideoEncoderCodec = .hevc,
         preprocessStrategy: MDKVideoPreprocessStrategy = .none,
         targetFrameRate: Int = 120,
+        targetAverageBitRateBitsPerSecond: Int? = nil,
         deliveryMode: MDKEncodedCaptureDeliveryMode = .multiplexed,
         capturePixelFormat: UInt32? = nil,
         encoderInputStrategy: MDKEncodedCaptureEncoderInputStrategy = .auto,
@@ -117,6 +121,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
             codec: codec,
             preprocessStrategy: preprocessStrategy,
             targetFrameRate: targetFrameRate,
+            targetAverageBitRateBitsPerSecond: targetAverageBitRateBitsPerSecond,
             deliveryMode: deliveryMode,
             capturePixelFormat: capturePixelFormat,
             encoderInputStrategy: encoderInputStrategy,
@@ -128,6 +133,13 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
 
     var resolvedCapturePixelFormat: UInt32 {
         capturePixelFormat ?? streamConfiguration.pixelFormat ?? codec.preferredCapturePixelFormat
+    }
+
+    private static func sanitizedAverageBitRate(_ value: Int?) -> Int? {
+        guard let value, value > 0 else {
+            return nil
+        }
+        return value
     }
 
     var resolvedSourceBackend: MDKEncodedCaptureSourceBackend {

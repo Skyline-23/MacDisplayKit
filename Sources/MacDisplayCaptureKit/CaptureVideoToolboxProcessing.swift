@@ -166,6 +166,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let outputHandler: (@Sendable (MDKEncodedFrame) -> Void)?
     private let failureHandler: (@Sendable (String) -> Void)?
     private let hdrConfiguration: MDKVideoHDRConfiguration?
+    private let targetAverageBitRateBitsPerSecond: Int?
 
     private var compressionSession: VTCompressionSession?
     private var activeDimensions: SIMD2<Int>?
@@ -213,7 +214,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         maxInflightStagingSlots: Int = 128,
         outputHandler: (@Sendable (MDKEncodedFrame) -> Void)? = nil,
         failureHandler: (@Sendable (String) -> Void)? = nil,
-        hdrConfiguration: MDKVideoHDRConfiguration? = nil
+        hdrConfiguration: MDKVideoHDRConfiguration? = nil,
+        targetAverageBitRateBitsPerSecond: Int? = nil
     ) {
         self.codec = codec
         self.preprocessStrategy = preprocessStrategy
@@ -238,6 +240,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.outputHandler = outputHandler
         self.failureHandler = failureHandler
         self.hdrConfiguration = hdrConfiguration?.negotiatedForEncodedDelivery(codec: codec)
+        self.targetAverageBitRateBitsPerSecond = targetAverageBitRateBitsPerSecond.flatMap { $0 > 0 ? $0 : nil }
         self.encodeQueue.setSpecific(key: encodeQueueSpecificKey, value: encodeQueueSpecificValue)
     }
 
@@ -796,9 +799,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             )
         }
         if codec.supportsAverageBitRate {
-            let averageBitRate = isHighRefreshHDRHEVC
-                ? codec.lowLatencyAverageBitRate(width: width, height: height, frameRate: targetFrameRate)
-                : codec.averageBitRate(width: width, height: height, frameRate: targetFrameRate)
+            let averageBitRate = resolvedAverageBitRate(
+                width: width,
+                height: height,
+                isHighRefreshHDRHEVC: isHighRefreshHDRHEVC
+            )
             setSessionProperty(
                 session,
                 key: kVTCompressionPropertyKey_AverageBitRate,
@@ -807,9 +812,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             )
         }
         if codec.supportsDataRateLimits {
-            let dataRateLimits = isHighRefreshHDRHEVC
-                ? codec.lowLatencyDataRateLimits(width: width, height: height, frameRate: targetFrameRate)
-                : codec.dataRateLimits(width: width, height: height, frameRate: targetFrameRate)
+            let dataRateLimits = resolvedDataRateLimits(
+                width: width,
+                height: height,
+                isHighRefreshHDRHEVC: isHighRefreshHDRHEVC
+            )
             setSessionProperty(
                 session,
                 key: kVTCompressionPropertyKey_DataRateLimits,
@@ -853,20 +860,30 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         sessionConfigurationNotes.append("videoToolboxTargetFrameRateHint=\(targetFrameRate)")
         sessionConfigurationNotes.append("videoToolboxHighRefreshHDRLowLatencyMode=\(isHighRefreshHDRHEVC ? "enabled" : "disabled")")
         if codec.supportsAverageBitRate {
-            let averageBitRate = isHighRefreshHDRHEVC
-                ? codec.lowLatencyAverageBitRate(width: width, height: height, frameRate: targetFrameRate)
-                : codec.averageBitRate(width: width, height: height, frameRate: targetFrameRate)
+            let averageBitRate = resolvedAverageBitRate(
+                width: width,
+                height: height,
+                isHighRefreshHDRHEVC: isHighRefreshHDRHEVC
+            )
             sessionConfigurationNotes.append("videoToolboxConfiguredAverageBitRate=\(averageBitRate)")
+            sessionConfigurationNotes.append(
+                "videoToolboxConfiguredAverageBitRateSource=\(resolvedAverageBitRateSource(isHighRefreshHDRHEVC: isHighRefreshHDRHEVC))"
+            )
         } else {
             sessionConfigurationNotes.append("videoToolboxConfiguredAverageBitRate=default")
         }
         if codec.supportsDataRateLimits {
-            let dataRateLimitsDescription = (isHighRefreshHDRHEVC
-                ? codec.lowLatencyDataRateLimits(width: width, height: height, frameRate: targetFrameRate)
-                : codec.dataRateLimits(width: width, height: height, frameRate: targetFrameRate))
+            let dataRateLimitsDescription = resolvedDataRateLimits(
+                width: width,
+                height: height,
+                isHighRefreshHDRHEVC: isHighRefreshHDRHEVC
+            )
                 .map(\.stringValue)
                 .joined(separator: ",")
             sessionConfigurationNotes.append("videoToolboxConfiguredDataRateLimits=\(dataRateLimitsDescription)")
+            sessionConfigurationNotes.append(
+                "videoToolboxConfiguredDataRateLimitsSource=\(resolvedAverageBitRateSource(isHighRefreshHDRHEVC: isHighRefreshHDRHEVC))"
+            )
         } else {
             sessionConfigurationNotes.append("videoToolboxConfiguredDataRateLimits=default")
         }
@@ -900,6 +917,42 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             encoderSpecification[kVTVideoEncoderSpecification_EnableLowLatencyRateControl] = true as CFBoolean
         }
         return encoderSpecification as CFDictionary
+    }
+
+    private func resolvedAverageBitRate(
+        width: Int,
+        height: Int,
+        isHighRefreshHDRHEVC: Bool
+    ) -> Int {
+        if let targetAverageBitRateBitsPerSecond {
+            return targetAverageBitRateBitsPerSecond
+        }
+        return isHighRefreshHDRHEVC
+            ? codec.lowLatencyAverageBitRate(width: width, height: height, frameRate: targetFrameRate)
+            : codec.averageBitRate(width: width, height: height, frameRate: targetFrameRate)
+    }
+
+    private func resolvedDataRateLimits(
+        width: Int,
+        height: Int,
+        isHighRefreshHDRHEVC: Bool
+    ) -> [NSNumber] {
+        if let targetAverageBitRateBitsPerSecond {
+            return codec.dataRateLimits(
+                forAverageBitRate: targetAverageBitRateBitsPerSecond,
+                lowLatency: isHighRefreshHDRHEVC
+            )
+        }
+        return isHighRefreshHDRHEVC
+            ? codec.lowLatencyDataRateLimits(width: width, height: height, frameRate: targetFrameRate)
+            : codec.dataRateLimits(width: width, height: height, frameRate: targetFrameRate)
+    }
+
+    private func resolvedAverageBitRateSource(isHighRefreshHDRHEVC: Bool) -> String {
+        if targetAverageBitRateBitsPerSecond != nil {
+            return "apollo-requested"
+        }
+        return isHighRefreshHDRHEVC ? "low-latency-heuristic" : "codec-default"
     }
 
     private func setSessionProperty(
