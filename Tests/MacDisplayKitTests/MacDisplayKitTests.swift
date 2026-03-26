@@ -76,6 +76,12 @@ final class MacDisplayKitTests: XCTestCase {
         )
     }
 
+    func testVideoToolboxProcessorAcceptsImmediateKeyFrameRequestsWithoutAnActiveSession() {
+        let processor = MDKVideoToolboxEncodingProcessor(codec: .hevc)
+        processor.requestImmediateKeyFrame()
+        XCTAssertNotNil(processor.liveSummary())
+    }
+
     func testHEVCPrefersLowLatencyRateControlAndSingleReferenceBuffer() {
         XCTAssertTrue(MDKVideoEncoderCodec.hevc.lowLatencyRateControlSupported)
         XCTAssertEqual(MDKVideoEncoderCodec.hevc.referenceBufferCount, 1)

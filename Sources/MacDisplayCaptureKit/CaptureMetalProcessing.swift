@@ -136,10 +136,13 @@ struct MDKCaptureFrameProcessingSummary: Sendable, Equatable {
 
 protocol MDKCaptureFrameProcessing: AnyObject, Sendable {
     func process(frame: MDKCaptureFrame) throws
+    func requestImmediateKeyFrame()
     func finalize() -> MDKCaptureFrameProcessingSummary?
 }
 
 extension MDKCaptureFrameProcessing {
+    func requestImmediateKeyFrame() {}
+
     func finalize() -> MDKCaptureFrameProcessingSummary? {
         nil
     }

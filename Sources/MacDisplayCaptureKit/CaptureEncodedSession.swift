@@ -25,8 +25,13 @@ protocol MDKEncodedCaptureProcessorRuntime: AnyObject, Sendable {
         frame: MDKCaptureFrame,
         releaseSourceFrame: @escaping @Sendable () -> Void
     ) throws
+    func requestImmediateKeyFrame()
     func finalize() -> MDKCaptureFrameProcessingSummary?
     func liveSummary() -> MDKCaptureFrameProcessingSummary?
+}
+
+extension MDKEncodedCaptureProcessorRuntime {
+    func requestImmediateKeyFrame() {}
 }
 
 typealias MDKEncodedCaptureSourceFactory = @Sendable (
@@ -856,6 +861,10 @@ public actor MDKEncodedCaptureSession {
             isRunning: statistics.isRunning,
             sourceNotes: combinedSourceNotes()
         )
+    }
+
+    public func requestImmediateKeyFrame() {
+        runtime?.processor.requestImmediateKeyFrame()
     }
 
     private func installContinuation(

@@ -204,6 +204,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let submissionQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.submit")
     private let encodeQueueSpecificKey = DispatchSpecificKey<UInt8>()
     private let encodeQueueSpecificValue: UInt8 = 1
+    private let keyFrameRequestLock = NSLock()
+    private var forceNextKeyFrame = false
 
     public init(
         codec: MDKVideoEncoderCodec = .hevc,
@@ -256,6 +258,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
     public func process(frame: MDKCaptureFrame) throws {
         try process(frame: frame, releaseSourceFrame: {})
+    }
+
+    public func requestImmediateKeyFrame() {
+        keyFrameRequestLock.lock()
+        forceNextKeyFrame = true
+        keyFrameRequestLock.unlock()
     }
 
     public func process(
@@ -711,7 +719,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             imageBuffer: imageBuffer,
             presentationTimeStamp: resolvedPresentationTimeStamp,
             duration: .invalid,
-            frameProperties: nil,
+            frameProperties: makeFrameProperties(forceKeyFrame: consumeImmediateKeyFrameRequest()),
             sourceFrameRefcon: submissionToken.toOpaque(),
             infoFlagsOut: nil
         )
@@ -724,6 +732,24 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         outputQueue.sync {
             submittedFrameCount += 1
         }
+    }
+
+    private func consumeImmediateKeyFrameRequest() -> Bool {
+        keyFrameRequestLock.lock()
+        defer { keyFrameRequestLock.unlock() }
+        let shouldForceKeyFrame = forceNextKeyFrame
+        forceNextKeyFrame = false
+        return shouldForceKeyFrame
+    }
+
+    private func makeFrameProperties(forceKeyFrame: Bool) -> CFDictionary? {
+        guard forceKeyFrame else {
+            return nil
+        }
+
+        return [
+            kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue as Any
+        ] as CFDictionary
     }
 
     private func ensureCompressionSession(
