@@ -571,7 +571,7 @@ public actor MDKEncodedCaptureSession {
                 ? "metal-overlay-on-encode"
                 : "disabled"
             let sourceColorTransform =
-                requestsExtendedRange ? "identity-signal-primaries" : "negotiated-source-primaries"
+                requestsExtendedRange ? "negotiated-source-primaries-to-hdr-signal" : "negotiated-source-primaries"
             return MDKEncodedCaptureSourcePreparation(
                 recommendedPendingFrameCount: max(configuration.resolvedPrivateCaptureSurfaceCount - 1, 1),
                 diagnosticNotes: [
@@ -819,10 +819,13 @@ public actor MDKEncodedCaptureSession {
             isRunning: true,
             notes: mergedRuntimeNotes(with: statistics.notes)
         )
+        let startupDiagnostics = statistics.notes.joined(separator: ";")
         emitEvent(
             .init(
                 kind: .started,
-                message: "Encoded capture session started using \(source.runtimeDescription)."
+                message: startupDiagnostics.isEmpty
+                    ? "Encoded capture session started using \(source.runtimeDescription)."
+                    : "Encoded capture session started using \(source.runtimeDescription). \(startupDiagnostics)"
             )
         )
     }

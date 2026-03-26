@@ -175,11 +175,11 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
             return negotiatedConfiguration
         }
 
-        // The private direct path exposes BGRA IOSurfaces without reliable source
-        // color metadata. Treat the source gamut as unknown and avoid remapping
-        // from negotiated display primaries into the HDR signal primaries.
+        // The private direct path still captures the negotiated display output.
+        // Preserve the negotiated source primaries so the BGRA->YCbCr converter
+        // can map display P3 sources into the BT.2020 HDR signal container.
         return MDKVideoHDRConfiguration(
-            sourceColorPrimaries: nil,
+            sourceColorPrimaries: negotiatedConfiguration.sourceColorPrimaries,
             colorPrimaries: negotiatedConfiguration.colorPrimaries,
             transferFunction: negotiatedConfiguration.transferFunction,
             yCbCrMatrix: negotiatedConfiguration.yCbCrMatrix,

@@ -13104,7 +13104,10 @@ static CGRect MDKCreateCursorDrawRect(
 
     const uint64_t frameIntervalNanoseconds =
         static_cast<uint64_t>(NSEC_PER_SEC / static_cast<uint64_t>(std::max<NSInteger>(_targetFrameRate, 1)));
-    const uint64_t leewayNanoseconds = std::min<uint64_t>(frameIntervalNanoseconds / 40, 250000ULL);
+    const uint64_t leewayNanoseconds =
+        static_cast<uint64_t>(std::max<NSInteger>(_targetFrameRate, 1)) >= 100
+            ? 0
+            : std::min<uint64_t>(frameIntervalNanoseconds / 40, 250000ULL);
 
     __weak MDKShimPrivateDisplayIOSurfaceCaptureSession *weakSelf = self;
     _timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _queue);

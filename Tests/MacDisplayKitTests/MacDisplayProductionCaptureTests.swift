@@ -99,7 +99,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         )
     }
 
-    func testPrivateDirectHDRBGRASourceBypassesNegotiatedSourcePrimariesRemap() {
+    func testPrivateDirectHDRBGRASourcePreservesNegotiatedSourcePrimariesRemap() {
         let configuration = MDKEncodedCaptureConfiguration.panelNative(
             displayID: 7,
             hdrConfiguration: .hdr10(sourceColorPrimaries: .p3D65)
@@ -115,7 +115,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
 
         let hdrConfiguration = configuration.resolvedEncodedHDRConfiguration(using: privateCapabilities)
 
-        XCTAssertNil(hdrConfiguration?.sourceColorPrimaries)
+        XCTAssertEqual(hdrConfiguration?.sourceColorPrimaries, .p3D65)
         XCTAssertEqual(hdrConfiguration?.colorPrimaries, .ituR2020)
         XCTAssertEqual(hdrConfiguration?.transferFunction, .smpteSt2084PQ)
         XCTAssertEqual(hdrConfiguration?.yCbCrMatrix, .ituR2020)
