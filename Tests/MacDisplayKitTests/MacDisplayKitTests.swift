@@ -103,6 +103,32 @@ final class MacDisplayKitTests: XCTestCase {
         )
     }
 
+    func testSyntheticSkyLightReplayRequiresElapsedReplayInterval() {
+        XCTAssertFalse(
+            MDKShouldEmitSyntheticSkyLightEncodedCaptureReplay(
+                hasLastSurface: true,
+                nextDisplayTime: 240,
+                lastDisplayTime: 120,
+                currentMachTime: 140,
+                lastEmissionMachTime: 120,
+                minimumEmissionDeltaMachTicks: 32
+            )
+        )
+    }
+
+    func testSyntheticSkyLightReplayEmitsWhenSourceGoesSilent() {
+        XCTAssertTrue(
+            MDKShouldEmitSyntheticSkyLightEncodedCaptureReplay(
+                hasLastSurface: true,
+                nextDisplayTime: 400,
+                lastDisplayTime: 120,
+                currentMachTime: 160,
+                lastEmissionMachTime: 120,
+                minimumEmissionDeltaMachTicks: 32
+            )
+        )
+    }
+
     func testVideoToolboxProcessorAcceptsImmediateKeyFrameRequestsWithoutAnActiveSession() {
         let processor = MDKVideoToolboxEncodingProcessor(codec: .hevc)
         processor.requestImmediateKeyFrame()
