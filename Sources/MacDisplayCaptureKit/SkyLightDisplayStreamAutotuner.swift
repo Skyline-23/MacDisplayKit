@@ -64,6 +64,7 @@ actor MDKSkyLightDisplayStreamAutotuner {
             targetFrameRate: configuration.targetFrameRate,
             displayRefreshRate: displayRefreshRate
         )
+        let requestedShowCursor = configuration.streamConfiguration.resolvedShowCursor
 
         let evaluations = candidates.map { candidate in
             let matrixCandidate = MDKSkyLightDisplayStreamProcessingMatrixCandidate(
@@ -77,7 +78,7 @@ actor MDKSkyLightDisplayStreamAutotuner {
                     sampleDuration: sampleDuration,
                     minimumFrameTime: candidate.minimumFrameTime,
                     queueDepth: candidate.queueDepth,
-                    showCursor: candidate.showCursor,
+                    showCursor: requestedShowCursor,
                     outputWidth: configuration.streamConfiguration.resolvedOutputWidth == 0 ? nil : configuration.streamConfiguration.resolvedOutputWidth,
                     outputHeight: configuration.streamConfiguration.resolvedOutputHeight == 0 ? nil : configuration.streamConfiguration.resolvedOutputHeight,
                     pixelFormat: configuration.resolvedCapturePixelFormat,

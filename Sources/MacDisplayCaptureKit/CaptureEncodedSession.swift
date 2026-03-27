@@ -118,6 +118,14 @@ func MDKShouldEmitSyntheticSkyLightEncodedCaptureReplay(
     return (currentMachTime - lastEmissionMachTime) >= minimumEmissionDeltaMachTicks
 }
 
+func MDKResolvedSkyLightDisplayStreamShowCursor(
+    requestedShowCursor: Bool,
+    tuningSelection: MDKSkyLightDisplayStreamAutotuningSelection?
+) -> Bool {
+    _ = tuningSelection
+    return requestedShowCursor
+}
+
 private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
     private let lock = NSLock()
     private var lastCaptureSurface: MDKCaptureSurface?
@@ -251,7 +259,10 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         self.replayIntervalMachTicks = max(MDKMachAbsoluteTicksForNanoseconds(replayIntervalNanoseconds), 1)
         let tunedQueueDepth = tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth
         let tunedMinimumFrameTime = tuningSelection?.candidate.minimumFrameTime ?? 0
-        let tunedShowCursor = tuningSelection?.candidate.showCursor ?? configuration.streamConfiguration.resolvedShowCursor
+        let tunedShowCursor = MDKResolvedSkyLightDisplayStreamShowCursor(
+            requestedShowCursor: configuration.streamConfiguration.resolvedShowCursor,
+            tuningSelection: tuningSelection
+        )
         self.shimSession = MDKShimSkyLightDisplayStreamSession(
             displayID: UInt(configuration.displayID),
             minimumFrameTime: tunedMinimumFrameTime,

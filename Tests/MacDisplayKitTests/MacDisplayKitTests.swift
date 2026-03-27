@@ -993,6 +993,26 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertFalse(configuration.resolvedShowCursor)
     }
 
+    func testSkyLightRuntimePreservesRequestedCursorVisibilityAcrossTuningSelection() {
+        let tuningSelection = MDKSkyLightDisplayStreamAutotuningSelection(
+            candidate: MDKSkyLightDisplayStreamTuningMatrix.request120LikeQueue2Candidate,
+            notes: []
+        )
+
+        XCTAssertTrue(
+            MDKResolvedSkyLightDisplayStreamShowCursor(
+                requestedShowCursor: true,
+                tuningSelection: tuningSelection
+            )
+        )
+        XCTAssertFalse(
+            MDKResolvedSkyLightDisplayStreamShowCursor(
+                requestedShowCursor: false,
+                tuningSelection: tuningSelection
+            )
+        )
+    }
+
     func testProcessingBenchmarkDefaultsEncoderHintTo120EvenFor240HzRawRequests() {
         let derivedHint = MDKSkyLightDisplayStreamProcessingBenchmark.resolvedTargetFrameRateHint(
             targetFrameRate: nil,
