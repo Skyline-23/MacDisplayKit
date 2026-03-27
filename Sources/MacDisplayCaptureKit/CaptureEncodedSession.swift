@@ -1,3 +1,4 @@
+import CoreGraphics
 import CoreVideo
 import Darwin
 import Foundation
@@ -46,6 +47,93 @@ typealias MDKEncodedCaptureProcessorFactory = @Sendable (
     @escaping @Sendable (String) -> Void
 ) -> any MDKEncodedCaptureProcessorRuntime
 
+enum MDKSkyLightEncodedCaptureFrameAction: Equatable {
+    case emitFresh
+    case emitIdleReplay
+    case drop
+}
+
+func MDKResolveSkyLightEncodedCaptureFrameAction(
+    status: CGDisplayStreamFrameStatus,
+    hasFrameSurface: Bool,
+    hasLastSurface: Bool,
+    displayTime: UInt64,
+    lastDisplayTime: UInt64?
+) -> MDKSkyLightEncodedCaptureFrameAction {
+    switch status {
+    case .frameComplete:
+        return hasFrameSurface ? .emitFresh : .drop
+    case .frameIdle:
+        guard hasLastSurface else {
+            return .drop
+        }
+        guard let lastDisplayTime else {
+            return .emitIdleReplay
+        }
+        return displayTime > lastDisplayTime ? .emitIdleReplay : .drop
+    default:
+        return .drop
+    }
+}
+
+private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lastCaptureSurface: MDKCaptureSurface?
+    private var lastDisplayTime: UInt64?
+
+    func captureFrame(
+        status: CGDisplayStreamFrameStatus,
+        displayTime: UInt64,
+        frameSurface: IOSurfaceRef?
+    ) -> MDKCaptureFrame? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let action = MDKResolveSkyLightEncodedCaptureFrameAction(
+            status: status,
+            hasFrameSurface: frameSurface != nil,
+            hasLastSurface: lastCaptureSurface != nil,
+            displayTime: displayTime,
+            lastDisplayTime: lastDisplayTime
+        )
+
+        switch action {
+        case .emitFresh:
+            guard let frameSurface else {
+                return nil
+            }
+            let captureSurface = MDKCaptureSurface(ioSurface: frameSurface)
+            lastCaptureSurface = captureSurface
+            lastDisplayTime = displayTime
+            return MDKCaptureFrame(
+                sequenceNumber: displayTime,
+                displayTime: displayTime,
+                surfaceID: captureSurface.id,
+                width: captureSurface.width,
+                height: captureSurface.height,
+                pixelFormat: captureSurface.pixelFormat,
+                surface: captureSurface
+            )
+        case .emitIdleReplay:
+            guard let lastCaptureSurface else {
+                return nil
+            }
+            lastDisplayTime = displayTime
+            return MDKCaptureFrame(
+                sequenceNumber: displayTime,
+                displayTime: displayTime,
+                surfaceID: lastCaptureSurface.id,
+                width: lastCaptureSurface.width,
+                height: lastCaptureSurface.height,
+                pixelFormat: lastCaptureSurface.pixelFormat,
+                surface: lastCaptureSurface
+            )
+        case .drop:
+            return nil
+        }
+    }
+}
+
 private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSourceRuntime, @unchecked Sendable {
     private let shimSession: MDKShimSkyLightDisplayStreamSession
     private let tuningSelection: MDKSkyLightDisplayStreamAutotuningSelection?
@@ -63,6 +151,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         tuningSelection: MDKSkyLightDisplayStreamAutotuningSelection?,
         frameHandler: @escaping @Sendable (MDKCaptureFrame) -> Void
     ) {
+        let replayState = MDKSkyLightEncodedCaptureReplayState()
         self.tuningSelection = tuningSelection
         let tunedQueueDepth = tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth
         let tunedMinimumFrameTime = tuningSelection?.candidate.minimumFrameTime ?? 0
@@ -77,22 +166,15 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             pixelFormat: configuration.resolvedCapturePixelFormat,
             yCbCrMatrix: configuration.resolvedSkyLightDisplayStreamYCbCrMatrix.map { $0.imageBufferValue as String }
         ) { status, displayTime, frameSurface in
-            guard status == .frameComplete, let frameSurface else {
+            guard let deliveredFrame = replayState.captureFrame(
+                status: status,
+                displayTime: displayTime,
+                frameSurface: frameSurface
+            ) else {
                 return
             }
 
-            let captureSurface = MDKCaptureSurface(ioSurface: frameSurface)
-            frameHandler(
-                MDKCaptureFrame(
-                    sequenceNumber: displayTime,
-                    displayTime: displayTime,
-                    surfaceID: captureSurface.id,
-                    width: captureSurface.width,
-                    height: captureSurface.height,
-                    pixelFormat: captureSurface.pixelFormat,
-                    surface: captureSurface
-                )
-            )
+            frameHandler(deliveredFrame)
         }
     }
 

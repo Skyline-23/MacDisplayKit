@@ -1,4 +1,5 @@
 import XCTest
+import CoreGraphics
 import CoreVideo
 import VideoToolbox
 @testable import MacDisplayKit
@@ -73,6 +74,32 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(
             MDKVideoEncoderCodec.hevc.defaultProfileLevel(for: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
             kVTProfileLevel_HEVC_Main_AutoLevel
+        )
+    }
+
+    func testSkyLightIdleCallbacksReplayTheLastFrameSurface() {
+        XCTAssertEqual(
+            MDKResolveSkyLightEncodedCaptureFrameAction(
+                status: .frameIdle,
+                hasFrameSurface: false,
+                hasLastSurface: true,
+                displayTime: 240,
+                lastDisplayTime: 120
+            ),
+            .emitIdleReplay
+        )
+    }
+
+    func testSkyLightIdleCallbacksDoNotReplayWithoutProgress() {
+        XCTAssertEqual(
+            MDKResolveSkyLightEncodedCaptureFrameAction(
+                status: .frameIdle,
+                hasFrameSurface: false,
+                hasLastSurface: true,
+                displayTime: 120,
+                lastDisplayTime: 120
+            ),
+            .drop
         )
     }
 
