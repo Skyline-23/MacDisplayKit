@@ -1441,6 +1441,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         submissionToken?.markCompleted()
+        if let encodedFrame, outputCompleted {
+            outputHandler?(encodedFrame)
+        } else if status != noErr {
+            failureHandler?("VT output callback failed (\(describe(status: status))).")
+        }
         outputQueue.async { [self] in
             outputCallbackCount += 1
             outputCallbackStatusHistogram[describe(status: status), default: 0] += 1
@@ -1459,11 +1464,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
             if outputCompleted {
                 completedOutputFrameCount += 1
-            }
-            if let encodedFrame, outputCompleted {
-                outputHandler?(encodedFrame)
-            } else if status != noErr {
-                failureHandler?("VT output callback failed (\(describe(status: status))).")
             }
             outputDrainGroup.leave()
         }
