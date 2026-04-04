@@ -313,22 +313,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             throw MDKVideoToolboxProcessingError.surfaceUnavailable
         }
 
-        let retainedFrame = MDKCaptureFrame(
-            sequenceNumber: frame.sequenceNumber,
-            displayTime: frame.displayTime,
-            surfaceID: frame.surfaceID,
-            width: frame.width,
-            height: frame.height,
-            pixelFormat: frame.pixelFormat,
-            surface: surface,
-            cursorOverlaySample: frame.cursorOverlaySample,
-            sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
-            sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
-        )
-        let submitFrame = { [self, retainedFrame] in
+        let submitFrame = { [self, frame] in
             do {
                 try encode(
-                    frame: retainedFrame,
+                    frame: frame,
                     releaseSourceFrame: releaseSourceFrame
                 )
             } catch {
