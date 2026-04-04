@@ -692,34 +692,32 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 return
             }
             let commandBufferStatus = commandBuffer.status
-            self.submissionQueue.async {
-                guard commandBufferStatus == .completed else {
-                    releaseSourceFrame()
-                    self.recordProcessingFailure("Metal staged copy failed (\(commandBufferStatus.rawValue)).")
-                    self.releaseStagingSlot(identifier: slotIdentifier)
-                    self.failureHandler?("Metal staged copy failed (\(commandBufferStatus.rawValue)).")
-                    self.stagingSubmissionGroup.leave()
-                    return
-                }
-                do {
-                    try self.submitToEncoder(
-                        imageBuffer: stagedPixelBuffer.pixelBuffer,
-                        frame: frame,
-                        slotIdentifier: slotIdentifier,
-                        presentationTimeStamp: presentationTimeStamp,
-                        releasePendingFrame: {}
-                    )
-                    releaseSourceFrame()
-                    self.recordProcessingSuccess(isStaged: true)
-                } catch {
-                    releaseSourceFrame()
-                    let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-                    self.recordProcessingFailure(errorDescription)
-                    self.releaseStagingSlot(identifier: slotIdentifier)
-                    self.failureHandler?(errorDescription)
-                }
+            guard commandBufferStatus == .completed else {
+                releaseSourceFrame()
+                self.recordProcessingFailure("Metal staged copy failed (\(commandBufferStatus.rawValue)).")
+                self.releaseStagingSlot(identifier: slotIdentifier)
+                self.failureHandler?("Metal staged copy failed (\(commandBufferStatus.rawValue)).")
                 self.stagingSubmissionGroup.leave()
+                return
             }
+            do {
+                try self.submitToEncoder(
+                    imageBuffer: stagedPixelBuffer.pixelBuffer,
+                    frame: frame,
+                    slotIdentifier: slotIdentifier,
+                    presentationTimeStamp: presentationTimeStamp,
+                    releasePendingFrame: {}
+                )
+                releaseSourceFrame()
+                self.recordProcessingSuccess(isStaged: true)
+            } catch {
+                releaseSourceFrame()
+                let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                self.recordProcessingFailure(errorDescription)
+                self.releaseStagingSlot(identifier: slotIdentifier)
+                self.failureHandler?(errorDescription)
+            }
+            self.stagingSubmissionGroup.leave()
         }
         commandBuffer.commit()
     }
