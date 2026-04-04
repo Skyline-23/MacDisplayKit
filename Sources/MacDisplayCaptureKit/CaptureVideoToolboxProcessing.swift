@@ -325,12 +325,63 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
             sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
         )
+        let targetPixelFormat = codec.preferredInputPixelFormat(
+            for: retainedFrame.pixelFormat,
+            hdrConfiguration: hdrConfiguration,
+            strategy: encoderInputStrategy
+        )
+        let outputDimensions = preprocessStrategy.outputDimensions(
+            sourceWidth: retainedFrame.width,
+            sourceHeight: retainedFrame.height,
+            pixelFormat: targetPixelFormat
+        )
+        let needsScaling = outputDimensions.x != retainedFrame.width || outputDimensions.y != retainedFrame.height
+        let hasCursorOverlay = retainedFrame.cursorOverlaySample != nil
+        let requiresDetachedSubmissionSurface = codec.requiresDetachedSubmissionSurface(
+            sourcePixelFormat: retainedFrame.pixelFormat,
+            targetPixelFormat: targetPixelFormat,
+            needsScaling: needsScaling,
+            hasCursorOverlay: hasCursorOverlay
+        )
+        let stagedSourceTextures: [MTLTexture]?
+        let stagedCursorTexture: MTLTexture?
+        if let commandQueue, let device, requiresDetachedSubmissionSurface {
+            _ = commandQueue
+            stagedSourceTextures = try makeTextures(
+                for: surface,
+                device: device,
+                usage: [.shaderRead]
+            )
+            if let cursorOverlaySample = retainedFrame.cursorOverlaySample {
+                stagedCursorTexture = try makeTextures(
+                    for: cursorOverlaySample.surface,
+                    device: device,
+                    usage: [.shaderRead]
+                ).first
+            } else {
+                stagedCursorTexture = nil
+            }
+        } else {
+            stagedSourceTextures = nil
+            stagedCursorTexture = nil
+        }
         let submitFrame = { [self, retainedFrame] in
             do {
-                try encode(
-                    frame: retainedFrame,
-                    releaseSourceFrame: releaseSourceFrame
-                )
+                if let commandQueue, let stagedSourceTextures, requiresDetachedSubmissionSurface {
+                    try stageAndEncode(
+                        frame: retainedFrame,
+                        targetPixelFormat: targetPixelFormat,
+                        commandQueue: commandQueue,
+                        sourceTextures: stagedSourceTextures,
+                        cursorTexture: stagedCursorTexture,
+                        releaseSourceFrame: releaseSourceFrame
+                    )
+                } else {
+                    try encode(
+                        frame: retainedFrame,
+                        releaseSourceFrame: releaseSourceFrame
+                    )
+                }
             } catch {
                 let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
                 processingFailureCount += 1
@@ -544,6 +595,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         frame: MDKCaptureFrame,
         targetPixelFormat: UInt32,
         commandQueue: any MTLCommandQueue,
+        sourceTextures: [MTLTexture]? = nil,
+        cursorTexture: MTLTexture? = nil,
         releaseSourceFrame: @escaping @Sendable () -> Void
     ) throws {
         guard let device else {
@@ -553,12 +606,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             throw MDKVideoToolboxProcessingError.surfaceUnavailable
         }
 
-        let sourceTextures = try makeSourceTextures(
+        let resolvedSourceTextures = try sourceTextures ?? makeSourceTextures(
             for: frame,
             surface: surface,
             device: device
         )
-        let cursorTexture = try makeCursorTexture(
+        let resolvedCursorTexture = try cursorTexture ?? makeCursorTexture(
             for: frame.cursorOverlaySample,
             device: device
         )
@@ -604,14 +657,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
             try colorConverter.encode(
                 commandBuffer: commandBuffer,
-                sourceTextures: sourceTextures,
+                sourceTextures: resolvedSourceTextures,
                 destinationTextures: slot.textures,
                 destinationPixelFormat: targetPixelFormat,
                 hdrConfiguration: hdrConfiguration,
-                cursorTexture: cursorTexture,
+                cursorTexture: resolvedCursorTexture,
                 cursorOverlaySample: frame.cursorOverlaySample
             )
-        } else if requiresScaling(sourceTextures: sourceTextures, destinationTextures: slot.textures) {
+        } else if requiresScaling(sourceTextures: resolvedSourceTextures, destinationTextures: slot.textures) {
             guard let scaler else {
                 stagingSubmissionGroup.leave()
                 releaseStagingSlot(identifier: slotIdentifier)
@@ -619,7 +672,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
             scaler.encode(
                 commandBuffer: commandBuffer,
-                sourceTextures: sourceTextures,
+                sourceTextures: resolvedSourceTextures,
                 destinationTextures: slot.textures
             )
             if let cursorOverlaySample = scaledCursorOverlaySample(
@@ -628,7 +681,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 sourceHeight: frame.height,
                 destinationWidth: outputDimensions.x,
                 destinationHeight: outputDimensions.y
-            ), let cursorTexture {
+            ), let resolvedCursorTexture {
                 guard let colorConverter else {
                     stagingSubmissionGroup.leave()
                     releaseStagingSlot(identifier: slotIdentifier)
@@ -640,7 +693,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 try colorConverter.overlayCursorOnBGRA(
                     commandBuffer: commandBuffer,
                     destinationTexture: slot.textures[0],
-                    cursorTexture: cursorTexture,
+                    cursorTexture: resolvedCursorTexture,
                     cursorRect: cursorOverlaySample.rect,
                     cursorVerticallyFlipped: cursorOverlaySample.isVerticallyFlipped
                 )
@@ -652,7 +705,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 throw MDKVideoToolboxProcessingError.blitEncoderUnavailable
             }
 
-            for (sourceTexture, destinationTexture) in zip(sourceTextures, slot.textures) {
+            for (sourceTexture, destinationTexture) in zip(resolvedSourceTextures, slot.textures) {
                 let copySize = MTLSize(width: sourceTexture.width, height: sourceTexture.height, depth: 1)
                 blitEncoder.copy(
                     from: sourceTexture,
@@ -668,7 +721,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
             blitEncoder.endEncoding()
             if let cursorOverlaySample = frame.cursorOverlaySample,
-               let cursorTexture {
+               let resolvedCursorTexture {
                 guard let colorConverter else {
                     stagingSubmissionGroup.leave()
                     releaseStagingSlot(identifier: slotIdentifier)
@@ -680,7 +733,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 try colorConverter.overlayCursorOnBGRA(
                     commandBuffer: commandBuffer,
                     destinationTexture: slot.textures[0],
-                    cursorTexture: cursorTexture,
+                    cursorTexture: resolvedCursorTexture,
                     cursorRect: cursorOverlaySample.rect,
                     cursorVerticallyFlipped: cursorOverlaySample.isVerticallyFlipped
                 )
