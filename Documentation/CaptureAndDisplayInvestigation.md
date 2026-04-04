@@ -33,59 +33,53 @@ this document remains the broader investigation record.
 
 ### Current best result
 
-- downstream experiment: `120`
-- MDK commit: `517da1e`
-- score: `90.13`
+- downstream experiment: `150`
+- MDK commit: `a03fe81`
+- score: `90.00`
 - note:
-  - this is the current best for the active `/Users/skyline23/Downloads/MacDisplayKit` checkout
-  - the older `95a1f6b / 91.36` result came from a different DerivedData checkout and has not
-    reproduced on the downloads repo, so it is historical-only context rather than the active keep
+  - `Lumen` now links `/Users/skyline23/Downloads/MacDisplayKit` directly through a local Tuist
+    package path, so this is the first active best from the corrected local-package setup
+  - the older `95a1f6b / 91.36` result came from a different DerivedData checkout and is now
+    historical-only context rather than an active keep
 
 Best measured output:
 
 - `HEVC`
-  - `RUNTIME_SCORE_HEVC=64.58`
-  - `frames=27`
-  - `startup_ms=175.076`
-  - `avg_callback_latency_ms=15.246`
-  - `max_callback_latency_ms=51.890`
+  - `RUNTIME_SCORE_HEVC=65.00`
 - `ProRes Proxy`
-  - `RUNTIME_SCORE_PRORES_PROXY=64.26`
-  - `frames=93`
-  - `startup_ms=120.048`
-  - `avg_callback_latency_ms=8.387`
-  - `max_callback_latency_ms=16.961`
+  - `RUNTIME_SCORE_PRORES_PROXY=77.79`
 
 ### Current keep stack
 
 - active downloads-checkout keep:
-  1. prewarm the `VTCompressionSession` before source start once capture dimensions and source pixel
-     format are known
+  1. revert the `VTCompressionSession` prewarm path because it collapses the corrected local-package
+     setup
+  2. remove the extra outer `processingQueue` handoff and call `processor.process` directly from the
+     source callback after pending admission succeeds
 
 - active baseline for keep or discard decisions:
-  - `126 / 942d9cb / 88.60`
+  - `142 / a77264be+7332271 / 66.06`
 
 ### Working directions
 
-- `VTCompressionSession` startup cost is a real production bottleneck on the downloads checkout
-- the current best depends on keeping that prewarm enabled for both `HEVC` and `ProRes Proxy`
+- corrected local-package routing matters more than any individual codec knob: remote-pin numbers
+  are no longer valid once `Lumen` actually consumes `/Users/skyline23/Downloads/MacDisplayKit`
+- removing redundant source-to-processor queue hops is currently the strongest real win on the
+  corrected setup
 - partial HDR overlay can remain enabled without blocking the current downloads best path
-- current work should prefer single-knob `VideoToolbox` pacing or buffering experiments, or tightly
-  scoped raw-source bootstrap changes that can be measured independently
+- next work should stay on queue topology and ingress policy instead of revisiting source defaults or
+  HEVC rate-control micro-tuning
 
 ### Closed directions
 
-- historical keep stacks from the DerivedData checkout are not reproducible on the downloads repo
-  without hurting `ProRes Proxy`, so they cannot be treated as active defaults
-- HEVC-only retunes around `192 Mbps`, `240 Hz` hints, callback pending depth `2`,
-  `MaxFrameDelayCount=0`, disabling low-latency rate control, or disabling temporal compression all
-  lose against `517da1e`
-- narrowing the current prewarm path to only `HEVC` or only `ProRes Proxy` also loses, which closes
-  codec-scoped prewarm variants
-- replacing the current high-refresh source bootstrap with `baseline-q2` also loses, so the active
-  downloads best still prefers the `request120LikeQueue2` bootstrap candidate
-- reduced-dirty source freshness and richer partial-HDR transport are currently closed in this repo
-  state because they regress `ProRes Proxy`
+- the old remote-pin keep stack was invalid for the local-package setup; once wiring was corrected,
+  the `VTCompressionSession` prewarm became a major regression instead of a win
+- corrected-setup HEVC retunes around `240 Hz` hints, `192 Mbps`, removed data-rate limits, and
+  reduced-dirty freshness gating all lose against `a03fe81`
+- corrected-setup raw-source default swaps such as `baseline-q2` also lose, so the active local best
+  still prefers the existing `request120LikeQueue2` bootstrap candidate
+- serializing the outer processing queue does not help enough; the larger win came from removing the
+  queue entirely and letting the source callback hand off directly to `processor.process`
 
 ### Current bottleneck reading
 
