@@ -212,7 +212,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var processedFrameCount: UInt64 = 0
     private var processingFailureCount: UInt64 = 0
     private var processingErrorHistogram: [String: Int] = [:]
-    private let outputQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.output")
+    private let outputQueue = DispatchQueue(
+        label: "com.skyline23.MacDisplayKit.capture.videotoolbox.output",
+        qos: .userInteractive
+    )
     private var outputCallbackCount: UInt64 = 0
     private var completedOutputFrameCount: UInt64 = 0
     private var outputCallbackStatusHistogram: [String: Int] = [:]
@@ -229,8 +232,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let colorConverterInitializationErrorDescription: String?
     private let outputDrainGroup = DispatchGroup()
     private let stagingSubmissionGroup = DispatchGroup()
-    private let encodeQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode")
-    private let submissionQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.submit")
+    private let encodeQueue = DispatchQueue(
+        label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode",
+        qos: .userInteractive
+    )
+    private let submissionQueue = DispatchQueue(
+        label: "com.skyline23.MacDisplayKit.capture.videotoolbox.submit",
+        qos: .userInteractive
+    )
     private let encodeQueueSpecificKey = DispatchSpecificKey<UInt8>()
     private let encodeQueueSpecificValue: UInt8 = 1
     private let keyFrameRequestLock = NSLock()
