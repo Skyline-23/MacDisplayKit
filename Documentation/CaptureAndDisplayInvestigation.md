@@ -33,23 +33,23 @@ this document remains the broader investigation record.
 
 ### Current best result
 
-- downstream experiment: `152`
-- MDK commit: `91bfcc8`
-- score: `90.21`
+- downstream experiment: `163`
+- MDK commit: `682c405`
+- score: `93.96`
 - note:
   - `Lumen` now links `/Users/skyline23/Downloads/MacDisplayKit` directly through a local Tuist
     package path, so this is the first active best from the corrected local-package setup
   - the older `95a1f6b / 91.36` result came from a different DerivedData checkout and is now
     historical-only context rather than an active keep
-  - the newest keep removed the extra post-Metal `submissionQueue` hop and submits staged frames
-    directly to VideoToolbox from the command-buffer completion path
+  - the newest keep stacks a `240 Hz` HEVC expected frame-rate / duration hint on top of the
+    staged direct-submit path
 
 Best measured output:
 
 - `HEVC`
-  - `RUNTIME_SCORE_HEVC=65.21`
+  - `RUNTIME_SCORE_HEVC=68.96`
 - `ProRes Proxy`
-  - `RUNTIME_SCORE_PRORES_PROXY=78.71`
+  - `RUNTIME_SCORE_PRORES_PROXY=82.14`
 
 ### Current keep stack
 
@@ -60,6 +60,7 @@ Best measured output:
      source callback after pending admission succeeds
   3. remove the extra post-copy `submissionQueue` hop and submit staged frames directly from the
      Metal completion handler
+  4. double the high-refresh HEVC expected frame-rate and duration hints to `240 Hz`
 
 - active baseline for keep or discard decisions:
   - `142 / a77264be+7332271 / 66.06`
@@ -71,10 +72,13 @@ Best measured output:
 - removing redundant source-to-processor queue hops is currently the strongest real win on the
   corrected setup
 - partial HDR overlay can remain enabled without blocking the current downloads best path
-- next work should stay on queue topology and ingress policy instead of revisiting source defaults or
-  HEVC rate-control micro-tuning
-- the corrected setup now prefers removing queue hops only when submission ordering stays intact;
-  fully async admission, early source release, and output-delivery decoupling all lost
+- the corrected setup now prefers removing queue hops only when submission ordering stays intact, and
+  it also re-opens the HEVC pacing-hint direction once the staged direct-submit keep is in place
+- current no-go follow-ups on top of the `240 Hz` hint keep:
+  - `164 / b9962e5 / 69.64`
+    - dropping the HEVC low-latency bitrate ceiling to `192 Mbps` badly regresses both codecs
+  - `165 / f16fb23 / 60.11`
+    - forcing `MaxFrameDelayCount=0` on HEVC catastrophically regresses startup and latency
 
 ### Closed directions
 
@@ -82,6 +86,9 @@ Best measured output:
   the `VTCompressionSession` prewarm became a major regression instead of a win
 - corrected-setup HEVC retunes around `240 Hz` hints, `192 Mbps`, removed data-rate limits, and
   reduced-dirty freshness gating all lose against `a03fe81`
+- after `163`, the `240 Hz` HEVC hint direction is no longer closed; it is now part of the active
+  keep stack, but its old companion knobs (`192 Mbps`, `MaxFrameDelayCount=0`) remain closed even in
+  the new context
 - corrected-setup raw-source default swaps such as `baseline-q2` also lose, so the active local best
   still prefers the existing `request120LikeQueue2` bootstrap candidate
 - serializing the outer processing queue does not help enough; the larger win came from removing the
@@ -97,6 +104,21 @@ Best measured output:
   - `155 / 559d488 / 90.00`
     - delivering encoded frames directly from the output callback instead of the stats queue does not
       improve the corrected local-package best
+  - `156 / 727cd93 / 89.58`
+    - reusing the already-copied HEVC payload for HDR metadata presence checks regresses the callback
+      path
+  - `157 / d8081b7 / 89.79`
+    - removing the retained-frame reconstruction before the encode queue regresses both codecs
+  - `158 / 01c5cef / 90.21`
+    - removing source callback diagnostics only matches the previous best and does not improve it
+  - `159 / ce54405 / crash`
+    - synchronizing staged slot release from the output callback hangs the runtime probe
+  - `160 / bf66c88 / 90.00`
+    - raising VideoToolbox queue QoS to `userInteractive` does not help and worsens HEVC latency
+  - `161 / ee46a75 / 25.00`
+    - moving source diagnostics after pending admission catastrophically destabilizes HEVC pacing
+  - `162 / 1ef98b7 / crash`
+    - prebuilding staged source textures outside the queue crashes the runtime probe
 
 ### Current bottleneck reading
 
