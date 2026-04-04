@@ -700,7 +700,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 self.stagingSubmissionGroup.leave()
                 return
             }
-            releaseSourceFrame()
             do {
                 try self.submitToEncoder(
                     imageBuffer: stagedPixelBuffer.pixelBuffer,
@@ -709,8 +708,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     presentationTimeStamp: presentationTimeStamp,
                     releasePendingFrame: {}
                 )
+                releaseSourceFrame()
                 self.recordProcessingSuccess(isStaged: true)
             } catch {
+                releaseSourceFrame()
                 let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
                 self.recordProcessingFailure(errorDescription)
                 self.releaseStagingSlot(identifier: slotIdentifier)
