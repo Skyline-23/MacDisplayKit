@@ -33,61 +33,68 @@ this document remains the broader investigation record.
 
 ### Current best result
 
-- downstream experiment: `104`
-- MDK commit: `95a1f6b`
-- score: `91.36`
+- downstream experiment: `120`
+- MDK commit: `517da1e`
+- score: `90.13`
+- note:
+  - this is the current best for the active `/Users/skyline23/Downloads/MacDisplayKit` checkout
+  - the older `95a1f6b / 91.36` result came from a different DerivedData checkout and has not
+    reproduced on the downloads repo, so it is historical-only context rather than the active keep
 
 Best measured output:
 
 - `HEVC`
-  - `RUNTIME_SCORE_HEVC=66.36`
-  - `frames=47`
-  - `startup_ms=161.201`
-  - `avg_callback_latency_ms=12.606`
-  - `max_callback_latency_ms=32.726`
+  - `RUNTIME_SCORE_HEVC=64.58`
+  - `frames=27`
+  - `startup_ms=175.076`
+  - `avg_callback_latency_ms=15.246`
+  - `max_callback_latency_ms=51.890`
 - `ProRes Proxy`
-  - `RUNTIME_SCORE_PRORES_PROXY=67.81`
-  - `frames=81`
-  - `startup_ms=111.99`
-  - `avg_callback_latency_ms=8.048`
-  - `max_callback_latency_ms=13.782`
+  - `RUNTIME_SCORE_PRORES_PROXY=64.26`
+  - `frames=93`
+  - `startup_ms=120.048`
+  - `avg_callback_latency_ms=8.387`
+  - `max_callback_latency_ms=16.961`
 
 ### Current keep stack
 
-The current keep is cumulative:
+- active downloads-checkout keep:
+  1. prewarm the `VTCompressionSession` before source start once capture dimensions and source pixel
+     format are known
 
-1. lower high-refresh HEVC low-latency bitrate ceiling from `200 Mbps` to `192 Mbps`
-2. raise high-refresh HEVC `ExpectedFrameRate` / `ExpectedDuration` hints to `240 Hz`
-3. clamp high-refresh callback-only HEVC pending depth to `2`
-4. coalesce small `SkyLight` dirty updates at the source
-5. let the first small dirty update pass, then treat repeated small updates as a burst
+- active baseline for keep or discard decisions:
+  - `126 / 942d9cb / 88.60`
 
 ### Working directions
 
-- source freshness improvements beat downstream restart or prune logic
-- HEVC responds to cadence hints more than bitrate or quality micro-tuning
-- partial HDR overlay can remain enabled without blocking the current best path
+- `VTCompressionSession` startup cost is a real production bottleneck on the downloads checkout
+- the current best depends on keeping that prewarm enabled for both `HEVC` and `ProRes Proxy`
+- partial HDR overlay can remain enabled without blocking the current downloads best path
+- current work should prefer single-knob `VideoToolbox` pacing or buffering experiments, or tightly
+  scoped raw-source bootstrap changes that can be measured independently
 
 ### Closed directions
 
-- HEVC bitrate / quality micro-tuning around `188-196 Mbps`, explicit quality, target quality
-  `0.34`, or zero lookahead
-- overdriven VT pacing / buffering knobs such as `300 Hz` hints, `ReferenceBufferCount=0`, or
-  `MaxFrameDelayCount=1`
-- late mailbox or saturation-prune experiments after stale work already entered the pipeline
-- backend or bootstrap swaps alone, including forced private `IOSurface` routing and broad `q2/q3`
-  bootstrap variants
-- over-tuning the small-dirty burst gate beyond the current first-update-pass plus repeated-burst
-  shape
-- replay split or richer partial-HDR transport as a primary score lever
-- Lumen-side ingress event semantics and forwarding slack as the main optimization surface
+- historical keep stacks from the DerivedData checkout are not reproducible on the downloads repo
+  without hurting `ProRes Proxy`, so they cannot be treated as active defaults
+- HEVC-only retunes around `192 Mbps`, `240 Hz` hints, callback pending depth `2`,
+  `MaxFrameDelayCount=0`, disabling low-latency rate control, or disabling temporal compression all
+  lose against `517da1e`
+- narrowing the current prewarm path to only `HEVC` or only `ProRes Proxy` also loses, which closes
+  codec-scoped prewarm variants
+- replacing the current high-refresh source bootstrap with `baseline-q2` also loses, so the active
+  downloads best still prefers the `request120LikeQueue2` bootstrap candidate
+- reduced-dirty source freshness and richer partial-HDR transport are currently closed in this repo
+  state because they regress `ProRes Proxy`
 
 ### Current bottleneck reading
 
-- the likely limiting path is still early MDK source-to-processor-to-encoder cadence
-- visible downstream saturation and restart signals look more like amplifiers than the root cause
-- next work should stay centered on `CaptureVideoToolboxProcessing` startup submit ordering, first
-  output cadence, and startup pacing that does not widen steady-state queue depth
+- the likely limiting path is still early MDK source-to-processor-to-encoder cadence, but the
+  downloads checkout shows more sensitivity to `VT` startup and pacing policy than the old tree did
+- visible downstream saturation and restart signals still look more like amplifiers than the root
+  cause
+- next work should stay centered on `CaptureVideoToolboxProcessing` pacing or rate-limit policy and
+  on narrowly scoped raw-source bootstrap changes that preserve the current prewarm best
 
 ## Production session status
 
