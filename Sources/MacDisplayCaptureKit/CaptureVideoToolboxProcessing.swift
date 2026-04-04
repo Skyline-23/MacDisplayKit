@@ -1436,12 +1436,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             )
         }
         if let slotIdentifier = submissionToken?.slotIdentifier {
-            if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) == encodeQueueSpecificValue {
+            encodeQueue.async { [self] in
                 releaseStagingSlot(identifier: slotIdentifier)
-            } else {
-                encodeQueue.sync { [self] in
-                    releaseStagingSlot(identifier: slotIdentifier)
-                }
             }
         }
         submissionToken?.markCompleted()
