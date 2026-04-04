@@ -960,11 +960,6 @@ public actor MDKEncodedCaptureSession {
         runtimeGeneration &+= 1
         let currentRuntimeGeneration = runtimeGeneration
         let callbackOnlyDelivery = configuration.deliveryMode == .callbackOnly && callbacks != nil
-        let processingQueue = DispatchQueue(
-            label: "com.skyline23.MacDisplayKit.encoded-capture.processing",
-            qos: .userInteractive,
-            attributes: .concurrent
-        )
         let pendingFrameTracker = MDKEncodedCapturePendingFrameTracker()
         let sourceCadenceTracker = MDKEncodedCaptureSourceCadenceTracker()
         let sourceTimingTracker = MDKEncodedCaptureSourceTimingTracker()
@@ -1014,17 +1009,15 @@ public actor MDKEncodedCaptureSession {
                 return
             }
 
-            processingQueue.async {
-                do {
-                    try processor.process(frame: frame) {
-                        pendingFrameTracker.releaseOne()
-                    }
-                } catch {
+            do {
+                try processor.process(frame: frame) {
                     pendingFrameTracker.releaseOne()
-                    let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-                    Task {
-                        await self.handleProcessingFailure(description, runtimeGeneration: currentRuntimeGeneration)
-                    }
+                }
+            } catch {
+                pendingFrameTracker.releaseOne()
+                let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                Task {
+                    await self.handleProcessingFailure(description, runtimeGeneration: currentRuntimeGeneration)
                 }
             }
         }
