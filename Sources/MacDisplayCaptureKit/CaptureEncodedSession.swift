@@ -22,6 +22,11 @@ struct MDKEncodedCaptureSourcePreparation: Sendable {
 }
 
 protocol MDKEncodedCaptureProcessorRuntime: AnyObject, Sendable {
+    func prepareForCaptureDimensions(
+        width: Int,
+        height: Int,
+        sourcePixelFormat: UInt32
+    ) throws
     func process(
         frame: MDKCaptureFrame,
         releaseSourceFrame: @escaping @Sendable () -> Void
@@ -32,6 +37,12 @@ protocol MDKEncodedCaptureProcessorRuntime: AnyObject, Sendable {
 }
 
 extension MDKEncodedCaptureProcessorRuntime {
+    func prepareForCaptureDimensions(
+        width: Int,
+        height: Int,
+        sourcePixelFormat: UInt32
+    ) throws {}
+
     func requestImmediateKeyFrame() {}
 }
 
@@ -865,6 +876,17 @@ public actor MDKEncodedCaptureSession {
         return min(max(effectiveQueueDepth * 2, 2), 8)
     }
 
+    private static func resolvedCaptureDimensions(
+        for configuration: MDKEncodedCaptureConfiguration
+    ) -> SIMD2<Int> {
+        let configuredWidth = configuration.streamConfiguration.resolvedOutputWidth
+        let configuredHeight = configuration.streamConfiguration.resolvedOutputHeight
+        let displayID = CGDirectDisplayID(configuration.displayID)
+        let width = configuredWidth > 0 ? configuredWidth : Int(CGDisplayPixelsWide(displayID))
+        let height = configuredHeight > 0 ? configuredHeight : Int(CGDisplayPixelsHigh(displayID))
+        return SIMD2(max(width, 1), max(height, 1))
+    }
+
     public func frames() -> AsyncThrowingStream<MDKEncodedFrame, Error> {
         makeFrameStream()
     }
@@ -997,6 +1019,12 @@ public actor MDKEncodedCaptureSession {
         }
 
         let processor = processorFactory(configuration, outputHandler, failureHandler)
+        let resolvedCaptureDimensions = Self.resolvedCaptureDimensions(for: configuration)
+        try processor.prepareForCaptureDimensions(
+            width: resolvedCaptureDimensions.x,
+            height: resolvedCaptureDimensions.y,
+            sourcePixelFormat: configuration.resolvedCapturePixelFormat
+        )
         let source = sourceFactory(configuration, sourcePreparation) { [weak self, weak processor] frame in
             guard let self, let processor else {
                 return
