@@ -44,7 +44,9 @@ Imported legacy runtime sources now live inside the repository-owned `Sources/Ma
 - `Tests/MacDisplayKitTests`
   Lightweight framework tests.
 - `Documentation`
-  Extraction notes and migration map.
+  Investigation notes and migration map.
+  Start with [`Documentation/CaptureAndDisplayInvestigation.md`](Documentation/CaptureAndDisplayInvestigation.md)
+  for the current encoded-capture findings and optimization direction.
 - `Tools/LegacyRuntime`
   Runtime introspection and reverse-engineering helpers.
 
