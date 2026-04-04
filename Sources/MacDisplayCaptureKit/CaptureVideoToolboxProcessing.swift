@@ -771,7 +771,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
             frame: frame
         )
-        outputQueue.sync {
+        outputQueue.async {
             submittedFrameCount += 1
         }
     }
@@ -1380,7 +1380,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     }
 
     private func recordProcessingSuccess(isStaged: Bool) {
-        outputQueue.sync {
+        outputQueue.async {
             processedFrameCount += 1
             if isStaged {
                 stagedSubmissionFrameCount += 1
@@ -1391,7 +1391,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     }
 
     private func recordProcessingFailure(_ description: String) {
-        outputQueue.sync {
+        outputQueue.async {
             processingFailureCount += 1
             processingErrorHistogram[description, default: 0] += 1
         }
