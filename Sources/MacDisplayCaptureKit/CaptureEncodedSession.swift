@@ -997,6 +997,8 @@ public actor MDKEncodedCaptureSession {
                 return
             }
 
+            sourceCadenceTracker.record(displayTime: frame.displayTime)
+            sourceTimingTracker.record(frame: frame)
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
                     await self.handleSourceFrameDropped(
