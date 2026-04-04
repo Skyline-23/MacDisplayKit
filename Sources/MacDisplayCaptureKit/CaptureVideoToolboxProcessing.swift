@@ -305,36 +305,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
     }
 
-    public func prepareForCaptureDimensions(
-        width: Int,
-        height: Int,
-        sourcePixelFormat: UInt32
-    ) throws {
-        let preparation = {
-            let targetPixelFormat = self.codec.preferredInputPixelFormat(
-                for: sourcePixelFormat,
-                hdrConfiguration: self.hdrConfiguration,
-                strategy: self.encoderInputStrategy
-            )
-            let outputDimensions = self.preprocessStrategy.outputDimensions(
-                sourceWidth: width,
-                sourceHeight: height,
-                pixelFormat: targetPixelFormat
-            )
-            try self.ensureCompressionSession(
-                width: outputDimensions.x,
-                height: outputDimensions.y,
-                pixelFormat: targetPixelFormat
-            )
-        }
-
-        if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) == encodeQueueSpecificValue {
-            try preparation()
-        } else {
-            try encodeQueue.sync(execute: preparation)
-        }
-    }
-
     public func process(
         frame: MDKCaptureFrame,
         releaseSourceFrame: @escaping @Sendable () -> Void
