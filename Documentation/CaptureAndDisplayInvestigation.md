@@ -33,21 +33,23 @@ this document remains the broader investigation record.
 
 ### Current best result
 
-- downstream experiment: `150`
-- MDK commit: `a03fe81`
-- score: `90.00`
+- downstream experiment: `152`
+- MDK commit: `91bfcc8`
+- score: `90.21`
 - note:
   - `Lumen` now links `/Users/skyline23/Downloads/MacDisplayKit` directly through a local Tuist
     package path, so this is the first active best from the corrected local-package setup
   - the older `95a1f6b / 91.36` result came from a different DerivedData checkout and is now
     historical-only context rather than an active keep
+  - the newest keep removed the extra post-Metal `submissionQueue` hop and submits staged frames
+    directly to VideoToolbox from the command-buffer completion path
 
 Best measured output:
 
 - `HEVC`
-  - `RUNTIME_SCORE_HEVC=65.00`
+  - `RUNTIME_SCORE_HEVC=65.21`
 - `ProRes Proxy`
-  - `RUNTIME_SCORE_PRORES_PROXY=77.79`
+  - `RUNTIME_SCORE_PRORES_PROXY=78.71`
 
 ### Current keep stack
 
@@ -56,6 +58,8 @@ Best measured output:
      setup
   2. remove the extra outer `processingQueue` handoff and call `processor.process` directly from the
      source callback after pending admission succeeds
+  3. remove the extra post-copy `submissionQueue` hop and submit staged frames directly from the
+     Metal completion handler
 
 - active baseline for keep or discard decisions:
   - `142 / a77264be+7332271 / 66.06`
@@ -69,6 +73,8 @@ Best measured output:
 - partial HDR overlay can remain enabled without blocking the current downloads best path
 - next work should stay on queue topology and ingress policy instead of revisiting source defaults or
   HEVC rate-control micro-tuning
+- the corrected setup now prefers removing queue hops only when submission ordering stays intact;
+  fully async admission, early source release, and output-delivery decoupling all lost
 
 ### Closed directions
 
@@ -80,6 +86,17 @@ Best measured output:
   still prefers the existing `request120LikeQueue2` bootstrap candidate
 - serializing the outer processing queue does not help enough; the larger win came from removing the
   queue entirely and letting the source callback hand off directly to `processor.process`
+- further corrected local-package misses after `91bfcc8`:
+  - `151 / 429e082 / 84.83`
+    - fully async `encodeQueue` admission from `process()` collapses HEVC startup and latency
+  - `153 / 3cf2e4b+35854c5 / 90.00`
+    - async output-queue stats bookkeeping does not improve the best and slightly hurts HEVC startup
+  - `154 / 5f495db / 89.79`
+    - releasing staged source frames before VideoToolbox submission regresses both combined score and
+      HEVC progression
+  - `155 / 559d488 / 90.00`
+    - delivering encoded frames directly from the output callback instead of the stats queue does not
+      improve the corrected local-package best
 
 ### Current bottleneck reading
 
@@ -87,8 +104,9 @@ Best measured output:
   downloads checkout shows more sensitivity to `VT` startup and pacing policy than the old tree did
 - visible downstream saturation and restart signals still look more like amplifiers than the root
   cause
-- next work should stay centered on `CaptureVideoToolboxProcessing` pacing or rate-limit policy and
-  on narrowly scoped raw-source bootstrap changes that preserve the current prewarm best
+- the best corrected local-package wins now cluster around preserving strict staged-submit ordering
+  while shaving redundant queue hops, so future work should focus on remaining ordered handoffs
+  inside `CaptureVideoToolboxProcessing` rather than broad async decoupling
 
 ## Production session status
 
