@@ -49,7 +49,24 @@ enum MDKHEVCHDRStaticMetadataTransport {
             return nil
         }
 
-        let existingPresence = presence(in: sampleBuffer)
+        let nalUnitHeaderLength = hevcNALUnitHeaderLength(from: formatDescription) ?? 4
+        let extensionPresence = extensionPresence(in: sampleBuffer)
+        let payloadPresence: MDKHEVCHDRStaticMetadataPresence
+        if extensionPresence.isComplete {
+            payloadPresence = MDKHEVCHDRStaticMetadataPresence(
+                hasMasteringDisplayColorVolume: false,
+                hasContentLightLevelInfo: false
+            )
+        } else {
+            payloadPresence = presence(
+                inLengthPrefixedPayload: payload,
+                nalUnitHeaderLength: nalUnitHeaderLength
+            )
+        }
+        let existingPresence = MDKHEVCHDRStaticMetadataPresence(
+            hasMasteringDisplayColorVolume: extensionPresence.hasMasteringDisplayColorVolume || payloadPresence.hasMasteringDisplayColorVolume,
+            hasContentLightLevelInfo: extensionPresence.hasContentLightLevelInfo || payloadPresence.hasContentLightLevelInfo
+        )
         let needsMasteringDisplay =
             hdrConfiguration.masteringDisplayColorVolume != nil &&
             !existingPresence.hasMasteringDisplayColorVolume
@@ -60,7 +77,6 @@ enum MDKHEVCHDRStaticMetadataTransport {
             return nil
         }
 
-        let nalUnitHeaderLength = hevcNALUnitHeaderLength(from: formatDescription) ?? 4
         guard let seiNALUnit = makeLengthPrefixedPrefixSEINALUnit(
             nalUnitHeaderLength: nalUnitHeaderLength,
             masteringDisplayColorVolume: needsMasteringDisplay ? hdrConfiguration.masteringDisplayColorVolume : nil,
