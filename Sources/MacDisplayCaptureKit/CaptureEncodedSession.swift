@@ -421,12 +421,6 @@ private final class MDKEncodedCapturePendingFrameTracker: @unchecked Sendable {
         return true
     }
 
-    func hasPendingFrames() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return count > 0
-    }
-
     func releaseOne() {
         lock.lock()
         count = max(count - 1, 0)
@@ -1005,9 +999,6 @@ public actor MDKEncodedCaptureSession {
 
             sourceCadenceTracker.record(displayTime: frame.displayTime)
             sourceTimingTracker.record(frame: frame)
-            if frame.origin != .fresh && pendingFrameTracker.hasPendingFrames() {
-                return
-            }
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
                     await self.handleSourceFrameDropped(
