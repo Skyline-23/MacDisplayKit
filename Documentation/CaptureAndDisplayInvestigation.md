@@ -155,6 +155,19 @@ Best measured output:
   - keyframe-only recovery is directionally better than the other Lumen-side alternatives tried so
     far, which suggests the next iterations should stay focused on startup-specific recovery
     semantics instead of steady-state queue policy
+- the newest downstream experiments narrow that further:
+  - `172 / 6c8042b2 / 89.79`
+    - consumer-side startup latest-wins fast-forwarding is materially better than reset-policy
+      tweaks, but not enough on its own
+  - `173 / 9a36abd4 / 90.21`
+    - fast-forwarding startup backlog and immediately requesting a fresh IDR when no queued
+      recovery point survives is the strongest Lumen-side variant so far
+  - `174 / bc3d770f / 89.58`
+    - gating that path behind observed startup pressure does not improve it further
+  - `175 / 7e7da337 / 90.21`
+    - producer-side startup capacity clamping ties the best consumer-side result, which points to
+      the same underlying shape: startup-specific latest-wins admission works, but still needs a
+      lower-overhead integration point to beat the current MDK-only best
 
 ## Production session status
 
