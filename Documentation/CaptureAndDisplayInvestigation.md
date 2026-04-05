@@ -130,6 +130,32 @@ Best measured output:
   while shaving redundant queue hops, so future work should focus on remaining ordered handoffs
   inside `CaptureVideoToolboxProcessing` rather than broad async decoupling
 
+### Latest downstream ingress findings
+
+- the next real ceiling is now visible in `Lumen` ingress policy, not just inside MDK
+- on `capture processing queue is saturated`, `Lumen` currently escalates transient source pressure
+  into decoder resyncs and even session restarts; that makes downstream recovery policy part of the
+  measured path
+- however, the last four ingress-policy sweeps also show that saturation is not safe to simply
+  ignore:
+  - `168 / 184d29b4 / 72.74`
+    - removing saturation-triggered resync and restart entirely causes backlog-driven startup and
+      callback-latency collapse
+  - `169 / fd674475 / 73.34`
+    - gating saturation recovery on repeated stalled packets still lets startup backlog run away
+  - `170 / b7050537 / 81.97`
+    - startup-only `request IDR` without queue flush is better, but still leaves too much backlog
+      during initial stream bring-up
+  - `171 / c1c56248 / 57.63`
+    - startup-only light queue flush without the full old resync path amplifies drop churn even more
+- the strong new read is that the deepest open problem is startup IDR acquisition under queue
+  pressure:
+  - full decoder/session resync on every startup saturation is too destructive
+  - doing nothing is too weak
+  - keyframe-only recovery is directionally better than the other Lumen-side alternatives tried so
+    far, which suggests the next iterations should stay focused on startup-specific recovery
+    semantics instead of steady-state queue policy
+
 ## Production session status
 
 The benchmark-only raw `SkyLight` path has now been lifted into production-facing Swift
