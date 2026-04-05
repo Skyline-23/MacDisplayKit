@@ -295,14 +295,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         keyFrameRequestLock.lock()
         forceNextKeyFrame = true
         keyFrameRequestLock.unlock()
-
-        if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) == encodeQueueSpecificValue {
-            replayLastSubmittedFrameAsKeyFrameIfPossible()
-        } else {
-            encodeQueue.async { [weak self] in
-                self?.replayLastSubmittedFrameAsKeyFrameIfPossible()
-            }
-        }
     }
 
     public func process(
@@ -320,6 +312,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             width: frame.width,
             height: frame.height,
             pixelFormat: frame.pixelFormat,
+            origin: frame.origin,
             surface: surface,
             cursorOverlaySample: frame.cursorOverlaySample,
             sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
@@ -757,7 +750,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             imageBuffer: imageBuffer,
             presentationTimeStamp: resolvedPresentationTimeStamp,
             duration: .invalid,
-            frameProperties: makeFrameProperties(forceKeyFrame: consumeImmediateKeyFrameRequest()),
+            frameProperties: makeFrameProperties(forceKeyFrame: consumeImmediateKeyFrameRequest(for: frame.origin)),
             sourceFrameRefcon: submissionToken.toOpaque(),
             infoFlagsOut: nil
         )
@@ -767,57 +760,28 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             releasePendingFrame()
             throw MDKVideoToolboxProcessingError.encodeFailed(status: status)
         }
-        lastReplayState = MDKVideoToolboxReplayState(
-            imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
-            frame: frame
-        )
+        if frame.origin == .fresh {
+            lastReplayState = MDKVideoToolboxReplayState(
+                imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
+                frame: frame
+            )
+        }
         outputQueue.sync {
             submittedFrameCount += 1
         }
     }
 
-    private func replayLastSubmittedFrameAsKeyFrameIfPossible() {
-        guard let lastReplayState,
-              compressionSession != nil else {
-            return
-        }
-
-        let previousFrame = lastReplayState.frame
-        let syntheticDisplayTime = max(mach_absolute_time(), previousFrame.displayTime &+ 1)
-        let replayFrame = MDKCaptureFrame(
-            sequenceNumber: previousFrame.sequenceNumber &+ 1,
-            displayTime: syntheticDisplayTime,
-            surfaceID: previousFrame.surfaceID,
-            width: previousFrame.width,
-            height: previousFrame.height,
-            pixelFormat: previousFrame.pixelFormat,
-            surface: previousFrame.surface,
-            cursorOverlaySample: previousFrame.cursorOverlaySample,
-            sourceCaptureDurationNanoseconds: previousFrame.sourceCaptureDurationNanoseconds,
-            sourceCursorCompositeDurationNanoseconds: previousFrame.sourceCursorCompositeDurationNanoseconds
-        )
-
-        do {
-            try submitToEncoder(
-                imageBuffer: lastReplayState.imageBuffer.pixelBuffer,
-                frame: replayFrame,
-                slotIdentifier: nil,
-                releasePendingFrame: {}
-            )
-            immediateReplaySubmissionCount += 1
-        } catch {
-            let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-            recordProcessingFailure(errorDescription)
-            failureHandler?(errorDescription)
-        }
-    }
-
-    private func consumeImmediateKeyFrameRequest() -> Bool {
+    private func consumeImmediateKeyFrameRequest(for origin: MDKCaptureFrameOrigin) -> Bool {
         keyFrameRequestLock.lock()
         defer { keyFrameRequestLock.unlock() }
-        let shouldForceKeyFrame = forceNextKeyFrame
+        guard forceNextKeyFrame else {
+            return false
+        }
+        guard origin == .fresh else {
+            return false
+        }
         forceNextKeyFrame = false
-        return shouldForceKeyFrame
+        return true
     }
 
     private func makeFrameProperties(forceKeyFrame: Bool) -> CFDictionary? {
