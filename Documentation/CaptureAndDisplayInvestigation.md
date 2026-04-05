@@ -177,12 +177,19 @@ Best measured output:
   - `178 / c8dd54f8 / 65.38`
     - narrowing the bridge clamp to HEVC-only still collapses startup, so the bridge callback layer
       is not the right integration point for this recovery shape
+  - `179 / 16d3f383 / 88.96`
+    - teaching the shared ingress itself to keep only the freshest startup frame or freshest queued
+      recovery point improves startup latency, but it shaves away too much early progression after
+      the first recovery point lands
 - current synthesis:
   - startup-specific latest-wins admission remains the strongest downstream idea after the active
     MDK best, but the only versions that stay near viability live at the shared ingress / packet
     consumption boundary
   - the Swift bridge callback layer is now effectively closed for this class of startup recovery
     experiments
+  - shared-ingress startup latest-wins is closer to the right layer than the bridge, but preserving
+    only a single startup frame is too aggressive; the next justified direction is a
+    `recovery-point + minimal continuity` startup window rather than a pure single-frame policy
 
 ## Production session status
 
