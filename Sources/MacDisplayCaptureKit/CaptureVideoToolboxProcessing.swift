@@ -320,6 +320,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             width: frame.width,
             height: frame.height,
             pixelFormat: frame.pixelFormat,
+            origin: frame.origin,
             surface: surface,
             cursorOverlaySample: frame.cursorOverlaySample,
             sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
@@ -767,10 +768,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             releasePendingFrame()
             throw MDKVideoToolboxProcessingError.encodeFailed(status: status)
         }
-        lastReplayState = MDKVideoToolboxReplayState(
-            imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
-            frame: frame
-        )
+        if frame.origin == .fresh {
+            lastReplayState = MDKVideoToolboxReplayState(
+                imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
+                frame: frame
+            )
+        }
         outputQueue.sync {
             submittedFrameCount += 1
         }
@@ -791,6 +794,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             width: previousFrame.width,
             height: previousFrame.height,
             pixelFormat: previousFrame.pixelFormat,
+            origin: .encoderImmediateReplay,
             surface: previousFrame.surface,
             cursorOverlaySample: previousFrame.cursorOverlaySample,
             sourceCaptureDurationNanoseconds: previousFrame.sourceCaptureDurationNanoseconds,

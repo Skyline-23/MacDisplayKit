@@ -164,6 +164,7 @@ private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
                 width: captureSurface.width,
                 height: captureSurface.height,
                 pixelFormat: captureSurface.pixelFormat,
+                origin: .fresh,
                 surface: captureSurface
             )
         case .emitIdleReplay:
@@ -179,6 +180,7 @@ private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
                 width: lastCaptureSurface.width,
                 height: lastCaptureSurface.height,
                 pixelFormat: lastCaptureSurface.pixelFormat,
+                origin: .sourceIdleReplay,
                 surface: lastCaptureSurface
             )
         case .drop:
@@ -218,6 +220,7 @@ private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
             width: lastCaptureSurface.width,
             height: lastCaptureSurface.height,
             pixelFormat: lastCaptureSurface.pixelFormat,
+            origin: .syntheticTimerReplay,
             surface: lastCaptureSurface
         )
     }
@@ -387,6 +390,7 @@ private final class MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime: MDKEnc
                     width: captureSurface.width,
                     height: captureSurface.height,
                     pixelFormat: captureSurface.pixelFormat,
+                    origin: .fresh,
                     surface: captureSurface,
                     cursorOverlaySample: cursorOverlaySample,
                     sourceCaptureDurationNanoseconds: captureDurationNanoseconds,
@@ -419,6 +423,12 @@ private final class MDKEncodedCapturePendingFrameTracker: @unchecked Sendable {
         }
         count += 1
         return true
+    }
+
+    func hasPendingFrames() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return count > 0
     }
 
     func releaseOne() {
@@ -999,6 +1009,9 @@ public actor MDKEncodedCaptureSession {
 
             sourceCadenceTracker.record(displayTime: frame.displayTime)
             sourceTimingTracker.record(frame: frame)
+            if frame.origin != .fresh && pendingFrameTracker.hasPendingFrames() {
+                return
+            }
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
                     await self.handleSourceFrameDropped(
