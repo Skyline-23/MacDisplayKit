@@ -852,7 +852,7 @@ public actor MDKEncodedCaptureSession {
 
         if usesLowLatencyCallbackEncode {
             if configuration.targetFrameRate >= 100 {
-                return min(max(effectiveQueueDepth + 3, 5), 7)
+                return min(max(effectiveQueueDepth + 4, 6), 8)
             } else if configuration.targetFrameRate >= 60 {
                 return min(max(effectiveQueueDepth + 1, 3), 5)
             }
