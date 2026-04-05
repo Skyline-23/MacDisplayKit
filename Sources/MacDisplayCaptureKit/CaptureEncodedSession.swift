@@ -164,7 +164,8 @@ private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
                 width: captureSurface.width,
                 height: captureSurface.height,
                 pixelFormat: captureSurface.pixelFormat,
-                surface: captureSurface
+                surface: captureSurface,
+                origin: .fresh
             )
         case .emitIdleReplay:
             guard let lastCaptureSurface else {
@@ -179,7 +180,8 @@ private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
                 width: lastCaptureSurface.width,
                 height: lastCaptureSurface.height,
                 pixelFormat: lastCaptureSurface.pixelFormat,
-                surface: lastCaptureSurface
+                surface: lastCaptureSurface,
+                origin: .idleReplay
             )
         case .drop:
             return nil
@@ -218,7 +220,8 @@ private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
             width: lastCaptureSurface.width,
             height: lastCaptureSurface.height,
             pixelFormat: lastCaptureSurface.pixelFormat,
-            surface: lastCaptureSurface
+            surface: lastCaptureSurface,
+            origin: .timerReplay
         )
     }
 }
@@ -388,6 +391,7 @@ private final class MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime: MDKEnc
                     height: captureSurface.height,
                     pixelFormat: captureSurface.pixelFormat,
                     surface: captureSurface,
+                    origin: .fresh,
                     cursorOverlaySample: cursorOverlaySample,
                     sourceCaptureDurationNanoseconds: captureDurationNanoseconds,
                     sourceCursorCompositeDurationNanoseconds: cursorCompositeDurationNanoseconds

@@ -101,6 +101,13 @@ func MDKDisplayStreamProperties(
     return properties as NSDictionary as CFDictionary
 }
 
+public enum MDKCaptureFrameOrigin: Sendable, Equatable {
+    case fresh
+    case idleReplay
+    case timerReplay
+    case recoveryReplay
+}
+
 public struct MDKCaptureFrame: Sendable, Equatable {
     public let sequenceNumber: UInt64
     public let displayTime: UInt64
@@ -109,6 +116,7 @@ public struct MDKCaptureFrame: Sendable, Equatable {
     public let height: Int
     public let pixelFormat: UInt32
     public let surface: MDKCaptureSurface?
+    public let origin: MDKCaptureFrameOrigin
     public let cursorOverlaySample: MDKCursorOverlaySample?
     public let sourceCaptureDurationNanoseconds: UInt64?
     public let sourceCursorCompositeDurationNanoseconds: UInt64?
@@ -121,6 +129,7 @@ public struct MDKCaptureFrame: Sendable, Equatable {
         height: Int,
         pixelFormat: UInt32,
         surface: MDKCaptureSurface? = nil,
+        origin: MDKCaptureFrameOrigin = .fresh,
         cursorOverlaySample: MDKCursorOverlaySample? = nil,
         sourceCaptureDurationNanoseconds: UInt64? = nil,
         sourceCursorCompositeDurationNanoseconds: UInt64? = nil
@@ -132,6 +141,7 @@ public struct MDKCaptureFrame: Sendable, Equatable {
         self.height = height
         self.pixelFormat = pixelFormat
         self.surface = surface
+        self.origin = origin
         self.cursorOverlaySample = cursorOverlaySample
         self.sourceCaptureDurationNanoseconds = sourceCaptureDurationNanoseconds
         self.sourceCursorCompositeDurationNanoseconds = sourceCursorCompositeDurationNanoseconds

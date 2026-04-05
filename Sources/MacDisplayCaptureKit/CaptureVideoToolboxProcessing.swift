@@ -235,8 +235,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let encodeQueueSpecificValue: UInt8 = 1
     private let keyFrameRequestLock = NSLock()
     private var forceNextKeyFrame = false
-    private var lastReplayState: MDKVideoToolboxReplayState?
+    private var lastFreshReplayState: MDKVideoToolboxReplayState?
+    private var lastImmediateRecoveryReplayDisplayTime: UInt64?
     private var immediateReplaySubmissionCount: UInt64 = 0
+    private var suppressedImmediateReplayCount: UInt64 = 0
 
     public init(
         codec: MDKVideoEncoderCodec = .hevc,
@@ -321,6 +323,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             height: frame.height,
             pixelFormat: frame.pixelFormat,
             surface: surface,
+            origin: frame.origin,
             cursorOverlaySample: frame.cursorOverlaySample,
             sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
             sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
@@ -439,6 +442,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxMaxInflightStagingSlots=\(maxInflightStagingSlots)",
             "videoToolboxSubmittedFrameCount=\(submittedFrameCount)",
             "videoToolboxImmediateReplaySubmissionCount=\(immediateReplaySubmissionCount)",
+            "videoToolboxSuppressedImmediateReplayCount=\(suppressedImmediateReplayCount)",
             "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
             "videoToolboxPixelBufferPoolIsShared=\(describeHardwareAcceleration(encoderPixelBufferPoolIsShared))",
             "videoToolboxRecommendedParallelizationLimit=\(recommendedParallelizationLimit.map(String.init) ?? "unknown")",
@@ -767,22 +771,28 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             releasePendingFrame()
             throw MDKVideoToolboxProcessingError.encodeFailed(status: status)
         }
-        lastReplayState = MDKVideoToolboxReplayState(
-            imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
-            frame: frame
-        )
+        if frame.origin == .fresh {
+            lastFreshReplayState = MDKVideoToolboxReplayState(
+                imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
+                frame: frame
+            )
+        }
         outputQueue.sync {
             submittedFrameCount += 1
         }
     }
 
     private func replayLastSubmittedFrameAsKeyFrameIfPossible() {
-        guard let lastReplayState,
+        guard let lastFreshReplayState,
               compressionSession != nil else {
             return
         }
 
-        let previousFrame = lastReplayState.frame
+        let previousFrame = lastFreshReplayState.frame
+        if lastImmediateRecoveryReplayDisplayTime == previousFrame.displayTime {
+            suppressedImmediateReplayCount += 1
+            return
+        }
         let syntheticDisplayTime = max(mach_absolute_time(), previousFrame.displayTime &+ 1)
         let replayFrame = MDKCaptureFrame(
             sequenceNumber: previousFrame.sequenceNumber &+ 1,
@@ -792,6 +802,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             height: previousFrame.height,
             pixelFormat: previousFrame.pixelFormat,
             surface: previousFrame.surface,
+            origin: .recoveryReplay,
             cursorOverlaySample: previousFrame.cursorOverlaySample,
             sourceCaptureDurationNanoseconds: previousFrame.sourceCaptureDurationNanoseconds,
             sourceCursorCompositeDurationNanoseconds: previousFrame.sourceCursorCompositeDurationNanoseconds
@@ -799,11 +810,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
         do {
             try submitToEncoder(
-                imageBuffer: lastReplayState.imageBuffer.pixelBuffer,
+                imageBuffer: lastFreshReplayState.imageBuffer.pixelBuffer,
                 frame: replayFrame,
                 slotIdentifier: nil,
                 releasePendingFrame: {}
             )
+            lastImmediateRecoveryReplayDisplayTime = previousFrame.displayTime
             immediateReplaySubmissionCount += 1
         } catch {
             let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
@@ -1377,8 +1389,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             minOutputCallbackLatencyMilliseconds = nil
             maxOutputCallbackLatencyMilliseconds = nil
         }
-        lastReplayState = nil
+        lastFreshReplayState = nil
+        lastImmediateRecoveryReplayDisplayTime = nil
         immediateReplaySubmissionCount = 0
+        suppressedImmediateReplayCount = 0
         usingHardwareAcceleratedEncoder = nil
         encoderPixelBufferPoolIsShared = nil
         recommendedParallelizationLimit = nil
