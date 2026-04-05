@@ -300,14 +300,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         keyFrameRequestLock.lock()
         forceNextKeyFrame = true
         keyFrameRequestLock.unlock()
-
-        if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) == encodeQueueSpecificValue {
-            replayLastSubmittedFrameAsKeyFrameIfPossible()
-        } else {
-            encodeQueue.async { [weak self] in
-                self?.replayLastSubmittedFrameAsKeyFrameIfPossible()
-            }
-        }
     }
 
     public func process(
