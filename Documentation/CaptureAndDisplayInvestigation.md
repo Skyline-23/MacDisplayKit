@@ -168,6 +168,21 @@ Best measured output:
     - producer-side startup capacity clamping ties the best consumer-side result, which points to
       the same underlying shape: startup-specific latest-wins admission works, but still needs a
       lower-overhead integration point to beat the current MDK-only best
+  - `176 / eb33378b / 89.17`
+    - moving the startup clamp into the Swift bridge and restoring it after the first frame is
+      slightly worse than touching the shared ingress directly
+  - `177 / 4b50d841 / 81.01`
+    - holding the bridge clamp until the first startup key frame is too aggressive and reintroduces
+      startup drop churn
+  - `178 / c8dd54f8 / 65.38`
+    - narrowing the bridge clamp to HEVC-only still collapses startup, so the bridge callback layer
+      is not the right integration point for this recovery shape
+- current synthesis:
+  - startup-specific latest-wins admission remains the strongest downstream idea after the active
+    MDK best, but the only versions that stay near viability live at the shared ingress / packet
+    consumption boundary
+  - the Swift bridge callback layer is now effectively closed for this class of startup recovery
+    experiments
 
 ## Production session status
 
