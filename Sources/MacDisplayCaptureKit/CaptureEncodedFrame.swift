@@ -51,19 +51,22 @@ public final class MDKEncodedFrame: @unchecked Sendable {
     public let sourceSequenceNumber: UInt64
     public let sourceDisplayTime: UInt64
     public let outputCallbackLatencyMilliseconds: Double?
+    public let origin: MDKCaptureFrameOrigin
 
     public init(
         sampleBuffer: CMSampleBuffer,
         codec: MDKVideoEncoderCodec,
         sourceSequenceNumber: UInt64,
         sourceDisplayTime: UInt64,
-        outputCallbackLatencyMilliseconds: Double?
+        outputCallbackLatencyMilliseconds: Double?,
+        origin: MDKCaptureFrameOrigin = .fresh
     ) {
         self.sampleBuffer = sampleBuffer
         self.codec = codec
         self.sourceSequenceNumber = sourceSequenceNumber
         self.sourceDisplayTime = sourceDisplayTime
         self.outputCallbackLatencyMilliseconds = outputCallbackLatencyMilliseconds
+        self.origin = origin
     }
 
     public var presentationTimeStamp: CMTime {
@@ -99,6 +102,10 @@ public final class MDKEncodedFrame: @unchecked Sendable {
 
     public var isHDRSignaled: Bool {
         hdrValidationReport.isHDRSignaled
+    }
+
+    public var isReplay: Bool {
+        origin != .fresh
     }
 
     public var hdrValidationReport: MDKEncodedFrameHDRValidationReport {
