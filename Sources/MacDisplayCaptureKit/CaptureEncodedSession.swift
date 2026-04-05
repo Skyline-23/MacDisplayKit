@@ -13,11 +13,6 @@ protocol MDKEncodedCaptureSourceRuntime: AnyObject, Sendable {
     var runtimeDescription: String { get }
     func start() throws
     func stop() -> Int32
-    func noteEncodedOutputStarted()
-}
-
-extension MDKEncodedCaptureSourceRuntime {
-    func noteEncodedOutputStarted() {}
 }
 
 struct MDKEncodedCaptureSourcePreparation: Sendable {
@@ -237,7 +232,6 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
     private let replayIntervalNanoseconds: UInt64
     private let replayIntervalMachTicks: UInt64
     private var replayTimer: DispatchSourceTimer?
-    private var syntheticReplayEnabled = false
 
     var runtimeDescription: String {
         guard let tuningSelection else {
@@ -307,9 +301,6 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         let frameHandler = self.frameHandler
         let replayIntervalMachTicks = self.replayIntervalMachTicks
         timer.setEventHandler {
-            guard self.syntheticReplayEnabled else {
-                return
-            }
             let displayTime = mach_absolute_time()
             guard let replayedFrame = replayState.captureTimerReplay(
                 displayTime: displayTime,
@@ -327,14 +318,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
     func stop() -> Int32 {
         replayTimer?.cancel()
         replayTimer = nil
-        syntheticReplayEnabled = false
         return shimSession.stop()
-    }
-
-    func noteEncodedOutputStarted() {
-        deliveryQueue.async { [weak self] in
-            self?.syntheticReplayEnabled = true
-        }
     }
 }
 
@@ -986,9 +970,6 @@ public actor MDKEncodedCaptureSession {
             guard let self else {
                 return
             }
-            Task {
-                await self.noteEncodedOutputStarted(runtimeGeneration: currentRuntimeGeneration)
-            }
             callbacks?.frameHandler(encodedFrame)
             if callbackOnlyDelivery {
                 return
@@ -1099,13 +1080,6 @@ public actor MDKEncodedCaptureSession {
 
     public func requestImmediateKeyFrame() {
         runtime?.processor.requestImmediateKeyFrame()
-    }
-
-    private func noteEncodedOutputStarted(runtimeGeneration: UInt64) {
-        guard self.runtimeGeneration == runtimeGeneration else {
-            return
-        }
-        runtime?.source.noteEncodedOutputStarted()
     }
 
     private func installContinuation(
