@@ -69,7 +69,6 @@ private final class MDKVideoToolboxSubmissionToken {
     let submittedAt: TimeInterval
     let sourceSequenceNumber: UInt64
     let sourceDisplayTime: UInt64
-    let frameOrigin: MDKCaptureFrameOrigin
     private let releasePendingFrame: @Sendable () -> Void
 
     init(
@@ -77,14 +76,12 @@ private final class MDKVideoToolboxSubmissionToken {
         submittedAt: TimeInterval,
         sourceSequenceNumber: UInt64,
         sourceDisplayTime: UInt64,
-        frameOrigin: MDKCaptureFrameOrigin,
         releasePendingFrame: @escaping @Sendable () -> Void
     ) {
         self.slotIdentifier = slotIdentifier
         self.submittedAt = submittedAt
         self.sourceSequenceNumber = sourceSequenceNumber
         self.sourceDisplayTime = sourceDisplayTime
-        self.frameOrigin = frameOrigin
         self.releasePendingFrame = releasePendingFrame
     }
 
@@ -229,7 +226,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var sessionConfigurationNotes: [String] = []
     private var directSubmissionFrameCount: UInt64 = 0
     private var stagedSubmissionFrameCount: UInt64 = 0
-    private var duplicatedReplayFrameCount: UInt64 = 0
     private let colorConverterInitializationErrorDescription: String?
     private let outputDrainGroup = DispatchGroup()
     private let stagingSubmissionGroup = DispatchGroup()
@@ -241,7 +237,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var forceNextKeyFrame = false
     private var lastReplayState: MDKVideoToolboxReplayState?
     private var immediateReplaySubmissionCount: UInt64 = 0
-    private var lastFreshEncodedFrame: MDKEncodedFrame?
 
     public init(
         codec: MDKVideoEncoderCodec = .hevc,
@@ -325,17 +320,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             width: frame.width,
             height: frame.height,
             pixelFormat: frame.pixelFormat,
-            origin: frame.origin,
             surface: surface,
             cursorOverlaySample: frame.cursorOverlaySample,
             sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
             sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
         )
-        if retainedFrame.origin != .fresh,
-           emitReplayFrameIfPossible(frame: retainedFrame) {
-            releaseSourceFrame()
-            return
-        }
         let submitFrame = { [self, retainedFrame] in
             do {
                 try encode(
@@ -379,8 +368,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     minOutputCallbackLatencyMilliseconds,
                     maxOutputCallbackLatencyMilliseconds,
                     directSubmissionFrameCount,
-                    stagedSubmissionFrameCount,
-                    duplicatedReplayFrameCount
+                    stagedSubmissionFrameCount
                 )
             }
             return MDKCaptureFrameProcessingSummary(
@@ -397,7 +385,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     submittedFrameCount: outputSummary.3,
                     directSubmissionFrameCount: outputSummary.10,
                     stagedSubmissionFrameCount: outputSummary.11,
-                    duplicatedReplayFrameCount: outputSummary.12,
                     includeDrainWaitStatus: true,
                     stagingSubmissionWaitStatus: stagingSubmissionWaitStatus,
                     outputDrainWaitStatus: outputDrainWaitStatus
@@ -423,7 +410,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     submittedFrameCount: submittedFrameCount,
                     directSubmissionFrameCount: directSubmissionFrameCount,
                     stagedSubmissionFrameCount: stagedSubmissionFrameCount,
-                    duplicatedReplayFrameCount: duplicatedReplayFrameCount,
                     includeDrainWaitStatus: false,
                     stagingSubmissionWaitStatus: nil,
                     outputDrainWaitStatus: nil
@@ -436,7 +422,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         submittedFrameCount: UInt64,
         directSubmissionFrameCount: UInt64,
         stagedSubmissionFrameCount: UInt64,
-        duplicatedReplayFrameCount: UInt64,
         includeDrainWaitStatus: Bool,
         stagingSubmissionWaitStatus: DispatchTimeoutResult?,
         outputDrainWaitStatus: DispatchTimeoutResult?
@@ -450,7 +435,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxStagedSourceReleaseMode=post-submit",
             "videoToolboxDirectSubmissionFrameCount=\(directSubmissionFrameCount)",
             "videoToolboxStagedSubmissionFrameCount=\(stagedSubmissionFrameCount)",
-            "videoToolboxDuplicatedReplayFrameCount=\(duplicatedReplayFrameCount)",
             "videoToolboxColorConversionMode=\(sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) ? "custom" : "passthrough")",
             "videoToolboxMaxInflightStagingSlots=\(maxInflightStagingSlots)",
             "videoToolboxSubmittedFrameCount=\(submittedFrameCount)",
@@ -762,7 +746,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 submittedAt: ProcessInfo.processInfo.systemUptime,
                 sourceSequenceNumber: frame.sequenceNumber,
                 sourceDisplayTime: frame.displayTime,
-                frameOrigin: frame.origin,
                 releasePendingFrame: releasePendingFrame
             )
         )
@@ -784,46 +767,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             releasePendingFrame()
             throw MDKVideoToolboxProcessingError.encodeFailed(status: status)
         }
-        if frame.origin == .fresh {
-            lastReplayState = MDKVideoToolboxReplayState(
-                imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
-                frame: frame
-            )
-        }
+        lastReplayState = MDKVideoToolboxReplayState(
+            imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
+            frame: frame
+        )
         outputQueue.sync {
             submittedFrameCount += 1
         }
-    }
-
-    private func emitReplayFrameIfPossible(frame: MDKCaptureFrame) -> Bool {
-        guard let replayFrame = outputQueue.sync(execute: { lastFreshEncodedFrame }) else {
-            return false
-        }
-
-        var duplicatedSampleBuffer: CMSampleBuffer?
-        let status = CMSampleBufferCreateCopy(
-            allocator: kCFAllocatorDefault,
-            sampleBuffer: replayFrame.sampleBuffer,
-            sampleBufferOut: &duplicatedSampleBuffer
-        )
-        guard status == noErr, let duplicatedSampleBuffer else {
-            return false
-        }
-
-        let encodedReplayFrame = MDKEncodedFrame(
-            sampleBuffer: duplicatedSampleBuffer,
-            codec: replayFrame.codec,
-            sourceSequenceNumber: frame.sequenceNumber,
-            sourceDisplayTime: frame.displayTime,
-            outputCallbackLatencyMilliseconds: nil,
-            origin: frame.origin
-        )
-        outputQueue.sync {
-            processedFrameCount += 1
-            duplicatedReplayFrameCount += 1
-            outputHandler?(encodedReplayFrame)
-        }
-        return true
     }
 
     private func replayLastSubmittedFrameAsKeyFrameIfPossible() {
@@ -841,7 +791,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             width: previousFrame.width,
             height: previousFrame.height,
             pixelFormat: previousFrame.pixelFormat,
-            origin: .encoderImmediateReplay,
             surface: previousFrame.surface,
             cursorOverlaySample: previousFrame.cursorOverlaySample,
             sourceCaptureDurationNanoseconds: previousFrame.sourceCaptureDurationNanoseconds,
@@ -1427,8 +1376,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             outputCallbackLatencyHistogram = [:]
             minOutputCallbackLatencyMilliseconds = nil
             maxOutputCallbackLatencyMilliseconds = nil
-            duplicatedReplayFrameCount = 0
-            lastFreshEncodedFrame = nil
         }
         lastReplayState = nil
         immediateReplaySubmissionCount = 0
@@ -1490,8 +1437,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 codec: codec,
                 sourceSequenceNumber: submissionToken?.sourceSequenceNumber ?? 0,
                 sourceDisplayTime: submissionToken?.sourceDisplayTime ?? 0,
-                outputCallbackLatencyMilliseconds: latencyMilliseconds,
-                origin: submissionToken?.frameOrigin ?? .fresh
+                outputCallbackLatencyMilliseconds: latencyMilliseconds
             )
         }
         if let slotIdentifier = submissionToken?.slotIdentifier {
@@ -1518,11 +1464,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
             if outputCompleted {
                 completedOutputFrameCount += 1
-            }
-            if outputCompleted,
-               let encodedFrame,
-               encodedFrame.origin == .fresh {
-                lastFreshEncodedFrame = encodedFrame
             }
             if let encodedFrame, outputCompleted {
                 outputHandler?(encodedFrame)
