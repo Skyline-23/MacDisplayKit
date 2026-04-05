@@ -763,11 +763,21 @@ public actor MDKEncodedCaptureSession {
             }
         }
         self.processorFactory = { configuration, outputHandler, failureHandler in
-            MDKVideoToolboxEncodingProcessor(
+            let maxInflightStagingSlots: Int
+            if configuration.codec == .hevc,
+               configuration.targetFrameRate >= 100,
+               configuration.resolvedEncodedHDRConfiguration?.transferFunction == .smpteSt2084PQ {
+                maxInflightStagingSlots = 4
+            } else {
+                maxInflightStagingSlots = 128
+            }
+
+            return MDKVideoToolboxEncodingProcessor(
                 codec: configuration.codec,
                 preprocessStrategy: configuration.preprocessStrategy,
                 targetFrameRate: configuration.targetFrameRate,
                 encoderInputStrategy: configuration.resolvedEncoderInputStrategy,
+                maxInflightStagingSlots: maxInflightStagingSlots,
                 outputHandler: outputHandler,
                 failureHandler: failureHandler,
                 hdrConfiguration: configuration.resolvedEncodedHDRConfiguration,
