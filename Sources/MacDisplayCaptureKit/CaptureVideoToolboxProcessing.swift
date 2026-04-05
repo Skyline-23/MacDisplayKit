@@ -539,8 +539,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             imageBuffer: imageBuffer,
             frame: frame,
             slotIdentifier: nil,
-            releasePendingFrame: releaseSourceFrame
+            releasePendingFrame: {}
         )
+        releaseSourceFrame()
         recordProcessingSuccess(isStaged: false)
     }
 
