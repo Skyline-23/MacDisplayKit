@@ -181,6 +181,12 @@ Best measured output:
     - teaching the shared ingress itself to keep only the freshest startup frame or freshest queued
       recovery point improves startup latency, but it shaves away too much early progression after
       the first recovery point lands
+  - `180 / ea3f97ee / 89.17`
+    - preserving the recovery point plus one following frame recovers some early continuity, but it
+      still leaves too much performance on the table
+  - `181 / 5a1f3db7 / 90.00`
+    - widening the shared-ingress startup continuity window to the recovery point plus two following
+      frames helps more, but still fails to reach the active best
 - current synthesis:
   - startup-specific latest-wins admission remains the strongest downstream idea after the active
     MDK best, but the only versions that stay near viability live at the shared ingress / packet
@@ -188,8 +194,10 @@ Best measured output:
   - the Swift bridge callback layer is now effectively closed for this class of startup recovery
     experiments
   - shared-ingress startup latest-wins is closer to the right layer than the bridge, but preserving
-    only a single startup frame is too aggressive; the next justified direction is a
-    `recovery-point + minimal continuity` startup window rather than a pure single-frame policy
+    only a single startup frame is too aggressive; however, even widening that policy to
+    `recovery-point + minimal continuity` still tops out below the active best
+  - the remaining gap now looks less like a pure ingress-admission problem and more like MDK-side
+    early keyframe production / cadence after startup admission has already been cleaned up
 
 ## Production session status
 
