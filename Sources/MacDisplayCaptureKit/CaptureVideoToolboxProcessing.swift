@@ -789,6 +789,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             return
         }
 
+        if shouldSuppressImmediateReplayForPendingFrames() {
+            suppressedImmediateReplayCount += 1
+            return
+        }
+
         let previousFrame = lastFreshReplayState.frame
         if lastImmediateRecoveryReplayDisplayTime == previousFrame.displayTime {
             suppressedImmediateReplayCount += 1
@@ -823,6 +828,24 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             recordProcessingFailure(errorDescription)
             failureHandler?(errorDescription)
         }
+    }
+
+    private func shouldSuppressImmediateReplayForPendingFrames() -> Bool {
+        guard codec == .hevc,
+              targetFrameRate >= 100,
+              hdrConfiguration?.transferFunction == .smpteSt2084PQ,
+              let compressionSession else {
+            return false
+        }
+
+        guard let pendingFrames = copyIntegerSessionProperty(
+            compressionSession,
+            key: kVTCompressionPropertyKey_NumberOfPendingFrames
+        ) else {
+            return false
+        }
+
+        return pendingFrames > 0
     }
 
     private func consumeImmediateKeyFrameRequest() -> Bool {
