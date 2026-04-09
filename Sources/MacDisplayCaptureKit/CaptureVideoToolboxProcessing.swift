@@ -335,7 +335,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     releaseSourceFrame: releaseSourceFrame
                 )
             } catch {
-                releaseSourceFrame()
                 let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
                 processingFailureCount += 1
                 processingErrorHistogram[errorDescription, default: 0] += 1
@@ -346,7 +345,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) == encodeQueueSpecificValue {
             submitFrame()
         } else {
-            encodeQueue.async(execute: submitFrame)
+            encodeQueue.sync(execute: submitFrame)
         }
     }
 
@@ -431,7 +430,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         outputDrainWaitStatus: DispatchTimeoutResult?
     ) -> [String] {
         var notes = [
-            "videoToolboxSubmitMode=async-submit-queue",
+            "videoToolboxSubmitMode=sync-submit-queue",
             "videoToolboxOutputCallback=non-nil",
             "videoToolboxCodec=\(codec.rawValue)",
             "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
