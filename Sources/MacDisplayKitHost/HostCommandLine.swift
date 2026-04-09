@@ -20,8 +20,22 @@ private enum MDKHostCLICommand {
     case privateProxyCaptureProbe(displayID: UInt32?, requestExtendedRange: Bool, json: Bool)
     case privateDisplayStreamProbe(displayID: UInt32?, json: Bool)
     case privateDisplayStreamProbeMatrix(displayID: UInt32?, json: Bool)
-    case privateCaptureBenchmark(displayID: UInt32?, requestExtendedRange: Bool, sampleDuration: TimeInterval, json: Bool)
-    case privateProxyCaptureBenchmark(displayID: UInt32?, requestExtendedRange: Bool, sampleDuration: TimeInterval, json: Bool)
+    case privateCaptureBenchmark(
+        displayID: UInt32?,
+        requestExtendedRange: Bool,
+        sampleDuration: TimeInterval,
+        outputWidth: Int?,
+        outputHeight: Int?,
+        json: Bool
+    )
+    case privateProxyCaptureBenchmark(
+        displayID: UInt32?,
+        requestExtendedRange: Bool,
+        sampleDuration: TimeInterval,
+        outputWidth: Int?,
+        outputHeight: Int?,
+        json: Bool
+    )
     case skyLightDisplayStreamBenchmark(
         displayID: UInt32?,
         sampleDuration: TimeInterval,
@@ -462,13 +476,22 @@ enum MDKHostCommandLine {
                 fputs("Failed to run private display stream probe matrix: \(error)\n", stderr)
                 return 1
             }
-        case .privateCaptureBenchmark(let displayID, let requestExtendedRange, let sampleDuration, let json):
+        case .privateCaptureBenchmark(
+            let displayID,
+            let requestExtendedRange,
+            let sampleDuration,
+            let outputWidth,
+            let outputHeight,
+            let json
+        ):
             do {
                 let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
                 let result = try controller.benchmarkPrivateCapture(
                     displayID: resolvedDisplayID,
                     requestExtendedRange: requestExtendedRange,
-                    sampleDuration: sampleDuration
+                    sampleDuration: sampleDuration,
+                    outputWidth: outputWidth,
+                    outputHeight: outputHeight
                 )
                 if json {
                     let encoder = JSONEncoder()
@@ -485,13 +508,22 @@ enum MDKHostCommandLine {
                 fputs("Failed to run private capture benchmark: \(error)\n", stderr)
                 return 1
             }
-        case .privateProxyCaptureBenchmark(let displayID, let requestExtendedRange, let sampleDuration, let json):
+        case .privateProxyCaptureBenchmark(
+            let displayID,
+            let requestExtendedRange,
+            let sampleDuration,
+            let outputWidth,
+            let outputHeight,
+            let json
+        ):
             do {
                 let resolvedDisplayID = try resolveDisplayID(displayID, controller: controller)
                 let result = try controller.benchmarkPrivateProxyCapture(
                     displayID: resolvedDisplayID,
                     requestExtendedRange: requestExtendedRange,
-                    sampleDuration: sampleDuration
+                    sampleDuration: sampleDuration,
+                    outputWidth: outputWidth,
+                    outputHeight: outputHeight
                 )
                 if json {
                     let encoder = JSONEncoder()
@@ -938,6 +970,8 @@ enum MDKHostCommandLine {
                 displayID: displayID,
                 requestExtendedRange: tokens.contains("--experimental-private-hw-capture-benchmark-hdr"),
                 sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
+                outputWidth: parseSurfaceDimension(flag: "--surface-width", tokens: tokens),
+                outputHeight: parseSurfaceDimension(flag: "--surface-height", tokens: tokens),
                 json: tokens.contains("--json")
             )
         }
@@ -950,6 +984,8 @@ enum MDKHostCommandLine {
                 displayID: displayID,
                 requestExtendedRange: tokens.contains("--experimental-private-hw-capture-proxy-benchmark-hdr"),
                 sampleDuration: parseSampleDuration(tokens: tokens) ?? MDKHostBenchmarkController.benchmarkSampleDuration,
+                outputWidth: parseSurfaceDimension(flag: "--surface-width", tokens: tokens),
+                outputHeight: parseSurfaceDimension(flag: "--surface-height", tokens: tokens),
                 json: tokens.contains("--json")
             )
         }

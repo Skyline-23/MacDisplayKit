@@ -51,13 +51,17 @@ public enum MDKPrivateCapturePrototypeBenchmark {
     public static func run(
         displayID: UInt32,
         requestExtendedRange: Bool,
-        sampleDuration: TimeInterval
+        sampleDuration: TimeInterval,
+        outputWidth: Int? = nil,
+        outputHeight: Int? = nil
     ) throws -> MDKPrivateCaptureBenchmarkResult {
         var nsError: NSError?
         guard let payload = MDKShimVideoPrivateCaptureBenchmark(
             UInt(displayID),
             requestExtendedRange,
             sampleDuration,
+            UInt(max(outputWidth ?? 0, 0)),
+            UInt(max(outputHeight ?? 0, 0)),
             &nsError
         ) else {
             if let nsError {
@@ -72,13 +76,17 @@ public enum MDKPrivateCapturePrototypeBenchmark {
     public static func runProxy(
         displayID: UInt32,
         requestExtendedRange: Bool,
-        sampleDuration: TimeInterval
+        sampleDuration: TimeInterval,
+        outputWidth: Int? = nil,
+        outputHeight: Int? = nil
     ) throws -> MDKPrivateCaptureBenchmarkResult {
         var nsError: NSError?
         guard let payload = MDKShimVideoPrivateProxyCaptureBenchmark(
             UInt(displayID),
             requestExtendedRange,
             sampleDuration,
+            UInt(max(outputWidth ?? 0, 0)),
+            UInt(max(outputHeight ?? 0, 0)),
             &nsError
         ) else {
             if let nsError {

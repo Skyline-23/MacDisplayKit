@@ -120,24 +120,32 @@ final class MDKHostBenchmarkController {
     func benchmarkPrivateCapture(
         displayID: UInt32,
         requestExtendedRange: Bool,
-        sampleDuration: TimeInterval
+        sampleDuration: TimeInterval,
+        outputWidth: Int? = nil,
+        outputHeight: Int? = nil
     ) throws -> MDKPrivateCaptureBenchmarkResult {
         try MDKPrivateCapturePrototypeBenchmark.run(
             displayID: displayID,
             requestExtendedRange: requestExtendedRange,
-            sampleDuration: sampleDuration
+            sampleDuration: sampleDuration,
+            outputWidth: outputWidth,
+            outputHeight: outputHeight
         )
     }
 
     func benchmarkPrivateProxyCapture(
         displayID: UInt32,
         requestExtendedRange: Bool,
-        sampleDuration: TimeInterval
+        sampleDuration: TimeInterval,
+        outputWidth: Int? = nil,
+        outputHeight: Int? = nil
     ) throws -> MDKPrivateCaptureBenchmarkResult {
         try MDKPrivateCapturePrototypeBenchmark.runProxy(
             displayID: displayID,
             requestExtendedRange: requestExtendedRange,
-            sampleDuration: sampleDuration
+            sampleDuration: sampleDuration,
+            outputWidth: outputWidth,
+            outputHeight: outputHeight
         )
     }
 

@@ -12025,7 +12025,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreatePrivateCaptureSurfacePa
     NSError * _Nullable * _Nullable error,
     BOOL benchmarkMode,
     NSTimeInterval sampleDuration,
-    BOOL useDirectProxy
+    BOOL useDirectProxy,
+    NSUInteger outputWidth,
+    NSUInteger outputHeight
 ) {
     using MDKPrivateCaptureDisplayIntoIOSurfaceProxyFn =
         int (*)(std::uint32_t, std::uint32_t, std::uint32_t, mach_port_t, std::uint32_t *, BOOL *);
@@ -12047,21 +12049,25 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreatePrivateCaptureSurfacePa
         return nil;
     }
 
-    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(static_cast<CGDirectDisplayID>(displayID));
-    if (mode == nil) {
-        if (error != nullptr) {
-            *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
-                                         code:2
-                                     userInfo:@{
-                                         NSLocalizedDescriptionKey: @"Unable to resolve the current display mode for the requested display."
-                                     }];
+    std::uint32_t width = static_cast<std::uint32_t>(std::max<NSUInteger>(outputWidth, 0));
+    std::uint32_t height = static_cast<std::uint32_t>(std::max<NSUInteger>(outputHeight, 0));
+    if (width == 0 || height == 0) {
+        CGDisplayModeRef mode = CGDisplayCopyDisplayMode(static_cast<CGDirectDisplayID>(displayID));
+        if (mode == nil) {
+            if (error != nullptr) {
+                *error = [NSError errorWithDomain:@"MacDisplayKit.PrivateCapture"
+                                             code:2
+                                         userInfo:@{
+                                             NSLocalizedDescriptionKey: @"Unable to resolve the current display mode for the requested display."
+                                         }];
+            }
+            return nil;
         }
-        return nil;
-    }
 
-    const std::uint32_t width = static_cast<std::uint32_t>(std::max<std::size_t>(CGDisplayModeGetPixelWidth(mode), 1));
-    const std::uint32_t height = static_cast<std::uint32_t>(std::max<std::size_t>(CGDisplayModeGetPixelHeight(mode), 1));
-    CFRelease(mode);
+        width = static_cast<std::uint32_t>(std::max<std::size_t>(CGDisplayModeGetPixelWidth(mode), 1));
+        height = static_cast<std::uint32_t>(std::max<std::size_t>(CGDisplayModeGetPixelHeight(mode), 1));
+        CFRelease(mode);
+    }
 
     IOSurfaceRef surface = MDKCreatePrivateCaptureIOSurface(width, height);
     if (surface == nil) {
@@ -12172,6 +12178,11 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreatePrivateCaptureSurfacePa
     if (useDirectProxy) {
         [notes addObject:@"The benchmark reuses one IOSurface mach port for the full sample window to avoid wrapper-side port churn."];
     }
+    if (outputWidth > 0 && outputHeight > 0) {
+        [notes addObject:[NSString stringWithFormat:@"requestedOutputDimensions=%lux%lu", static_cast<unsigned long>(outputWidth), static_cast<unsigned long>(outputHeight)]];
+    } else {
+        [notes addObject:@"requestedOutputDimensions=full-display-mode"];
+    }
 
     NSMutableDictionary<NSString *, id> *payload = [@{
         @"entryPoint": useDirectProxy
@@ -12211,13 +12222,15 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureSingleFrame(
     BOOL requestExtendedRange,
     NSError * _Nullable * _Nullable error
 ) {
-    return MDKCreatePrivateCaptureSurfacePayload(displayID, requestExtendedRange, error, NO, 0, NO);
+    return MDKCreatePrivateCaptureSurfacePayload(displayID, requestExtendedRange, error, NO, 0, NO, 0, 0);
 }
 
 NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureBenchmark(
     NSUInteger displayID,
     BOOL requestExtendedRange,
     NSTimeInterval sampleDuration,
+    NSUInteger outputWidth,
+    NSUInteger outputHeight,
     NSError * _Nullable * _Nullable error
 ) {
     return MDKCreatePrivateCaptureSurfacePayload(
@@ -12226,7 +12239,9 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCaptureBenchmark(
         error,
         YES,
         sampleDuration,
-        NO
+        NO,
+        outputWidth,
+        outputHeight
     );
 }
 
@@ -12235,13 +12250,15 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateProxyCaptureSingleFr
     BOOL requestExtendedRange,
     NSError * _Nullable * _Nullable error
 ) {
-    return MDKCreatePrivateCaptureSurfacePayload(displayID, requestExtendedRange, error, NO, 0, YES);
+    return MDKCreatePrivateCaptureSurfacePayload(displayID, requestExtendedRange, error, NO, 0, YES, 0, 0);
 }
 
 NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateProxyCaptureBenchmark(
     NSUInteger displayID,
     BOOL requestExtendedRange,
     NSTimeInterval sampleDuration,
+    NSUInteger outputWidth,
+    NSUInteger outputHeight,
     NSError * _Nullable * _Nullable error
 ) {
     return MDKCreatePrivateCaptureSurfacePayload(
@@ -12250,7 +12267,9 @@ NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateProxyCaptureBenchmar
         error,
         YES,
         sampleDuration,
-        YES
+        YES,
+        outputWidth,
+        outputHeight
     );
 }
 

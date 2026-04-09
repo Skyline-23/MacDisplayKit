@@ -132,6 +132,10 @@ Best measured output:
     - `q1`: about `43.5 fps` output, source cadence about `38.8 fps`
     - `q2`: about `43.5 fps` output, source cadence about `34.1 fps`
   - current private direct IOSurface benchmark with HDR request at full display size (`5120x2880`): about `34.54 fps`
+  - current private target-sized IOSurface benchmark, `3512x2290`:
+    - direct `CGSHWCaptureDisplayIntoIOSurfaceWithOptions`: about `14.7 fps` in SDR and about `14.6 fps` in HDR
+    - proxy `SLSHWCaptureDisplayIntoIOSurfaceProxying`: about `14.9` iterations per second but still `0` populated frames
+    - conclusion: current private IOSurface paths are materially worse than raw SkyLight at the actual target size, so backend-selection experiments should not pivot to private capture unless a new private entry point changes this baseline
 - the raw `vt-encode` benchmark path at `3512x2290/x420/q2` currently collapses to about `1 fps`, so that benchmark is no longer representative of the production encoded-session path
 - on the current host state, deeper raw queueing is actively harmful for the source ceiling; `q8` is materially worse than `q2`
 - that means the current system is already spending most of the budget before downstream queue policy can matter
@@ -144,6 +148,9 @@ Best measured output:
   - `388` reused the previous completed staging slot and limited BGRA-to-YUV work to the dirty union, but startup regressed sharply while `HEVC` progression stayed effectively flat
   - that narrows the remaining leverage to source-visible partial capture, overlay-truth derivation, or a backend that never forces full-frame staging in the first place
 - `420v8` is directionally better than `BGRA` for an SDR base stream on this host, but it still sits far below the target ceiling, so simply swapping the raw surface format does not solve the underlying cadence limit
+- current private capture numbers close the most obvious backend-switch escape hatch:
+  - target-sized private direct capture is not merely "not better"; it is dramatically worse than raw SkyLight on this host
+  - target-sized proxy capture still does not deliver populated frames, so it remains non-viable for production
 
 ### Next structural directions
 

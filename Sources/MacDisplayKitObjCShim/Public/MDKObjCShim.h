@@ -109,6 +109,8 @@ FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateCa
     NSUInteger displayID,
     BOOL requestExtendedRange,
     NSTimeInterval sampleDuration,
+    NSUInteger outputWidth,
+    NSUInteger outputHeight,
     NSError * _Nullable * _Nullable error
 );
 FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateProxyCaptureSingleFrame(
@@ -120,6 +122,8 @@ FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivatePr
     NSUInteger displayID,
     BOOL requestExtendedRange,
     NSTimeInterval sampleDuration,
+    NSUInteger outputWidth,
+    NSUInteger outputHeight,
     NSError * _Nullable * _Nullable error
 );
 FOUNDATION_EXPORT NSDictionary<NSString *, id> * _Nullable MDKShimVideoPrivateDisplayStreamProbe(
