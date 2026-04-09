@@ -438,22 +438,6 @@ private final class MDKEncodedCapturePendingFrameTracker: @unchecked Sendable {
     }
 }
 
-private actor MDKEncodedCaptureLatestFrameMailbox {
-    private var latestFrame: MDKCaptureFrame?
-
-    func store(_ frame: MDKCaptureFrame) -> UInt64? {
-        let replacedDisplayTime = latestFrame?.displayTime
-        latestFrame = frame
-        return replacedDisplayTime
-    }
-
-    func take() -> MDKCaptureFrame? {
-        let frame = latestFrame
-        latestFrame = nil
-        return frame
-    }
-}
-
 private final class MDKEncodedCaptureSourceCadenceTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var frameCount: UInt64 = 0
@@ -1082,7 +1066,6 @@ public actor MDKEncodedCaptureSession {
         let currentRuntimeGeneration = runtimeGeneration
         let callbackOnlyDelivery = configuration.deliveryMode == .callbackOnly && callbacks != nil
         let pendingFrameTracker = MDKEncodedCapturePendingFrameTracker()
-        let latestFrameMailbox = MDKEncodedCaptureLatestFrameMailbox()
         let sourceCadenceTracker = MDKEncodedCaptureSourceCadenceTracker()
         let sourceTimingTracker = MDKEncodedCaptureSourceTimingTracker()
         let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
@@ -1114,37 +1097,6 @@ public actor MDKEncodedCaptureSession {
         }
 
         let processor = processorFactory(configuration, outputHandler, failureHandler)
-        var processSourceFrame: ((MDKCaptureFrame) -> Void)!
-        processSourceFrame = { [weak self, weak processor] frame in
-            guard let self, let processor else {
-                pendingFrameTracker.releaseOne()
-                return
-            }
-
-            do {
-                try processor.process(frame: frame) {
-                    Task { [weak self, weak processor] in
-                        guard let self, let processor else {
-                            pendingFrameTracker.releaseOne()
-                            return
-                        }
-
-                        if let latestFrame = await latestFrameMailbox.take() {
-                            processSourceFrame(latestFrame)
-                            return
-                        }
-
-                        pendingFrameTracker.releaseOne()
-                    }
-                }
-            } catch {
-                pendingFrameTracker.releaseOne()
-                let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-                Task {
-                    await self.handleProcessingFailure(description, runtimeGeneration: currentRuntimeGeneration)
-                }
-            }
-        }
         let source = sourceFactory(configuration, sourcePreparation) { [weak self, weak processor] frame in
             guard let self, let processor else {
                 return
@@ -1154,18 +1106,25 @@ public actor MDKEncodedCaptureSession {
             sourceTimingTracker.record(frame: frame)
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
-                    let replacedDisplayTime = await latestFrameMailbox.store(frame)
-                    if let replacedDisplayTime {
-                        await self.handleSourceFrameDropped(
-                            sourceDisplayTime: replacedDisplayTime,
-                            runtimeGeneration: currentRuntimeGeneration
-                        )
-                    }
+                    await self.handleSourceFrameDropped(
+                        sourceDisplayTime: frame.displayTime,
+                        runtimeGeneration: currentRuntimeGeneration
+                    )
                 }
                 return
             }
 
-            processSourceFrame(frame)
+            do {
+                try processor.process(frame: frame) {
+                    pendingFrameTracker.releaseOne()
+                }
+            } catch {
+                pendingFrameTracker.releaseOne()
+                let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                Task {
+                    await self.handleProcessingFailure(description, runtimeGeneration: currentRuntimeGeneration)
+                }
+            }
         }
         self.sourceCadenceTracker = sourceCadenceTracker
         self.sourceTimingTracker = sourceTimingTracker
