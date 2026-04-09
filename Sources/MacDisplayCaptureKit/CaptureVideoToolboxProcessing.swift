@@ -293,6 +293,36 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         try process(frame: frame, releaseSourceFrame: {})
     }
 
+    public func prepare(
+        sourceWidth: Int,
+        sourceHeight: Int,
+        sourcePixelFormat: UInt32
+    ) throws {
+        let prepareSession = { [self] in
+            let targetPixelFormat = codec.preferredInputPixelFormat(
+                for: sourcePixelFormat,
+                hdrConfiguration: hdrConfiguration,
+                strategy: encoderInputStrategy
+            )
+            let outputDimensions = preprocessStrategy.outputDimensions(
+                sourceWidth: sourceWidth,
+                sourceHeight: sourceHeight,
+                pixelFormat: targetPixelFormat
+            )
+            try ensureCompressionSession(
+                width: outputDimensions.x,
+                height: outputDimensions.y,
+                pixelFormat: targetPixelFormat
+            )
+        }
+
+        if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) == encodeQueueSpecificValue {
+            try prepareSession()
+        } else {
+            try encodeQueue.sync(execute: prepareSession)
+        }
+    }
+
     public func requestImmediateKeyFrame() {
         keyFrameRequestLock.lock()
         forceNextKeyFrame = true
