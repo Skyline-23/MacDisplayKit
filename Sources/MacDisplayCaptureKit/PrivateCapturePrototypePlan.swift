@@ -2,6 +2,7 @@ import Foundation
 
 public enum MDKPrivateCaptureEntryPoint: String, Codable, Equatable, Sendable {
     case displayStreamProxying = "sls-display-stream-proxying"
+    case displayIOSurfaceProxying = "sls-display-iosurface-proxying"
     case displayIOSurfaceWithOptions = "cgshw-display-iosurface-with-options"
     case displayIOSurface = "cgshw-display-iosurface"
     case desktopCapture = "cgshw-desktop"
@@ -11,6 +12,8 @@ public enum MDKPrivateCaptureEntryPoint: String, Codable, Equatable, Sendable {
         switch self {
         case .displayStreamProxying:
             return "SLSDisplayStreamCreateProxying"
+        case .displayIOSurfaceProxying:
+            return "SLSHWCaptureDisplayIntoIOSurfaceProxying"
         case .displayIOSurfaceWithOptions:
             return "CGSHWCaptureDisplayIntoIOSurfaceWithOptions"
         case .displayIOSurface:
