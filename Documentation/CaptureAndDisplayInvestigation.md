@@ -117,6 +117,13 @@ Best measured output:
   - current raw SkyLight benchmark, `3512x2290`, `q2`, `420v`, `none`: about `45.45 fps`
   - current raw SkyLight benchmark, `3512x2290`, `q8`, `x420`, `none`: about `35.98 fps`
   - current raw SkyLight benchmark, `3512x2290`, `q2`, `bgra`, `none`: about `35.94 fps`
+  - current raw SkyLight processing-benchmark attachment probe:
+    - `3512x2290`, `x420`, `processing-mode=none`: about `48.26 fps`
+    - first propagated attachment keys only include `CGColorSpace` and `HorizontalDisparityAdjustment`
+    - `ColorPrimaries`, `TransferFunction`, `YCbCrMatrix`, `MasteringDisplayColorVolume`, and `ContentLightLevelInfo` are all `nil`
+  - full-backing probe shows the same structural limit, not a scaler artifact:
+    - default backing (`3840x2160`) with `x420` or `BGRA` still carries no HDR attachment keys beyond `CGColorSpace`
+    - `420v` does carry attachment keys, but they are plain SDR `ITU_R_709_2`
   - current production-facing encoded session diagnostic, `HEVC`, `HDR10`, callback mode:
     - `q1`: about `43.5 fps` output, source cadence about `38.8 fps`
     - `q2`: about `43.5 fps` output, source cadence about `34.1 fps`
@@ -138,12 +145,14 @@ Best measured output:
   - `388` closed the processor-local variant of that idea; any further dirty-rect experiment has to start before full-frame source wrapping / staging and not inside the existing encode processor
 - stop coupling `partial HDR overlay` validation to encoded sample-buffer HDR signalling
   - `387` showed that the current bridge/runtime probe still has no independent source of overlay-active truth once the main encoded stream becomes SDR
+  - the new raw-source attachment probe explains why: current `SLDisplayStream` `x420`/`BGRA` surfaces do not propagate HDR transfer/static-metadata attachments in the first place
   - any future selective-HDR architecture needs a producer-visible overlay-active signal that survives all the way into measurement without reusing full-frame HDR sample metadata
 - focus on backend/source changes, not more queue churn:
   - expose partial update metadata and drop counts through the capture source runtime
   - treat `raw x420 source cadence` as the gating metric for any new structural experiment
   - stop assuming that moving submit work around will fix the score; experiments `382-385` show that callback/mailbox choreography alone does not beat the keep
-  - investigate a split architecture where the fast base path stays on the source format that preserves cadence and HDR-active regions are injected separately, instead of forcing whole-surface HDR semantics through every frame
+  - investigate a split architecture where the fast base path stays on the source format that preserves cadence and HDR-active regions are injected from a different truth source, instead of forcing whole-surface HDR semantics through every frame
+  - practical consequence: source-visible dirty rects, private compositor statistics, or a private display backend are now more promising than any additional VideoToolbox property sweep
 
 ### Latest downstream ingress findings
 

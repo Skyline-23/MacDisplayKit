@@ -127,6 +127,8 @@ private final class MDKSkyLightDisplayStreamProcessingRecorder {
     var stallCountOver100Milliseconds: Int = 0
     var count120Like: Int = 0
     var count60Like: Int = 0
+    var firstFrameAttachmentNotes: [String] = []
+    private var capturedFirstFrameAttachments = false
     private lazy var timebaseFactorMilliseconds: Double = {
         var timebase = mach_timebase_info_data_t()
         mach_timebase_info(&timebase)
@@ -162,6 +164,7 @@ private final class MDKSkyLightDisplayStreamProcessingRecorder {
             self.pixelFormat = pixelFormat
         }
         recordInterval(for: displayTime)
+        captureFirstFrameAttachmentsIfNeeded(frameSurface: frameSurface)
 
         let frame = MDKCaptureFrame(
             sequenceNumber: nextSequenceNumber,
@@ -243,6 +246,7 @@ private final class MDKSkyLightDisplayStreamProcessingRecorder {
         if let processingSummary {
             notes.append(contentsOf: processingSummary.notes)
         }
+        notes.append(contentsOf: firstFrameAttachmentNotes)
 
         return MDKSkyLightDisplayStreamProcessingBenchmarkResult(
             displayID: displayID,
@@ -348,6 +352,79 @@ private final class MDKSkyLightDisplayStreamProcessingRecorder {
             return "60hz-like"
         }
         return "coalesced-or-mixed"
+    }
+
+    private func captureFirstFrameAttachmentsIfNeeded(frameSurface: IOSurfaceRef) {
+        guard capturedFirstFrameAttachments == false else {
+            return
+        }
+        capturedFirstFrameAttachments = true
+
+        var pixelBuffer: Unmanaged<CVPixelBuffer>?
+        let attributes: [CFString: Any] = [
+            kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary
+        ]
+        let status = CVPixelBufferCreateWithIOSurface(
+            kCFAllocatorDefault,
+            frameSurface,
+            attributes as CFDictionary,
+            &pixelBuffer
+        )
+        guard status == kCVReturnSuccess, let pixelBuffer else {
+            firstFrameAttachmentNotes = [
+                "firstFrameAttachmentProbeStatus=\(status)"
+            ]
+            return
+        }
+        let wrappedPixelBuffer = pixelBuffer.takeRetainedValue()
+
+        var notes: [String] = []
+        let propagatedKeys = ((CVBufferCopyAttachments(wrappedPixelBuffer, .shouldPropagate) as NSDictionary?) as? [CFString: Any] ?? [:]).keys
+            .map { "\($0)" }
+            .sorted()
+        if propagatedKeys.isEmpty {
+            notes.append("firstFramePropagatedAttachmentKeys=none")
+        } else {
+            notes.append("firstFramePropagatedAttachmentKeys=\(propagatedKeys.joined(separator: ","))")
+        }
+
+        let nonPropagatedKeys = ((CVBufferCopyAttachments(wrappedPixelBuffer, .shouldNotPropagate) as NSDictionary?) as? [CFString: Any] ?? [:]).keys
+            .map { "\($0)" }
+            .sorted()
+        if nonPropagatedKeys.isEmpty == false {
+            notes.append("firstFrameNonPropagatedAttachmentKeys=\(nonPropagatedKeys.joined(separator: ","))")
+        }
+
+        let interestingKeys: [(CFString, String)] = [
+            (kCVImageBufferColorPrimariesKey, "colorPrimaries"),
+            (kCVImageBufferTransferFunctionKey, "transferFunction"),
+            (kCVImageBufferYCbCrMatrixKey, "yCbCrMatrix"),
+            (kCVImageBufferCGColorSpaceKey, "cgColorSpace"),
+            (kCVImageBufferMasteringDisplayColorVolumeKey, "masteringDisplayColorVolume"),
+            (kCVImageBufferContentLightLevelInfoKey, "contentLightLevelInfo")
+        ]
+        for (key, label) in interestingKeys {
+            if let value = CVBufferCopyAttachment(wrappedPixelBuffer, key, nil) {
+                notes.append("firstFrame\(label.prefix(1).uppercased())\(label.dropFirst())=\(describeAttachmentValue(value))")
+            } else {
+                notes.append("firstFrame\(label.prefix(1).uppercased())\(label.dropFirst())=nil")
+            }
+        }
+
+        firstFrameAttachmentNotes = notes
+    }
+
+    private func describeAttachmentValue(_ value: AnyObject) -> String {
+        let cfValue = value as CFTypeRef
+        if CFGetTypeID(cfValue) == CGColorSpace.typeID {
+            let colorSpace = unsafeBitCast(value, to: CGColorSpace.self)
+            let name = colorSpace.name as String? ?? "unknown"
+            return "CGColorSpace(\(name))"
+        }
+        if CFGetTypeID(cfValue) == CFDataGetTypeID(), let data = value as? Data {
+            return "Data[\(data.count)]"
+        }
+        return String(describing: value)
     }
 }
 
