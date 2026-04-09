@@ -920,6 +920,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             ? max(targetFrameRate * 2, targetFrameRate)
             : targetFrameRate
         let expectedDurationHint = 1.0 / Double(expectedFrameRateHint)
+        let vbvBufferDurationSeconds: Double? = isHighRefreshHDRHEVC ? (1.0 / 30.0) : nil
+        let vbvInitialDelayPercentage: Double? = isHighRefreshHDRHEVC ? 0.0 : nil
         let maxFrameDelayCount = MDKVideoToolboxLatencyPolicy.maxFrameDelayCount(
             codec: codec,
             targetFrameRate: targetFrameRate
@@ -945,6 +947,24 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         )
         setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedDuration, value: NSNumber(value: expectedDurationHint), label: "ExpectedDuration")
         setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: expectedFrameRateHint), label: "ExpectedFrameRate")
+        if #available(macOS 26.0, *),
+            let vbvBufferDurationSeconds {
+            setSessionProperty(
+                session,
+                key: kVTCompressionPropertyKey_VBVBufferDuration,
+                value: NSNumber(value: vbvBufferDurationSeconds),
+                label: "VBVBufferDuration"
+            )
+        }
+        if #available(macOS 26.0, *),
+            let vbvInitialDelayPercentage {
+            setSessionProperty(
+                session,
+                key: kVTCompressionPropertyKey_VBVInitialDelayPercentage,
+                value: NSNumber(value: vbvInitialDelayPercentage),
+                label: "VBVInitialDelayPercentage"
+            )
+        }
         setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: targetFrameRate), label: "MaxKeyFrameInterval")
         setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: NSNumber(value: 1.0), label: "MaxKeyFrameIntervalDuration")
         if pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
@@ -1019,6 +1039,16 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         sessionConfigurationNotes.append("videoToolboxHighRefreshHDRLowLatencyMode=\(isHighRefreshHDRHEVC ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxAllowTemporalCompression=\(allowsTemporalCompression ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxConfiguredMaxFrameDelayCount=\(maxFrameDelayCount)")
+        if let vbvBufferDurationSeconds {
+            sessionConfigurationNotes.append("videoToolboxConfiguredVBVBufferDurationSeconds=\(vbvBufferDurationSeconds)")
+        } else {
+            sessionConfigurationNotes.append("videoToolboxConfiguredVBVBufferDurationSeconds=default")
+        }
+        if let vbvInitialDelayPercentage {
+            sessionConfigurationNotes.append("videoToolboxConfiguredVBVInitialDelayPercentage=\(vbvInitialDelayPercentage)")
+        } else {
+            sessionConfigurationNotes.append("videoToolboxConfiguredVBVInitialDelayPercentage=default")
+        }
         if codec.supportsAverageBitRate {
             let averageBitRate = resolvedAverageBitRate(
                 width: width,
