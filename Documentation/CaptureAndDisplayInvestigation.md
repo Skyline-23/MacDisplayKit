@@ -87,16 +87,31 @@ Best measured output:
 - partial-update metadata at encode-only layer
   - `380 / 592a32a / 92.29`
     - propagating raw SkyLight reduced dirty rects into `VTCompressionSessionEncodeFrame` `DirtyRects` produced no measurable gain
+- raw-source / submit-handoff structure
+  - `381 / dcfa594 / 92.71`
+    - retuning the high-refresh SkyLight bootstrap around `q1/q2` did not improve the official metric; raw source changes alone still left the downstream ceiling in HEVC progression
+  - `382 / a9a1a39 / 92.50`
+    - moving VT submit off the callback thread with a plain async handoff improved raw diagnostics but regressed the official metric, which means stale pressure replaced callback stall
+  - `383 / e36672a / 92.71`
+    - a processor-local HEVC latest-wins submit mailbox recovered some of that regression, but still failed to beat the keep
+  - `384 / 15309d6 / 92.71`
+    - pairing `q8` source depth with the processor-local mailbox just added pressure; HEVC stayed flat and `ProRes Proxy` regressed
+  - `385 / c2a6b88 / 92.50`
+    - moving HEVC handoff to a latest-fresh source gate over-dropped under load and regressed HEVC to `36` frames
 
 ### Root bottleneck reading
 
 - the limiting path is no longer best explained by queue ownership or simple VT property tuning
 - the current evidence points higher up the stack, at raw source/backend cadence
 - raw source numbers are the critical anchor:
-  - raw SkyLight benchmark at `3512x2290`: about `37.21 fps`
-  - raw SkyLight with Metal copy autotune at `3512x2290`: about `43.77 fps`
-  - private direct IOSurface benchmark at full display size: about `37.72 fps`
-- that means the current system is already spending most of the budget before the downstream queue policy can matter
+  - current raw SkyLight benchmark, `3512x2290`, `q2`, `x420`, `none`: about `49.22 fps`
+  - current raw SkyLight benchmark, `3512x2290`, `q2`, `bgra`, `none`: about `35.94 fps`
+  - current production-facing encoded session diagnostic, `HEVC`, `HDR10`, callback mode:
+    - `q1`: about `43.5 fps` output, source cadence about `38.8 fps`
+    - `q2`: about `43.5 fps` output, source cadence about `34.1 fps`
+  - current private direct IOSurface benchmark with HDR request at full display size (`5120x2880`): about `34.54 fps`
+- the raw `vt-encode` benchmark path at `3512x2290/x420/q2` currently collapses to about `1 fps`, so that benchmark is no longer representative of the production encoded-session path
+- that means the current system is already spending most of the budget before downstream queue policy can matter
 - pure encode-side dirty-rect hints are not enough when the source still hands us a full-frame surface cadence far below `120`
 
 ### Next structural directions
@@ -106,8 +121,9 @@ Best measured output:
   - the remaining open path is to use partial update metadata earlier, before full-frame processing decisions are locked in
 - focus on backend/source changes, not more queue churn:
   - expose partial update metadata and drop counts through the capture source runtime
-  - investigate whether private capture backends can avoid full-frame repaint cadence when only a subset of the panel is HDR-active
-  - treat the raw-source ceiling as the gating metric for any new structural experiment
+  - treat `raw x420 source cadence` as the gating metric for any new structural experiment
+  - stop assuming that moving submit work around will fix the score; experiments `382-385` show that callback/mailbox choreography alone does not beat the keep
+  - investigate a split architecture where the fast base path stays on the source format that preserves cadence and HDR-active regions are injected separately, instead of forcing whole-surface HDR semantics through every frame
 
 ### Latest downstream ingress findings
 
