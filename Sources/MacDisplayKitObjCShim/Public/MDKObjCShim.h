@@ -7,7 +7,8 @@ NS_ASSUME_NONNULL_BEGIN
 typedef void (^MDKShimSkyLightDisplayStreamFrameHandler)(
     CGDisplayStreamFrameStatus status,
     uint64_t displayTime,
-    IOSurfaceRef _Nullable frameSurface
+    IOSurfaceRef _Nullable frameSurface,
+    NSData * _Nullable reducedDirtyRectData
 );
 
 typedef void (^MDKShimPrivateDisplayIOSurfaceCaptureFrameHandler)(
