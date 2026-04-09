@@ -274,7 +274,7 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         case .h264:
             return min(max(pixelsPerSecond / 10, 32_000_000), 90_000_000)
         case .hevc:
-            return min(max(pixelsPerSecond / 4, 120_000_000), 192_000_000)
+            return min(max(pixelsPerSecond / 4, 120_000_000), 240_000_000)
         case .proResProxy:
             return averageBitRate(width: width, height: height, frameRate: frameRate)
         }
