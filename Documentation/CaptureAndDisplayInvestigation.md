@@ -101,6 +101,14 @@ Best measured output:
     - pairing `q8` source depth with the processor-local mailbox just added pressure; HEVC stayed flat and `ProRes Proxy` regressed
   - `385 / c2a6b88 / 92.50`
     - moving HEVC handoff to a latest-fresh source gate over-dropped under load and regressed HEVC to `36` frames
+  - `389 / e590e7b / 92.71`
+    - disabling synthetic SkyLight timer replay entirely regressed both codecs, which means the replay path is still carrying real progression value under the current source/backend ceiling
+  - `390 / 2899e8a / 92.29`
+    - gating synthetic timer replay on source pending-idle was too aggressive; HEVC fell to `35` frames and startup slipped to `338.540 ms`
+    - conclusion: source-side pending count is not a faithful proxy for stale synthetic replay pressure
+  - `391 / 909e7da / 92.71`
+    - suppressing only `timerReplay` frames when HEVC HDR `VTCompressionSession` `NumberOfPendingFrames > 1` recovered HEVC to `37` frames, but startup regressed to `360.491 ms` and still stayed below the keep
+    - conclusion: VT-pending-aware replay suppression is directionally safer than source-side gating, but it still loses the current progression/startup balance
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
@@ -113,7 +121,10 @@ Best measured output:
 - the limiting path is no longer best explained by queue ownership or simple VT property tuning
 - the current evidence points higher up the stack, at raw source/backend cadence
 - raw source numbers are the critical anchor:
-  - current raw SkyLight benchmark, `3512x2290`, `q2`, `x420`, `none`: about `49.22 fps`
+  - latest raw SkyLight benchmark, `3512x2290`, `q2`, `x420`, `none`: about `84.41 fps`
+    - the same run reported `avgReducedDirtyCoverageRatio=0.256`, `avgReducedDirtyRectCount=2.361`, `avgUpdateDropCount=0.030`, and `WindowServer pcpu≈9.6`
+    - even in this cleaner host state, long-gap ratio over `16 ms` stayed about `0.28`, so the source still misses a stable `120 Hz` cadence
+  - earlier raw SkyLight target probes on more loaded host states ranged about `39-51 fps`
   - current raw SkyLight benchmark, `3512x2290`, `q2`, `420v`, `none`: about `45.45 fps`
   - current raw SkyLight benchmark, `3512x2290`, `q8`, `x420`, `none`: about `35.98 fps`
   - current raw SkyLight benchmark, `3512x2290`, `q2`, `bgra`, `none`: about `35.94 fps`
@@ -125,6 +136,9 @@ Best measured output:
     - `3512x2290`, `x420`, plain raw benchmark now reports `avgReducedDirtyCoverageRatio` around `0.54`, `avgReducedDirtyRectCount` around `3.4`, and `avgUpdateDropCount=0`
     - on the current host load that same probe only delivers about `39-40 fps`; earlier cleaner-host runs reached about `51.4 fps`
     - conclusion: `CGDisplayStreamUpdateRef` is carrying non-trivial partial-update information, but the source still pays a full-surface cadence cost before any downstream dirty-rect logic can help
+  - updated reading from the latest `84.4 fps` anchor:
+    - source-only SkyLight can materially outrun the official encoded-session metric, so there is still substantial loss in the handoff / processor / encode chain
+    - but even the best source-only target-sized run remains well below `120`, so raw backend cadence and source-visible partial capture are still first-class structural problems
   - full-backing probe shows the same structural limit, not a scaler artifact:
     - default backing (`3840x2160`) with `x420` or `BGRA` still carries no HDR attachment keys beyond `CGColorSpace`
     - `420v` does carry attachment keys, but they are plain SDR `ITU_R_709_2`
