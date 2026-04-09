@@ -335,7 +335,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     releaseSourceFrame: releaseSourceFrame
                 )
             } catch {
-                releaseSourceFrame()
                 let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
                 processingFailureCount += 1
                 processingErrorHistogram[errorDescription, default: 0] += 1
