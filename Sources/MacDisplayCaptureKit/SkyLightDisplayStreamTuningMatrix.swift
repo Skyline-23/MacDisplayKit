@@ -207,18 +207,11 @@ public enum MDKSkyLightDisplayStreamTuningAdvisor {
 
         switch processingMode {
         case .videoToolboxEncodeProResProxyExperimental:
-            var candidates = [
+            return [
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue2Candidate,
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue1Candidate,
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue3Candidate
             ]
-            if prefersHighRefreshCandidates {
-                candidates.append(contentsOf: [
-                    MDKSkyLightDisplayStreamTuningMatrix.baselineQueue8Candidate,
-                    MDKSkyLightDisplayStreamTuningMatrix.request120LikeQueue8Candidate
-                ])
-            }
-            return candidates
         case .videoToolboxEncode,
              .videoToolboxEncodeDownscale2x,
              .videoToolboxEncodeH264,
