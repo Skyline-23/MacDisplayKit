@@ -135,8 +135,7 @@ private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
     func captureFrame(
         status: CGDisplayStreamFrameStatus,
         displayTime: UInt64,
-        frameSurface: IOSurfaceRef?,
-        dirtyRects: [CGRect]?
+        frameSurface: IOSurfaceRef?
     ) -> MDKCaptureFrame? {
         lock.lock()
         defer { lock.unlock() }
@@ -166,8 +165,7 @@ private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
                 height: captureSurface.height,
                 pixelFormat: captureSurface.pixelFormat,
                 surface: captureSurface,
-                origin: .fresh,
-                dirtyRects: dirtyRects
+                origin: .fresh
             )
         case .emitIdleReplay:
             guard let lastCaptureSurface else {
@@ -277,13 +275,12 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             outputHeight: UInt(configuration.streamConfiguration.resolvedOutputHeight),
             pixelFormat: configuration.resolvedCapturePixelFormat,
             yCbCrMatrix: configuration.resolvedSkyLightDisplayStreamYCbCrMatrix.map { $0.imageBufferValue as String }
-        ) { status, displayTime, frameSurface, reducedDirtyRectData in
+        ) { status, displayTime, frameSurface in
             deliveryQueue.async {
                 guard let deliveredFrame = replayState.captureFrame(
                     status: status,
                     displayTime: displayTime,
-                    frameSurface: frameSurface,
-                    dirtyRects: MDKDecodeCGRectData(reducedDirtyRectData)
+                    frameSurface: frameSurface
                 ) else {
                     return
                 }

@@ -324,7 +324,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             pixelFormat: frame.pixelFormat,
             surface: surface,
             origin: frame.origin,
-            dirtyRects: frame.dirtyRects,
             cursorOverlaySample: frame.cursorOverlaySample,
             sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
             sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
@@ -763,12 +762,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             imageBuffer: imageBuffer,
             presentationTimeStamp: resolvedPresentationTimeStamp,
             duration: .invalid,
-            frameProperties: makeFrameProperties(
-                forceKeyFrame: consumeImmediateKeyFrameRequest(),
-                dirtyRects: frame.origin == .fresh ? frame.dirtyRects : nil,
-                frameWidth: frame.width,
-                frameHeight: frame.height
-            ),
+            frameProperties: makeFrameProperties(forceKeyFrame: consumeImmediateKeyFrameRequest()),
             sourceFrameRefcon: submissionToken.toOpaque(),
             infoFlagsOut: nil
         )
@@ -862,47 +856,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         return shouldForceKeyFrame
     }
 
-    private func makeFrameProperties(
-        forceKeyFrame: Bool,
-        dirtyRects: [CGRect]?,
-        frameWidth: Int,
-        frameHeight: Int
-    ) -> CFDictionary? {
-        var properties: [CFString: Any] = [:]
-        if forceKeyFrame {
-            properties[kVTEncodeFrameOptionKey_ForceKeyFrame] = kCFBooleanTrue as Any
-        }
-        if let dirtyRectDictionaries = makeDirtyRectDictionaries(
-            dirtyRects,
-            frameWidth: frameWidth,
-            frameHeight: frameHeight
-        ) {
-            let dirtyRectsKey = "DirtyRects" as CFString
-            properties[dirtyRectsKey] = dirtyRectDictionaries as CFArray
-        }
-        return properties.isEmpty ? nil : properties as CFDictionary
-    }
-
-    private func makeDirtyRectDictionaries(
-        _ dirtyRects: [CGRect]?,
-        frameWidth: Int,
-        frameHeight: Int
-    ) -> [CFDictionary]? {
-        guard let dirtyRects, !dirtyRects.isEmpty else {
+    private func makeFrameProperties(forceKeyFrame: Bool) -> CFDictionary? {
+        guard forceKeyFrame else {
             return nil
         }
 
-        let frameBounds = CGRect(x: 0, y: 0, width: frameWidth, height: frameHeight)
-        let normalizedRects = dirtyRects
-            .prefix(16)
-            .map { $0.standardized.intersection(frameBounds).integral }
-            .filter { !$0.isNull && !$0.isEmpty }
-
-        guard !normalizedRects.isEmpty else {
-            return nil
-        }
-
-        return normalizedRects.compactMap { CGRectCreateDictionaryRepresentation($0) }
+        return [
+            kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue as Any
+        ] as CFDictionary
     }
 
     private func ensureCompressionSession(

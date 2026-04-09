@@ -3,25 +3,6 @@ import CoreVideo
 import Foundation
 import IOSurface
 
-func MDKDecodeCGRectData(_ data: Data?) -> [CGRect]? {
-    guard let data, !data.isEmpty else {
-        return nil
-    }
-
-    let stride = MemoryLayout<CGRect>.stride
-    guard data.count % stride == 0 else {
-        return nil
-    }
-
-    return data.withUnsafeBytes { rawBuffer in
-        let rectBuffer = rawBuffer.bindMemory(to: CGRect.self)
-        guard !rectBuffer.isEmpty else {
-            return nil
-        }
-        return Array(rectBuffer)
-    }
-}
-
 func MDKDisplayLogicalSize(displayID: CGDirectDisplayID) -> CGSize {
     guard let displayMode = CGDisplayCopyDisplayMode(displayID) else {
         return CGSize(
@@ -136,7 +117,6 @@ public struct MDKCaptureFrame: Sendable, Equatable {
     public let pixelFormat: UInt32
     public let surface: MDKCaptureSurface?
     public let origin: MDKCaptureFrameOrigin
-    public let dirtyRects: [CGRect]?
     public let cursorOverlaySample: MDKCursorOverlaySample?
     public let sourceCaptureDurationNanoseconds: UInt64?
     public let sourceCursorCompositeDurationNanoseconds: UInt64?
@@ -150,7 +130,6 @@ public struct MDKCaptureFrame: Sendable, Equatable {
         pixelFormat: UInt32,
         surface: MDKCaptureSurface? = nil,
         origin: MDKCaptureFrameOrigin = .fresh,
-        dirtyRects: [CGRect]? = nil,
         cursorOverlaySample: MDKCursorOverlaySample? = nil,
         sourceCaptureDurationNanoseconds: UInt64? = nil,
         sourceCursorCompositeDurationNanoseconds: UInt64? = nil
@@ -163,7 +142,6 @@ public struct MDKCaptureFrame: Sendable, Equatable {
         self.pixelFormat = pixelFormat
         self.surface = surface
         self.origin = origin
-        self.dirtyRects = dirtyRects
         self.cursorOverlaySample = cursorOverlaySample
         self.sourceCaptureDurationNanoseconds = sourceCaptureDurationNanoseconds
         self.sourceCursorCompositeDurationNanoseconds = sourceCursorCompositeDurationNanoseconds

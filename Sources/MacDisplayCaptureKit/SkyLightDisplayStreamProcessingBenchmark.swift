@@ -418,7 +418,7 @@ public enum MDKSkyLightDisplayStreamProcessingBenchmark {
             outputHeight: resolvedOutputHeight,
             pixelFormat: resolvedPixelFormat,
             yCbCrMatrix: nil
-        ) { status, displayTime, frameSurface, _ in
+        ) { status, displayTime, frameSurface in
             recorder.record(
                 status: status,
                 displayTime: displayTime,
