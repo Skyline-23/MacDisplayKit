@@ -87,6 +87,9 @@ Best measured output:
 - partial-update metadata at encode-only layer
   - `380 / 592a32a / 92.29`
     - propagating raw SkyLight reduced dirty rects into `VTCompressionSessionEncodeFrame` `DirtyRects` produced no measurable gain
+  - `388 / b1ad1a7 / 92.71`
+    - carrying reduced dirty rect metadata into the processor and only reusing the last completed staging slot for partial BGRA-to-YUV conversion kept correctness intact, but it did not lift progression and pushed `HEVC` startup out to `427.611 ms`
+    - conclusion: partial-update reuse that begins after the full source surface is already in hand is still too late in the pipeline to move the ceiling
 - raw-source / submit-handoff structure
   - `381 / dcfa594 / 92.71`
     - retuning the high-refresh SkyLight bootstrap around `q1/q2` did not improve the official metric; raw source changes alone still left the downstream ceiling in HEVC progression
@@ -122,6 +125,9 @@ Best measured output:
 - on the current host state, deeper raw queueing is actively harmful for the source ceiling; `q8` is materially worse than `q2`
 - that means the current system is already spending most of the budget before downstream queue policy can matter
 - pure encode-side dirty-rect hints are not enough when the source still hands us a full-frame surface cadence far below `120`
+- processor-stage dirty-rect reuse is also too late:
+  - `388` reused the previous completed staging slot and limited BGRA-to-YUV work to the dirty union, but startup regressed sharply while `HEVC` progression stayed effectively flat
+  - that narrows the remaining leverage to source-visible partial capture, overlay-truth derivation, or a backend that never forces full-frame staging in the first place
 - `420v8` is directionally better than `BGRA` for an SDR base stream on this host, but it still sits far below the target ceiling, so simply swapping the raw surface format does not solve the underlying cadence limit
 
 ### Next structural directions
@@ -129,6 +135,7 @@ Best measured output:
 - stop treating `CGDisplayStreamUpdateRef` as an encode-only hint source
   - `DirtyRects` at VT did nothing on its own
   - the remaining open path is to use partial update metadata earlier, before full-frame processing decisions are locked in
+  - `388` closed the processor-local variant of that idea; any further dirty-rect experiment has to start before full-frame source wrapping / staging and not inside the existing encode processor
 - stop coupling `partial HDR overlay` validation to encoded sample-buffer HDR signalling
   - `387` showed that the current bridge/runtime probe still has no independent source of overlay-active truth once the main encoded stream becomes SDR
   - any future selective-HDR architecture needs a producer-visible overlay-active signal that survives all the way into measurement without reusing full-frame HDR sample metadata

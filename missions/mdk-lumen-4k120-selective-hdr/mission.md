@@ -8,4 +8,5 @@ MacDisplayKit를 Lumen이 SPM으로 소비할 수 있는 ScreenCaptureKit-유사
 - 전체 프레임 재처리를 전제로 한 미세 queue 튜닝보다, source/backend가 partial update와 HDR-active 영역 정보를 얼마나 보존하는지가 우선이다.
 - 모든 실험은 `commit -> official metric -> keep/discard -> 자산화` 순서로 남긴다.
 - 이미 버린 경로를 반복하지 않는다. 최근 `382-385`는 callback/mailbox handoff 재배치만으로는 keep를 넘지 못했고, current raw source cadence가 더 큰 ceiling이라는 점을 확인했다.
+- `388`로 processor-local dirty-rect staging reuse도 닫혔다. reduced dirty rect를 encode processor까지 끌고 와서 직전 완료 슬롯에만 부분 BGRA→YUV 갱신을 해도 `HEVC` startup만 크게 악화됐고 progression은 그대로였다. 앞으로 dirty-rect 실험은 source-visible partial capture나 backend 수준에서만 고려한다.
 - `387`에서 `sdr_base_hdr_overlay`를 SDR `420v8` base stream + 분리된 overlay state 계약으로 옮겨봤지만, producer/probe가 overlay-active 신호를 독립적으로 못 세워서 공식 metric의 partial HDR이 0으로 무너졌다. 다음 selective HDR 구조 변경은 overlay-active truth source부터 먼저 세워야 한다.
