@@ -438,6 +438,53 @@ private final class MDKEncodedCapturePendingFrameTracker: @unchecked Sendable {
     }
 }
 
+private actor MDKEncodedCaptureLatestFrameMailbox {
+    private var latestFrame: MDKCaptureFrame?
+
+    func store(_ frame: MDKCaptureFrame) -> UInt64? {
+        let replacedDisplayTime = latestFrame?.displayTime
+        latestFrame = frame
+        return replacedDisplayTime
+    }
+
+    func take() -> MDKCaptureFrame? {
+        let frame = latestFrame
+        latestFrame = nil
+        return frame
+    }
+}
+
+private func MDKProcessMailboxAwareSourceFrame(
+    _ frame: MDKCaptureFrame,
+    processor: any MDKEncodedCaptureProcessorRuntime,
+    pendingFrameTracker: MDKEncodedCapturePendingFrameTracker,
+    latestFrameMailbox: MDKEncodedCaptureLatestFrameMailbox,
+    failureHandler: @escaping @Sendable (String) -> Void
+) {
+    do {
+        try processor.process(frame: frame) {
+            Task {
+                if let latestFrame = await latestFrameMailbox.take() {
+                    MDKProcessMailboxAwareSourceFrame(
+                        latestFrame,
+                        processor: processor,
+                        pendingFrameTracker: pendingFrameTracker,
+                        latestFrameMailbox: latestFrameMailbox,
+                        failureHandler: failureHandler
+                    )
+                    return
+                }
+
+                pendingFrameTracker.releaseOne()
+            }
+        }
+    } catch {
+        pendingFrameTracker.releaseOne()
+        let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        failureHandler(description)
+    }
+}
+
 private final class MDKEncodedCaptureSourceCadenceTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var frameCount: UInt64 = 0
@@ -1066,6 +1113,7 @@ public actor MDKEncodedCaptureSession {
         let currentRuntimeGeneration = runtimeGeneration
         let callbackOnlyDelivery = configuration.deliveryMode == .callbackOnly && callbacks != nil
         let pendingFrameTracker = MDKEncodedCapturePendingFrameTracker()
+        let latestFrameMailbox = MDKEncodedCaptureLatestFrameMailbox()
         let sourceCadenceTracker = MDKEncodedCaptureSourceCadenceTracker()
         let sourceTimingTracker = MDKEncodedCaptureSourceTimingTracker()
         let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
@@ -1106,25 +1154,24 @@ public actor MDKEncodedCaptureSession {
             sourceTimingTracker.record(frame: frame)
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
-                    await self.handleSourceFrameDropped(
-                        sourceDisplayTime: frame.displayTime,
-                        runtimeGeneration: currentRuntimeGeneration
-                    )
+                    let replacedDisplayTime = await latestFrameMailbox.store(frame)
+                    if let replacedDisplayTime {
+                        await self.handleSourceFrameDropped(
+                            sourceDisplayTime: replacedDisplayTime,
+                            runtimeGeneration: currentRuntimeGeneration
+                        )
+                    }
                 }
                 return
             }
 
-            do {
-                try processor.process(frame: frame) {
-                    pendingFrameTracker.releaseOne()
-                }
-            } catch {
-                pendingFrameTracker.releaseOne()
-                let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-                Task {
-                    await self.handleProcessingFailure(description, runtimeGeneration: currentRuntimeGeneration)
-                }
-            }
+            MDKProcessMailboxAwareSourceFrame(
+                frame,
+                processor: processor,
+                pendingFrameTracker: pendingFrameTracker,
+                latestFrameMailbox: latestFrameMailbox,
+                failureHandler: failureHandler
+            )
         }
         self.sourceCadenceTracker = sourceCadenceTracker
         self.sourceTimingTracker = sourceTimingTracker
