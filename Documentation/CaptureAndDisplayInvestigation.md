@@ -33,102 +33,81 @@ this document remains the broader investigation record.
 
 ### Current best result
 
-- downstream experiment: `163`
-- MDK commit: `682c405`
-- score: `93.96`
-- note:
-  - `Lumen` now links `/Users/skyline23/Downloads/MacDisplayKit` directly through a local Tuist
-    package path, so this is the first active best from the corrected local-package setup
-  - the older `95a1f6b / 91.36` result came from a different DerivedData checkout and is now
-    historical-only context rather than an active keep
-  - the newest keep stacks a `240 Hz` HEVC expected frame-rate / duration hint on top of the
-    staged direct-submit path
+- downstream experiment: `367`
+- MDK commit: `097cfff`
+- score: `92.92`
 
 Best measured output:
 
 - `HEVC`
-  - `RUNTIME_SCORE_HEVC=68.96`
+  - `RUNTIME_SCORE_HEVC=67.92`
+  - `frames=38`
+  - `startup_ms=285.576`
+  - `avg_callback_latency_ms=20.770`
+  - `max_callback_latency_ms=68.698`
 - `ProRes Proxy`
-  - `RUNTIME_SCORE_PRORES_PROXY=82.14`
+  - `RUNTIME_SCORE_PRORES_PROXY=80.98`
+  - `frames=35`
+  - `startup_ms=127.171`
 
 ### Current keep stack
 
 - active downloads-checkout keep:
-  1. revert the `VTCompressionSession` prewarm path because it collapses the corrected local-package
-     setup
-  2. remove the extra outer `processingQueue` handoff and call `processor.process` directly from the
-     source callback after pending admission succeeds
-  3. remove the extra post-copy `submissionQueue` hop and submit staged frames directly from the
-     Metal completion handler
-  4. double the high-refresh HEVC expected frame-rate and duration hints to `240 Hz`
+  1. `CaptureEncodedSession.swift`
+     - raw SkyLight callback path keeps the callback-only HEVC high-refresh pending depth at `2`
+  2. `CaptureVideoToolboxProcessing.swift`
+     - high-refresh PQ HDR HEVC uses `ExpectedFrameRate` and `ExpectedDuration` hints at `240 Hz`
+     - high-refresh PQ HDR HEVC uses `VBVBufferDuration=1/30s` with default initial delay
+     - immediate recovery replay is suppressed while `NumberOfPendingFrames > 0`
+  3. `CaptureVideoCodec.swift`
+     - HEVC low-latency bitrate ceiling is `192 Mbps`
 
-- active baseline for keep or discard decisions:
-  - `142 / a77264be+7332271 / 66.06`
+### What is now closed
 
-### Working directions
+- source-to-processor queue structure
+  - `371 / a67d73e / 92.50`
+    - inline raw HEVC submit from the source callback regressed HEVC progression
+  - `372 / 5c341cb / 92.50`
+    - removing the raw SkyLight delivery queue regressed callback isolation and progression
+  - `376 / 7c60943 / 92.50`
+    - moving direct VT bookkeeping onto `encodeQueue` did not help
+  - `379 / 6cae5d6 / 92.29`
+    - replacing the pending-frame gate with an actor latest-wins ingress scheduler regressed both codecs
+- encoder pacing and startup
+  - `368 / cfb9ed6 / 92.71`
+    - shrinking `VBVBufferDuration` from `1/30` to `1/60` regressed ProRes progression
+  - `373 / 99371e9 / 92.71`
+    - driving VT PTS from source display time globally hurt ProRes
+  - `374 / f63a0f7 / 92.71`
+    - HEVC-only source display time PTS was still below the keep
+  - `375 / cbcee28 / 92.50`
+    - aligning VT duration to source cadence dropped HEVC back to `36` frames
+  - `377 / 73c9204 / 92.71`
+    - VT prewarm did not improve startup or progression
+- partial-update metadata at encode-only layer
+  - `380 / 592a32a / 92.29`
+    - propagating raw SkyLight reduced dirty rects into `VTCompressionSessionEncodeFrame` `DirtyRects` produced no measurable gain
 
-- corrected local-package routing matters more than any individual codec knob: remote-pin numbers
-  are no longer valid once `Lumen` actually consumes `/Users/skyline23/Downloads/MacDisplayKit`
-- removing redundant source-to-processor queue hops is currently the strongest real win on the
-  corrected setup
-- partial HDR overlay can remain enabled without blocking the current downloads best path
-- the corrected setup now prefers removing queue hops only when submission ordering stays intact, and
-  it also re-opens the HEVC pacing-hint direction once the staged direct-submit keep is in place
-- current no-go follow-ups on top of the `240 Hz` hint keep:
-  - `164 / b9962e5 / 69.64`
-    - dropping the HEVC low-latency bitrate ceiling to `192 Mbps` badly regresses both codecs
-  - `165 / f16fb23 / 60.11`
-    - forcing `MaxFrameDelayCount=0` on HEVC catastrophically regresses startup and latency
+### Root bottleneck reading
 
-### Closed directions
+- the limiting path is no longer best explained by queue ownership or simple VT property tuning
+- the current evidence points higher up the stack, at raw source/backend cadence
+- raw source numbers are the critical anchor:
+  - raw SkyLight benchmark at `3512x2290`: about `37.21 fps`
+  - raw SkyLight with Metal copy autotune at `3512x2290`: about `43.77 fps`
+  - private direct IOSurface benchmark at full display size: about `37.72 fps`
+- that means the current system is already spending most of the budget before the downstream queue policy can matter
+- pure encode-side dirty-rect hints are not enough when the source still hands us a full-frame surface cadence far below `120`
 
-- the old remote-pin keep stack was invalid for the local-package setup; once wiring was corrected,
-  the `VTCompressionSession` prewarm became a major regression instead of a win
-- corrected-setup HEVC retunes around `240 Hz` hints, `192 Mbps`, removed data-rate limits, and
-  reduced-dirty freshness gating all lose against `a03fe81`
-- after `163`, the `240 Hz` HEVC hint direction is no longer closed; it is now part of the active
-  keep stack, but its old companion knobs (`192 Mbps`, `MaxFrameDelayCount=0`) remain closed even in
-  the new context
-- corrected-setup raw-source default swaps such as `baseline-q2` also lose, so the active local best
-  still prefers the existing `request120LikeQueue2` bootstrap candidate
-- serializing the outer processing queue does not help enough; the larger win came from removing the
-  queue entirely and letting the source callback hand off directly to `processor.process`
-- further corrected local-package misses after `91bfcc8`:
-  - `151 / 429e082 / 84.83`
-    - fully async `encodeQueue` admission from `process()` collapses HEVC startup and latency
-  - `153 / 3cf2e4b+35854c5 / 90.00`
-    - async output-queue stats bookkeeping does not improve the best and slightly hurts HEVC startup
-  - `154 / 5f495db / 89.79`
-    - releasing staged source frames before VideoToolbox submission regresses both combined score and
-      HEVC progression
-  - `155 / 559d488 / 90.00`
-    - delivering encoded frames directly from the output callback instead of the stats queue does not
-      improve the corrected local-package best
-  - `156 / 727cd93 / 89.58`
-    - reusing the already-copied HEVC payload for HDR metadata presence checks regresses the callback
-      path
-  - `157 / d8081b7 / 89.79`
-    - removing the retained-frame reconstruction before the encode queue regresses both codecs
-  - `158 / 01c5cef / 90.21`
-    - removing source callback diagnostics only matches the previous best and does not improve it
-  - `159 / ce54405 / crash`
-    - synchronizing staged slot release from the output callback hangs the runtime probe
-  - `160 / bf66c88 / 90.00`
-    - raising VideoToolbox queue QoS to `userInteractive` does not help and worsens HEVC latency
-  - `161 / ee46a75 / 25.00`
-    - moving source diagnostics after pending admission catastrophically destabilizes HEVC pacing
-  - `162 / 1ef98b7 / crash`
-    - prebuilding staged source textures outside the queue crashes the runtime probe
+### Next structural directions
 
-### Current bottleneck reading
-
-- the likely limiting path is still early MDK source-to-processor-to-encoder cadence, but the
-  downloads checkout shows more sensitivity to `VT` startup and pacing policy than the old tree did
-- visible downstream saturation and restart signals still look more like amplifiers than the root
-  cause
-- the best corrected local-package wins now cluster around preserving strict staged-submit ordering
-  while shaving redundant queue hops, so future work should focus on remaining ordered handoffs
-  inside `CaptureVideoToolboxProcessing` rather than broad async decoupling
+- stop treating `CGDisplayStreamUpdateRef` as an encode-only hint source
+  - `DirtyRects` at VT did nothing on its own
+  - the remaining open path is to use partial update metadata earlier, before full-frame processing decisions are locked in
+- focus on backend/source changes, not more queue churn:
+  - expose partial update metadata and drop counts through the capture source runtime
+  - investigate whether private capture backends can avoid full-frame repaint cadence when only a subset of the panel is HDR-active
+  - treat the raw-source ceiling as the gating metric for any new structural experiment
 
 ### Latest downstream ingress findings
 
