@@ -98,19 +98,6 @@ private final class MDKVideoToolboxSendablePixelBuffer: @unchecked Sendable {
     }
 }
 
-private final class MDKVideoToolboxQueuedSubmission: @unchecked Sendable {
-    let frame: MDKCaptureFrame
-    let releaseSourceFrame: @Sendable () -> Void
-
-    init(
-        frame: MDKCaptureFrame,
-        releaseSourceFrame: @escaping @Sendable () -> Void
-    ) {
-        self.frame = frame
-        self.releaseSourceFrame = releaseSourceFrame
-    }
-}
-
 enum MDKVideoToolboxLatencyPolicy {
     static func maxFrameDelayCount(
         codec: MDKVideoEncoderCodec,
@@ -244,7 +231,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let stagingSubmissionGroup = DispatchGroup()
     private let encodeQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode")
     private let submissionQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.submit")
-    private let submitMailboxQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.submit-mailbox")
     private let encodeQueueSpecificKey = DispatchSpecificKey<UInt8>()
     private let encodeQueueSpecificValue: UInt8 = 1
     private let keyFrameRequestLock = NSLock()
@@ -253,11 +239,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var lastImmediateRecoveryReplayDisplayTime: UInt64?
     private var immediateReplaySubmissionCount: UInt64 = 0
     private var suppressedImmediateReplayCount: UInt64 = 0
-    private var latestWinsQueuedSubmission: MDKVideoToolboxQueuedSubmission?
-    private var latestWinsSubmitWorkerScheduled = false
-    private var latestWinsSubmitEnqueueCount: UInt64 = 0
-    private var latestWinsSubmitReplacementCount: UInt64 = 0
-    private var latestWinsSubmitProcessedCount: UInt64 = 0
 
     public init(
         codec: MDKVideoEncoderCodec = .hevc,
@@ -363,83 +344,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
         if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) == encodeQueueSpecificValue {
             submitFrame()
-        } else if shouldUseLatestWinsSubmitMailbox(for: retainedFrame) {
-            enqueueLatestWinsSubmit(
-                MDKVideoToolboxQueuedSubmission(
-                    frame: retainedFrame,
-                    releaseSourceFrame: releaseSourceFrame
-                )
-            )
         } else {
             encodeQueue.sync(execute: submitFrame)
-        }
-    }
-
-    private func shouldUseLatestWinsSubmitMailbox(for frame: MDKCaptureFrame) -> Bool {
-        guard frame.origin == .fresh,
-              codec == .hevc,
-              targetFrameRate >= 100,
-              hdrConfiguration?.transferFunction == .smpteSt2084PQ else {
-            return false
-        }
-
-        return true
-    }
-
-    private func enqueueLatestWinsSubmit(_ submission: MDKVideoToolboxQueuedSubmission) {
-        var displacedSubmission: MDKVideoToolboxQueuedSubmission?
-        let shouldScheduleWorker = submitMailboxQueue.sync { [self] in
-            latestWinsSubmitEnqueueCount += 1
-            displacedSubmission = latestWinsQueuedSubmission
-            if displacedSubmission != nil {
-                latestWinsSubmitReplacementCount += 1
-            }
-            latestWinsQueuedSubmission = submission
-            guard !latestWinsSubmitWorkerScheduled else {
-                return false
-            }
-            latestWinsSubmitWorkerScheduled = true
-            return true
-        }
-
-        displacedSubmission?.releaseSourceFrame()
-
-        guard shouldScheduleWorker else {
-            return
-        }
-
-        encodeQueue.async { [weak self] in
-            self?.drainLatestWinsSubmitMailbox()
-        }
-    }
-
-    private func takeLatestWinsSubmit() -> MDKVideoToolboxQueuedSubmission? {
-        submitMailboxQueue.sync { [self] in
-            if let queuedSubmission = latestWinsQueuedSubmission {
-                latestWinsQueuedSubmission = nil
-                latestWinsSubmitProcessedCount += 1
-                return queuedSubmission
-            }
-
-            latestWinsSubmitWorkerScheduled = false
-            return nil
-        }
-    }
-
-    private func drainLatestWinsSubmitMailbox() {
-        while let queuedSubmission = takeLatestWinsSubmit() {
-            do {
-                try encode(
-                    frame: queuedSubmission.frame,
-                    releaseSourceFrame: queuedSubmission.releaseSourceFrame
-                )
-            } catch {
-                queuedSubmission.releaseSourceFrame()
-                let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-                processingFailureCount += 1
-                processingErrorHistogram[errorDescription, default: 0] += 1
-                failureHandler?(errorDescription)
-            }
         }
     }
 
@@ -524,7 +430,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         outputDrainWaitStatus: DispatchTimeoutResult?
     ) -> [String] {
         var notes = [
-            "videoToolboxSubmitMode=sync-submit-queue-with-latest-wins-mailbox",
+            "videoToolboxSubmitMode=sync-submit-queue",
             "videoToolboxOutputCallback=non-nil",
             "videoToolboxCodec=\(codec.rawValue)",
             "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
@@ -537,10 +443,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxSubmittedFrameCount=\(submittedFrameCount)",
             "videoToolboxImmediateReplaySubmissionCount=\(immediateReplaySubmissionCount)",
             "videoToolboxSuppressedImmediateReplayCount=\(suppressedImmediateReplayCount)",
-            "videoToolboxLatestWinsSubmitMailbox=\(codec == .hevc && targetFrameRate >= 100 && hdrConfiguration?.transferFunction == .smpteSt2084PQ ? "enabled" : "disabled")",
-            "videoToolboxLatestWinsSubmitEnqueueCount=\(latestWinsSubmitEnqueueCount)",
-            "videoToolboxLatestWinsSubmitReplacementCount=\(latestWinsSubmitReplacementCount)",
-            "videoToolboxLatestWinsSubmitProcessedCount=\(latestWinsSubmitProcessedCount)",
             "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
             "videoToolboxPixelBufferPoolIsShared=\(describeHardwareAcceleration(encoderPixelBufferPoolIsShared))",
             "videoToolboxRecommendedParallelizationLimit=\(recommendedParallelizationLimit.map(String.init) ?? "unknown")",
