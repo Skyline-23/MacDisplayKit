@@ -105,12 +105,14 @@ Best measured output:
 - the current evidence points higher up the stack, at raw source/backend cadence
 - raw source numbers are the critical anchor:
   - current raw SkyLight benchmark, `3512x2290`, `q2`, `x420`, `none`: about `49.22 fps`
+  - current raw SkyLight benchmark, `3512x2290`, `q8`, `x420`, `none`: about `35.98 fps`
   - current raw SkyLight benchmark, `3512x2290`, `q2`, `bgra`, `none`: about `35.94 fps`
   - current production-facing encoded session diagnostic, `HEVC`, `HDR10`, callback mode:
     - `q1`: about `43.5 fps` output, source cadence about `38.8 fps`
     - `q2`: about `43.5 fps` output, source cadence about `34.1 fps`
   - current private direct IOSurface benchmark with HDR request at full display size (`5120x2880`): about `34.54 fps`
 - the raw `vt-encode` benchmark path at `3512x2290/x420/q2` currently collapses to about `1 fps`, so that benchmark is no longer representative of the production encoded-session path
+- on the current host state, deeper raw queueing is actively harmful for the source ceiling; `q8` is materially worse than `q2`
 - that means the current system is already spending most of the budget before downstream queue policy can matter
 - pure encode-side dirty-rect hints are not enough when the source still hands us a full-frame surface cadence far below `120`
 
