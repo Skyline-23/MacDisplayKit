@@ -13527,6 +13527,13 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
     __block size_t surfaceHeight = 0;
     __block OSType surfacePixelFormat = 0;
     __block BOOL sawSurface = NO;
+    __block std::uint64_t reducedDirtySampleCount = 0;
+    __block double reducedDirtyCoverageRatioSum = 0.0;
+    __block double reducedDirtyCoverageRatioMax = 0.0;
+    __block std::uint64_t reducedDirtyRectCountSum = 0;
+    __block std::uint64_t reducedDirtyRectCountMax = 0;
+    __block std::uint64_t dropCountSum = 0;
+    __block std::uint64_t dropCountMax = 0;
     const OSType requestedPixelFormat = pixelFormat != 0
         ? static_cast<OSType>(pixelFormat)
         : kCVPixelFormatType_32BGRA;
@@ -13541,7 +13548,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
         ^(CGDisplayStreamFrameStatus status,
           uint64_t displayTime,
           IOSurfaceRef frameSurface,
-          __unused CGDisplayStreamUpdateRef updateRef) {
+          CGDisplayStreamUpdateRef updateRef) {
             callbackCount += 1;
             NSString *statusName = MDKDescribeDisplayStreamFrameStatus(status);
             frameStatusHistogram[statusName] = @([frameStatusHistogram[statusName] integerValue] + 1);
@@ -13560,6 +13567,48 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
             }
             if (surfacePixelFormat == 0) {
                 surfacePixelFormat = IOSurfaceGetPixelFormat(frameSurface);
+            }
+            if (updateRef != nil) {
+                size_t reducedDirtyRectCount = 0;
+                const CGRect *reducedDirtyRects = CGDisplayStreamUpdateGetRects(
+                    updateRef,
+                    kCGDisplayStreamUpdateReducedDirtyRects,
+                    &reducedDirtyRectCount
+                );
+                const CGRect frameBounds = CGRectMake(
+                    0.0,
+                    0.0,
+                    static_cast<CGFloat>(width),
+                    static_cast<CGFloat>(height)
+                );
+                double coveredArea = 0.0;
+                for (size_t rectIndex = 0; rectIndex < reducedDirtyRectCount; rectIndex += 1) {
+                    CGRect clippedRect = CGRectIntersection(reducedDirtyRects[rectIndex], frameBounds);
+                    if (CGRectIsNull(clippedRect) || CGRectIsEmpty(clippedRect)) {
+                        continue;
+                    }
+                    coveredArea += static_cast<double>(clippedRect.size.width) *
+                        static_cast<double>(clippedRect.size.height);
+                }
+                const double frameArea = std::max(
+                    static_cast<double>(width) * static_cast<double>(height),
+                    1.0
+                );
+                const double reducedDirtyCoverageRatio = std::min(coveredArea / frameArea, 1.0);
+                reducedDirtySampleCount += 1;
+                reducedDirtyCoverageRatioSum += reducedDirtyCoverageRatio;
+                reducedDirtyCoverageRatioMax = std::max(reducedDirtyCoverageRatioMax, reducedDirtyCoverageRatio);
+                reducedDirtyRectCountSum += reducedDirtyRectCount;
+                reducedDirtyRectCountMax = std::max<std::uint64_t>(
+                    reducedDirtyRectCountMax,
+                    static_cast<std::uint64_t>(reducedDirtyRectCount)
+                );
+
+                const std::uint64_t droppedFrames = static_cast<std::uint64_t>(
+                    CGDisplayStreamUpdateGetDropCount(updateRef)
+                );
+                dropCountSum += droppedFrames;
+                dropCountMax = std::max(dropCountMax, droppedFrames);
             }
             [displayTimes addObject:@(displayTime)];
         }
@@ -13639,6 +13688,20 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
     }
     if (!sawSurface) {
         [notes addObject:@"The stream did not deliver any complete IOSurface-backed frames during the sample window."];
+    }
+    if (reducedDirtySampleCount > 0) {
+        const double reducedDirtyCoverageRatioAverage =
+            reducedDirtyCoverageRatioSum / static_cast<double>(reducedDirtySampleCount);
+        const double reducedDirtyRectCountAverage =
+            static_cast<double>(reducedDirtyRectCountSum) / static_cast<double>(reducedDirtySampleCount);
+        const double dropCountAverage =
+            static_cast<double>(dropCountSum) / static_cast<double>(reducedDirtySampleCount);
+        [notes addObject:[NSString stringWithFormat:@"avgReducedDirtyCoverageRatio=%.6f", reducedDirtyCoverageRatioAverage]];
+        [notes addObject:[NSString stringWithFormat:@"maxReducedDirtyCoverageRatio=%.6f", reducedDirtyCoverageRatioMax]];
+        [notes addObject:[NSString stringWithFormat:@"avgReducedDirtyRectCount=%.3f", reducedDirtyRectCountAverage]];
+        [notes addObject:[NSString stringWithFormat:@"maxReducedDirtyRectCount=%llu", reducedDirtyRectCountMax]];
+        [notes addObject:[NSString stringWithFormat:@"avgUpdateDropCount=%.3f", dropCountAverage]];
+        [notes addObject:[NSString stringWithFormat:@"maxUpdateDropCount=%llu", dropCountMax]];
     }
 
     NSMutableDictionary<NSString *, id> *payload = [@{

@@ -121,6 +121,10 @@ Best measured output:
     - `3512x2290`, `x420`, `processing-mode=none`: about `48.26 fps`
     - first propagated attachment keys only include `CGColorSpace` and `HorizontalDisparityAdjustment`
     - `ColorPrimaries`, `TransferFunction`, `YCbCrMatrix`, `MasteringDisplayColorVolume`, and `ContentLightLevelInfo` are all `nil`
+  - current raw SkyLight target dirty-region probe:
+    - `3512x2290`, `x420`, plain raw benchmark now reports `avgReducedDirtyCoverageRatio` around `0.54`, `avgReducedDirtyRectCount` around `3.4`, and `avgUpdateDropCount=0`
+    - on the current host load that same probe only delivers about `39-40 fps`; earlier cleaner-host runs reached about `51.4 fps`
+    - conclusion: `CGDisplayStreamUpdateRef` is carrying non-trivial partial-update information, but the source still pays a full-surface cadence cost before any downstream dirty-rect logic can help
   - full-backing probe shows the same structural limit, not a scaler artifact:
     - default backing (`3840x2160`) with `x420` or `BGRA` still carries no HDR attachment keys beyond `CGColorSpace`
     - `420v` does carry attachment keys, but they are plain SDR `ITU_R_709_2`
@@ -132,6 +136,10 @@ Best measured output:
 - on the current host state, deeper raw queueing is actively harmful for the source ceiling; `q8` is materially worse than `q2`
 - that means the current system is already spending most of the budget before downstream queue policy can matter
 - pure encode-side dirty-rect hints are not enough when the source still hands us a full-frame surface cadence far below `120`
+- raw dirty-region statistics sharpen that read:
+  - the compositor is not reporting "whole frame changed" every time; typical reduced dirty coverage is materially below `1.0`
+  - despite that, the raw source still tops out far below target cadence, which means the expensive part is earlier than VT `DirtyRects` and earlier than processor-local partial staging
+  - practical consequence: any future partial-update optimization must either change what the backend captures or avoid forcing whole-surface source work in the first place
 - processor-stage dirty-rect reuse is also too late:
   - `388` reused the previous completed staging slot and limited BGRA-to-YUV work to the dirty union, but startup regressed sharply while `HEVC` progression stayed effectively flat
   - that narrows the remaining leverage to source-visible partial capture, overlay-truth derivation, or a backend that never forces full-frame staging in the first place
@@ -143,6 +151,9 @@ Best measured output:
   - `DirtyRects` at VT did nothing on its own
   - the remaining open path is to use partial update metadata earlier, before full-frame processing decisions are locked in
   - `388` closed the processor-local variant of that idea; any further dirty-rect experiment has to start before full-frame source wrapping / staging and not inside the existing encode processor
+  - the new raw dirty-region probe adds an important qualifier:
+    - the update metadata itself is not missing
+    - what is missing is a backend path that can exploit that metadata without first paying for the full source surface
 - stop coupling `partial HDR overlay` validation to encoded sample-buffer HDR signalling
   - `387` showed that the current bridge/runtime probe still has no independent source of overlay-active truth once the main encoded stream becomes SDR
   - the new raw-source attachment probe explains why: current `SLDisplayStream` `x420`/`BGRA` surfaces do not propagate HDR transfer/static-metadata attachments in the first place
