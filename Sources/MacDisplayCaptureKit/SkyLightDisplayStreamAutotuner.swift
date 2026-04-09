@@ -22,10 +22,10 @@ actor MDKSkyLightDisplayStreamAutotuner {
             return nil
         }
 
-        // Respect explicit queue selections from callers such as the Apollo web UI.
-        // Autotuning is only allowed when the caller intentionally leaves the queue
-        // profile unset.
-        guard configuration.streamConfiguration.queueProfile == nil else {
+        guard shouldAutotune(
+            configuration: configuration,
+            processingMode: processingMode
+        ) else {
             return nil
         }
 
@@ -233,9 +233,13 @@ actor MDKSkyLightDisplayStreamAutotuner {
         }
 
         return candidates.first {
-            $0.identifier == MDKSkyLightDisplayStreamTuningMatrix.request120LikeQueue2Candidate.identifier
+            $0.identifier == MDKSkyLightDisplayStreamTuningMatrix.baselineQueue8Candidate.identifier
+        } ?? candidates.first {
+            $0.identifier == MDKSkyLightDisplayStreamTuningMatrix.request120LikeQueue8Candidate.identifier
         } ?? candidates.first {
             $0.identifier == MDKSkyLightDisplayStreamTuningMatrix.baselineQueue2Candidate.identifier
+        } ?? candidates.first {
+            $0.identifier == MDKSkyLightDisplayStreamTuningMatrix.request120LikeQueue2Candidate.identifier
         } ?? candidates.first
     }
 
@@ -259,6 +263,34 @@ actor MDKSkyLightDisplayStreamAutotuner {
         }
 
         return "skyLightCandidateResult=\(candidate.identifier),error=\(evaluation.errorDescription ?? "unknown")"
+    }
+
+    private func shouldAutotune(
+        configuration: MDKEncodedCaptureConfiguration,
+        processingMode: MDKCaptureBenchmarkProcessingMode
+    ) -> Bool {
+        guard let queueProfile = configuration.streamConfiguration.queueProfile else {
+            return true
+        }
+
+        // High-refresh encoder sessions are source-limited by the raw stream cadence,
+        // so low-depth queue profiles from upper layers act as bootstrap hints rather
+        // than hard locks. This keeps caller intent for non-realtime sessions while
+        // allowing live source tuning to recover the higher-throughput q8 path.
+        guard Self.isHighRefreshSession(
+            targetFrameRate: configuration.targetFrameRate,
+            displayRefreshRate: MDKDisplayRefreshRate(displayID: configuration.displayID)
+        ),
+        processingMode.videoEncoderCodec != nil else {
+            return false
+        }
+
+        switch queueProfile {
+        case .q1, .q2:
+            return true
+        case .q3, .q4:
+            return false
+        }
     }
 
     private func prioritizedCandidates(
