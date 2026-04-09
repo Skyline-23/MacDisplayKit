@@ -126,6 +126,15 @@ func MDKResolvedSkyLightDisplayStreamShowCursor(
     return requestedShowCursor
 }
 
+func MDKPrefersHighRefreshHEVCHDRSourceQueueOverride(
+    configuration: MDKEncodedCaptureConfiguration
+) -> Bool {
+    configuration.deliveryMode == .callbackOnly &&
+        configuration.codec == .hevc &&
+        configuration.targetFrameRate >= 100 &&
+        configuration.resolvedEncodedHDRConfiguration?.transferFunction == .smpteSt2084PQ
+}
+
 private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
     private let lock = NSLock()
     private var lastCaptureSurface: MDKCaptureSurface?
@@ -260,7 +269,10 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         self.frameHandler = frameHandler
         self.replayIntervalNanoseconds = replayIntervalNanoseconds
         self.replayIntervalMachTicks = max(MDKMachAbsoluteTicksForNanoseconds(replayIntervalNanoseconds), 1)
-        let tunedQueueDepth = tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth
+        let baseQueueDepth = tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth
+        let tunedQueueDepth = MDKPrefersHighRefreshHEVCHDRSourceQueueOverride(configuration: configuration)
+            ? max(baseQueueDepth, 8)
+            : baseQueueDepth
         let tunedMinimumFrameTime = tuningSelection?.candidate.minimumFrameTime ?? 0
         let tunedShowCursor = MDKResolvedSkyLightDisplayStreamShowCursor(
             requestedShowCursor: configuration.streamConfiguration.resolvedShowCursor,
@@ -822,7 +834,10 @@ public actor MDKEncodedCaptureSession {
             )
         case .skyLightDisplayStream:
             let tuningSelection = await MDKSkyLightDisplayStreamAutotuner.shared.resolveSelection(for: configuration)
-            let queueDepth = tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth
+            let baseQueueDepth = tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth
+            let queueDepth = MDKPrefersHighRefreshHEVCHDRSourceQueueOverride(configuration: configuration)
+                ? max(baseQueueDepth, 8)
+                : baseQueueDepth
             let recommendedPendingFrameCount = recommendedSkyLightPendingFrameCount(
                 for: configuration,
                 queueDepth: queueDepth
@@ -843,6 +858,7 @@ public actor MDKEncodedCaptureSession {
                         format: "skyLightSyntheticIdleReplayIntervalMilliseconds=%.3f",
                         1000.0 / Double(max(configuration.targetFrameRate, 1))
                     ),
+                    "skyLightSourceQueueDepthOverride=\(queueDepth)",
                     "skyLightPendingPolicy=\(pendingPolicy)",
                     "skyLightRecommendedPendingFrameCount=\(recommendedPendingFrameCount)"
                 ],
