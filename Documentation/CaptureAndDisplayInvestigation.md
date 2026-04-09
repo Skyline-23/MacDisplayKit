@@ -109,6 +109,9 @@ Best measured output:
   - `391 / 909e7da / 92.71`
     - suppressing only `timerReplay` frames when HEVC HDR `VTCompressionSession` `NumberOfPendingFrames > 1` recovered HEVC to `37` frames, but startup regressed to `360.491 ms` and still stayed below the keep
     - conclusion: VT-pending-aware replay suppression is directionally safer than source-side gating, but it still loses the current progression/startup balance
+  - `392 / 610705e / 92.50`
+    - moving only HEVC high-refresh HDR `timerReplay` frames onto an encode-queue latest slot, while keeping `fresh` frames synchronous, still regressed the official metric
+    - conclusion: even synthetic-only mailboxing is too lossy under the current path; replay/handoff experiments are now well explored and should give way to source-visible partial capture or a new backend entry point
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
