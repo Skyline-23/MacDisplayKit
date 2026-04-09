@@ -85,7 +85,7 @@ private actor MDKSkyLightDisplayStreamSessionDriver {
             outputHeight: UInt(configuration.resolvedOutputHeight),
             pixelFormat: configuration.resolvedPixelFormatOverride,
             yCbCrMatrix: configuration.resolvedYCbCrMatrixOverride
-        ) { [weak self] status, displayTime, frameSurface in
+        ) { [weak self] status, displayTime, frameSurface, reducedDirtyRectData, updateDropCount in
             guard let self else {
                 return
             }
@@ -99,7 +99,9 @@ private actor MDKSkyLightDisplayStreamSessionDriver {
                     width: surface.width,
                     height: surface.height,
                     pixelFormat: surface.pixelFormat,
-                    surface: surface
+                    surface: surface,
+                    dirtyRects: MDKDecodeCGRectData(reducedDirtyRectData),
+                    sourceUpdateDropCount: UInt64(updateDropCount)
                 )
             } else {
                 deliveredFrame = nil
@@ -158,7 +160,9 @@ private actor MDKSkyLightDisplayStreamSessionDriver {
             width: deliveredFrame.width,
             height: deliveredFrame.height,
             pixelFormat: deliveredFrame.pixelFormat,
-            surface: deliveredFrame.surface
+            surface: deliveredFrame.surface,
+            dirtyRects: deliveredFrame.dirtyRects,
+            sourceUpdateDropCount: deliveredFrame.sourceUpdateDropCount
         )
         nextSequenceNumber += 1
 

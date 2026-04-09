@@ -135,7 +135,9 @@ private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
     func captureFrame(
         status: CGDisplayStreamFrameStatus,
         displayTime: UInt64,
-        frameSurface: IOSurfaceRef?
+        frameSurface: IOSurfaceRef?,
+        dirtyRects: [CGRect]?,
+        sourceUpdateDropCount: UInt64?
     ) -> MDKCaptureFrame? {
         lock.lock()
         defer { lock.unlock() }
@@ -165,7 +167,9 @@ private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
                 height: captureSurface.height,
                 pixelFormat: captureSurface.pixelFormat,
                 surface: captureSurface,
-                origin: .fresh
+                origin: .fresh,
+                dirtyRects: dirtyRects,
+                sourceUpdateDropCount: sourceUpdateDropCount
             )
         case .emitIdleReplay:
             guard let lastCaptureSurface else {
@@ -275,12 +279,14 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             outputHeight: UInt(configuration.streamConfiguration.resolvedOutputHeight),
             pixelFormat: configuration.resolvedCapturePixelFormat,
             yCbCrMatrix: configuration.resolvedSkyLightDisplayStreamYCbCrMatrix.map { $0.imageBufferValue as String }
-        ) { status, displayTime, frameSurface in
+        ) { status, displayTime, frameSurface, reducedDirtyRectData, updateDropCount in
             deliveryQueue.async {
                 guard let deliveredFrame = replayState.captureFrame(
                     status: status,
                     displayTime: displayTime,
-                    frameSurface: frameSurface
+                    frameSurface: frameSurface,
+                    dirtyRects: MDKDecodeCGRectData(reducedDirtyRectData),
+                    sourceUpdateDropCount: UInt64(updateDropCount)
                 ) else {
                     return
                 }
@@ -530,6 +536,14 @@ private final class MDKEncodedCaptureSourceTimingTracker: @unchecked Sendable {
     private var cumulativeCursorCompositeMilliseconds: Double = 0
     private var minCursorCompositeMilliseconds: Double?
     private var maxCursorCompositeMilliseconds: Double?
+    private var reducedDirtySampleCount: UInt64 = 0
+    private var reducedDirtyCoverageRatioSum: Double = 0
+    private var reducedDirtyCoverageRatioMax: Double = 0
+    private var reducedDirtyRectCountSum: UInt64 = 0
+    private var reducedDirtyRectCountMax: UInt64 = 0
+    private var updateDropSampleCount: UInt64 = 0
+    private var updateDropCountSum: UInt64 = 0
+    private var updateDropCountMax: UInt64 = 0
 
     func record(frame: MDKCaptureFrame) {
         lock.lock()
@@ -546,6 +560,12 @@ private final class MDKEncodedCaptureSourceTimingTracker: @unchecked Sendable {
         if let cursorCompositeDurationNanoseconds = frame.sourceCursorCompositeDurationNanoseconds {
             let cursorCompositeMilliseconds = Double(cursorCompositeDurationNanoseconds) / 1_000_000
             guard cursorCompositeMilliseconds > 0 else {
+                if let dirtyRects = frame.dirtyRects {
+                    recordReducedDirtyStats(for: dirtyRects, frame: frame)
+                }
+                if let sourceUpdateDropCount = frame.sourceUpdateDropCount {
+                    recordUpdateDropCount(sourceUpdateDropCount)
+                }
                 return
             }
             cursorCompositeSampleCount += 1
@@ -558,6 +578,13 @@ private final class MDKEncodedCaptureSourceTimingTracker: @unchecked Sendable {
                 maxCursorCompositeMilliseconds ?? cursorCompositeMilliseconds,
                 cursorCompositeMilliseconds
             )
+        }
+
+        if let dirtyRects = frame.dirtyRects {
+            recordReducedDirtyStats(for: dirtyRects, frame: frame)
+        }
+        if let sourceUpdateDropCount = frame.sourceUpdateDropCount {
+            recordUpdateDropCount(sourceUpdateDropCount)
         }
     }
 
@@ -602,7 +629,71 @@ private final class MDKEncodedCaptureSourceTimingTracker: @unchecked Sendable {
             )
         }
 
+        if reducedDirtySampleCount > 0 {
+            notes.append("sourceReducedDirtySampleCount=\(reducedDirtySampleCount)")
+            notes.append(
+                String(
+                    format: "sourceAverageReducedDirtyCoverageRatio=%.6f",
+                    reducedDirtyCoverageRatioSum / Double(reducedDirtySampleCount)
+                )
+            )
+            notes.append(
+                String(format: "sourceMaxReducedDirtyCoverageRatio=%.6f", reducedDirtyCoverageRatioMax)
+            )
+            notes.append(
+                String(
+                    format: "sourceAverageReducedDirtyRectCount=%.3f",
+                    Double(reducedDirtyRectCountSum) / Double(reducedDirtySampleCount)
+                )
+            )
+            notes.append("sourceMaxReducedDirtyRectCount=\(reducedDirtyRectCountMax)")
+        }
+
+        if updateDropSampleCount > 0 {
+            notes.append("sourceUpdateDropSampleCount=\(updateDropSampleCount)")
+            notes.append(
+                String(
+                    format: "sourceAverageUpdateDropCount=%.3f",
+                    Double(updateDropCountSum) / Double(updateDropSampleCount)
+                )
+            )
+            notes.append("sourceMaxUpdateDropCount=\(updateDropCountMax)")
+        }
+
         return notes
+    }
+
+    private func recordReducedDirtyStats(for dirtyRects: [CGRect], frame: MDKCaptureFrame) {
+        guard frame.width > 0, frame.height > 0 else {
+            return
+        }
+
+        let frameBounds = CGRect(x: 0, y: 0, width: frame.width, height: frame.height)
+        let frameArea = frameBounds.width * frameBounds.height
+        guard frameArea > 0 else {
+            return
+        }
+
+        var coveredArea: CGFloat = 0
+        for dirtyRect in dirtyRects {
+            let clippedRect = dirtyRect.intersection(frameBounds)
+            guard !clippedRect.isNull, !clippedRect.isEmpty else {
+                continue
+            }
+            coveredArea += clippedRect.width * clippedRect.height
+        }
+
+        reducedDirtySampleCount += 1
+        reducedDirtyCoverageRatioSum += min(Double(coveredArea / frameArea), 1.0)
+        reducedDirtyCoverageRatioMax = max(reducedDirtyCoverageRatioMax, min(Double(coveredArea / frameArea), 1.0))
+        reducedDirtyRectCountSum += UInt64(dirtyRects.count)
+        reducedDirtyRectCountMax = max(reducedDirtyRectCountMax, UInt64(dirtyRects.count))
+    }
+
+    private func recordUpdateDropCount(_ dropCount: UInt64) {
+        updateDropSampleCount += 1
+        updateDropCountSum += dropCount
+        updateDropCountMax = max(updateDropCountMax, dropCount)
     }
 }
 

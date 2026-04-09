@@ -12587,6 +12587,24 @@ static NSString *MDKDescribeDisplayStreamFrameStatus(CGDisplayStreamFrameStatus 
     }
 }
 
+static NSData * _Nullable MDKCreateReducedDirtyRectData(CGDisplayStreamUpdateRef _Nullable updateRef) {
+    if (updateRef == nil) {
+        return nil;
+    }
+
+    size_t rectCount = 0;
+    const CGRect *rects = CGDisplayStreamUpdateGetRects(
+        updateRef,
+        kCGDisplayStreamUpdateReducedDirtyRects,
+        &rectCount
+    );
+    if (rects == nullptr || rectCount == 0) {
+        return nil;
+    }
+
+    return [NSData dataWithBytes:rects length:(rectCount * sizeof(CGRect))];
+}
+
 static constexpr double MDKSLDisplayStreamTunedMinimumFrameTime = 1.0 / 240.0;
 static constexpr NSInteger MDKSLDisplayStreamTunedQueueDepth = 3;
 
@@ -13407,13 +13425,19 @@ static CGRect MDKCreateCursorDrawRect(
         ^(CGDisplayStreamFrameStatus status,
           uint64_t displayTime,
           IOSurfaceRef frameSurface,
-          __unused CGDisplayStreamUpdateRef updateRef) {
+          CGDisplayStreamUpdateRef updateRef) {
             MDKShimSkyLightDisplayStreamSession *strongSelf = weakSelf;
             if (strongSelf == nil || strongSelf->_frameHandler == nil) {
                 return;
             }
 
-            strongSelf->_frameHandler(status, displayTime, frameSurface);
+            strongSelf->_frameHandler(
+                status,
+                displayTime,
+                frameSurface,
+                MDKCreateReducedDirtyRectData(updateRef),
+                updateRef != nil ? static_cast<NSUInteger>(CGDisplayStreamUpdateGetDropCount(updateRef)) : 0
+            );
         }
     );
     if (_stream == nil) {
