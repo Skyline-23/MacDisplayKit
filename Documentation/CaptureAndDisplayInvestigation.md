@@ -98,6 +98,12 @@ Best measured output:
     - pairing `q8` source depth with the processor-local mailbox just added pressure; HEVC stayed flat and `ProRes Proxy` regressed
   - `385 / c2a6b88 / 92.50`
     - moving HEVC handoff to a latest-fresh source gate over-dropped under load and regressed HEVC to `36` frames
+  - `387 / 1834570f / 72.71`
+    - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
+      - synthetic stayed `100`
+      - runtime probe still observed `0` overlay-HDR frames on both codecs
+      - `HEVC` only reached `37` frames at `348.338 ms` startup and `ProRes Proxy` dropped to `33` frames
+    - conclusion: changing the bridge and ingress contract is not enough unless the producer/probe can source a real overlay-active signal independently of encoded sample-buffer HDR signalling
 
 ### Root bottleneck reading
 
@@ -105,6 +111,7 @@ Best measured output:
 - the current evidence points higher up the stack, at raw source/backend cadence
 - raw source numbers are the critical anchor:
   - current raw SkyLight benchmark, `3512x2290`, `q2`, `x420`, `none`: about `49.22 fps`
+  - current raw SkyLight benchmark, `3512x2290`, `q2`, `420v`, `none`: about `45.45 fps`
   - current raw SkyLight benchmark, `3512x2290`, `q8`, `x420`, `none`: about `35.98 fps`
   - current raw SkyLight benchmark, `3512x2290`, `q2`, `bgra`, `none`: about `35.94 fps`
   - current production-facing encoded session diagnostic, `HEVC`, `HDR10`, callback mode:
@@ -115,12 +122,16 @@ Best measured output:
 - on the current host state, deeper raw queueing is actively harmful for the source ceiling; `q8` is materially worse than `q2`
 - that means the current system is already spending most of the budget before downstream queue policy can matter
 - pure encode-side dirty-rect hints are not enough when the source still hands us a full-frame surface cadence far below `120`
+- `420v8` is directionally better than `BGRA` for an SDR base stream on this host, but it still sits far below the target ceiling, so simply swapping the raw surface format does not solve the underlying cadence limit
 
 ### Next structural directions
 
 - stop treating `CGDisplayStreamUpdateRef` as an encode-only hint source
   - `DirtyRects` at VT did nothing on its own
   - the remaining open path is to use partial update metadata earlier, before full-frame processing decisions are locked in
+- stop coupling `partial HDR overlay` validation to encoded sample-buffer HDR signalling
+  - `387` showed that the current bridge/runtime probe still has no independent source of overlay-active truth once the main encoded stream becomes SDR
+  - any future selective-HDR architecture needs a producer-visible overlay-active signal that survives all the way into measurement without reusing full-frame HDR sample metadata
 - focus on backend/source changes, not more queue churn:
   - expose partial update metadata and drop counts through the capture source runtime
   - treat `raw x420 source cadence` as the gating metric for any new structural experiment
