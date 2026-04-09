@@ -432,6 +432,87 @@ private final class MDKEncodedCapturePendingFrameTracker: @unchecked Sendable {
     }
 }
 
+private final class MDKEncodedCaptureLatestFreshSourceHandoff: @unchecked Sendable {
+    private let coordinationQueue = DispatchQueue(
+        label: "com.skyline23.MacDisplayKit.encoded-capture.latest-fresh-source-handoff"
+    )
+    private let processQueue = DispatchQueue(
+        label: "com.skyline23.MacDisplayKit.encoded-capture.latest-fresh-source-handoff.process"
+    )
+    private let processFrame: @Sendable (MDKCaptureFrame, @escaping @Sendable () -> Void) throws -> Void
+    private let dropFrame: @Sendable (UInt64) -> Void
+    private let reportProcessingFailure: @Sendable (String) -> Void
+    private var hasActiveFrame = false
+    private var deferredFreshFrame: MDKCaptureFrame?
+
+    init(
+        processFrame: @escaping @Sendable (MDKCaptureFrame, @escaping @Sendable () -> Void) throws -> Void,
+        dropFrame: @escaping @Sendable (UInt64) -> Void,
+        reportProcessingFailure: @escaping @Sendable (String) -> Void
+    ) {
+        self.processFrame = processFrame
+        self.dropFrame = dropFrame
+        self.reportProcessingFailure = reportProcessingFailure
+    }
+
+    func submit(_ frame: MDKCaptureFrame) {
+        coordinationQueue.async { [weak self] in
+            self?.enqueue(frame)
+        }
+    }
+
+    private func enqueue(_ frame: MDKCaptureFrame) {
+        guard hasActiveFrame else {
+            hasActiveFrame = true
+            dispatch(frame)
+            return
+        }
+
+        guard frame.origin == .fresh else {
+            dropFrame(frame.displayTime)
+            return
+        }
+
+        if let displacedFrame = deferredFreshFrame {
+            dropFrame(displacedFrame.displayTime)
+        }
+        deferredFreshFrame = frame
+    }
+
+    private func dispatch(_ frame: MDKCaptureFrame) {
+        processQueue.async { [weak self] in
+            guard let self else {
+                return
+            }
+
+            do {
+                try processFrame(frame) { [weak self] in
+                    self?.completeActiveFrame()
+                }
+            } catch {
+                let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                reportProcessingFailure(description)
+                completeActiveFrame()
+            }
+        }
+    }
+
+    private func completeActiveFrame() {
+        coordinationQueue.async { [weak self] in
+            guard let self else {
+                return
+            }
+
+            if let deferredFreshFrame {
+                self.deferredFreshFrame = nil
+                dispatch(deferredFreshFrame)
+            } else {
+                hasActiveFrame = false
+            }
+        }
+    }
+}
+
 private final class MDKEncodedCaptureSourceCadenceTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var frameCount: UInt64 = 0
@@ -799,6 +880,12 @@ public actor MDKEncodedCaptureSession {
     private static func makeSourcePreparation(
         for configuration: MDKEncodedCaptureConfiguration
     ) async -> MDKEncodedCaptureSourcePreparation {
+        let usesLatestFreshSourceHandoff =
+            configuration.deliveryMode == .callbackOnly &&
+            configuration.codec == .hevc &&
+            configuration.targetFrameRate >= 100 &&
+            configuration.resolvedEncodedHDRConfiguration?.transferFunction == .smpteSt2084PQ
+
         switch configuration.resolvedSourceBackend {
         case .privateDirectIOSurface:
             let requestsExtendedRange = configuration.resolvedEncodedHDRConfiguration.map {
@@ -827,11 +914,15 @@ public actor MDKEncodedCaptureSession {
                 for: configuration,
                 queueDepth: queueDepth
             )
-            let pendingPolicy =
-                configuration.deliveryMode == .callbackOnly &&
-                configuration.resolvedSkyLightProcessingMode != nil
-                ? "callback-low-latency"
-                : "default"
+            let pendingPolicy: String
+            if usesLatestFreshSourceHandoff {
+                pendingPolicy = "callback-latest-fresh-source-handoff"
+            } else if configuration.deliveryMode == .callbackOnly &&
+                        configuration.resolvedSkyLightProcessingMode != nil {
+                pendingPolicy = "callback-low-latency"
+            } else {
+                pendingPolicy = "default"
+            }
             return MDKEncodedCaptureSourcePreparation(
                 recommendedPendingFrameCount: recommendedPendingFrameCount,
                 diagnosticNotes: (tuningSelection?.notes ?? []) + [
@@ -979,6 +1070,11 @@ public actor MDKEncodedCaptureSession {
         let sourceTimingTracker = MDKEncodedCaptureSourceTimingTracker()
         let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
         let maximumPendingFrameCount = sourcePreparation.recommendedPendingFrameCount
+        let usesLatestFreshSourceHandoff =
+            callbackOnlyDelivery &&
+            configuration.codec == .hevc &&
+            configuration.targetFrameRate >= 100 &&
+            configuration.resolvedEncodedHDRConfiguration?.transferFunction == .smpteSt2084PQ
 
         let outputHandler: @Sendable (MDKEncodedFrame) -> Void = { [weak self] encodedFrame in
             guard let self else {
@@ -1006,6 +1102,32 @@ public actor MDKEncodedCaptureSession {
         }
 
         let processor = processorFactory(configuration, outputHandler, failureHandler)
+        let latestFreshSourceHandoff = usesLatestFreshSourceHandoff
+            ? MDKEncodedCaptureLatestFreshSourceHandoff(
+                processFrame: { frame, releaseSourceFrame in
+                    try processor.process(frame: frame, releaseSourceFrame: releaseSourceFrame)
+                },
+                dropFrame: { [weak self] sourceDisplayTime in
+                    guard let self else {
+                        return
+                    }
+                    Task {
+                        await self.handleSourceFrameDropped(
+                            sourceDisplayTime: sourceDisplayTime,
+                            runtimeGeneration: currentRuntimeGeneration
+                        )
+                    }
+                },
+                reportProcessingFailure: { [weak self] description in
+                    guard let self else {
+                        return
+                    }
+                    Task {
+                        await self.handleProcessingFailure(description, runtimeGeneration: currentRuntimeGeneration)
+                    }
+                }
+            )
+            : nil
         let source = sourceFactory(configuration, sourcePreparation) { [weak self, weak processor] frame in
             guard let self, let processor else {
                 return
@@ -1013,6 +1135,11 @@ public actor MDKEncodedCaptureSession {
 
             sourceCadenceTracker.record(displayTime: frame.displayTime)
             sourceTimingTracker.record(frame: frame)
+            if let latestFreshSourceHandoff {
+                latestFreshSourceHandoff.submit(frame)
+                return
+            }
+
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
                     await self.handleSourceFrameDropped(
