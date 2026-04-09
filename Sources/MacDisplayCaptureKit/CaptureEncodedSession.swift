@@ -744,6 +744,13 @@ public actor MDKEncodedCaptureSession {
     private var sourceTimingTracker: MDKEncodedCaptureSourceTimingTracker?
     private var scheduledRestartTask: Task<Void, Never>?
     private var scheduledRestartGeneration: UInt64?
+    private var ingressWorkerTask: Task<Void, Never>?
+    private var ingressWorkerActive = false
+    private var stagedIngressFrame: MDKCaptureFrame?
+    private var ingressLaunchCount: UInt64 = 0
+    private var ingressReplacedFrameCount: UInt64 = 0
+    private var ingressFreshOverReplayReplacementCount: UInt64 = 0
+    private var ingressDroppedReplayWhileFreshStagedCount: UInt64 = 0
 
     public init(configuration: MDKEncodedCaptureConfiguration) {
         self.configuration = configuration
@@ -848,6 +855,113 @@ public actor MDKEncodedCaptureSession {
                 ],
                 skyLightTuningSelection: tuningSelection
             )
+        }
+    }
+
+    private func resetIngressState() {
+        ingressWorkerTask = nil
+        ingressWorkerActive = false
+        stagedIngressFrame = nil
+        ingressLaunchCount = 0
+        ingressReplacedFrameCount = 0
+        ingressFreshOverReplayReplacementCount = 0
+        ingressDroppedReplayWhileFreshStagedCount = 0
+    }
+
+    private func shouldPreferIncomingIngressFrame(
+        _ incoming: MDKCaptureFrame,
+        over existing: MDKCaptureFrame
+    ) -> Bool {
+        switch (existing.origin, incoming.origin) {
+        case (.fresh, .fresh), (.idleReplay, .idleReplay), (.timerReplay, .timerReplay), (.recoveryReplay, .recoveryReplay):
+            return incoming.displayTime >= existing.displayTime
+        case (.fresh, _):
+            return false
+        case (_, .fresh):
+            return true
+        default:
+            return incoming.displayTime >= existing.displayTime
+        }
+    }
+
+    private func enqueueSourceFrame(
+        _ frame: MDKCaptureFrame,
+        runtimeGeneration: UInt64
+    ) -> MDKCaptureFrame? {
+        guard runtime != nil, self.runtimeGeneration == runtimeGeneration else {
+            return nil
+        }
+
+        if !ingressWorkerActive {
+            ingressWorkerActive = true
+            ingressLaunchCount += 1
+            return frame
+        }
+
+        if let stagedIngressFrame {
+            if stagedIngressFrame.origin == .fresh, frame.origin != .fresh {
+                ingressDroppedReplayWhileFreshStagedCount += 1
+                return nil
+            }
+            guard shouldPreferIncomingIngressFrame(frame, over: stagedIngressFrame) else {
+                if frame.origin != .fresh {
+                    ingressDroppedReplayWhileFreshStagedCount += 1
+                }
+                return nil
+            }
+            if stagedIngressFrame.origin != .fresh, frame.origin == .fresh {
+                ingressFreshOverReplayReplacementCount += 1
+            }
+            ingressReplacedFrameCount += 1
+            self.stagedIngressFrame = frame
+            return nil
+        }
+
+        stagedIngressFrame = frame
+        return nil
+    }
+
+    private func takeNextIngressFrame(runtimeGeneration: UInt64) -> MDKCaptureFrame? {
+        guard runtime != nil, self.runtimeGeneration == runtimeGeneration else {
+            ingressWorkerActive = false
+            stagedIngressFrame = nil
+            return nil
+        }
+
+        if let stagedIngressFrame {
+            self.stagedIngressFrame = nil
+            ingressLaunchCount += 1
+            return stagedIngressFrame
+        }
+
+        ingressWorkerActive = false
+        return nil
+    }
+
+    private func launchIngressWorker(
+        initialFrame: MDKCaptureFrame,
+        processor: any MDKEncodedCaptureProcessorRuntime,
+        runtimeGeneration: UInt64
+    ) {
+        ingressWorkerTask = Task.detached { [weak self] in
+            guard let self else {
+                return
+            }
+
+            var currentFrame: MDKCaptureFrame? = initialFrame
+            while let frame = currentFrame {
+                do {
+                    try processor.process(frame: frame, releaseSourceFrame: {})
+                } catch {
+                    let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                    Task {
+                        await self.handleProcessingFailure(description, runtimeGeneration: runtimeGeneration)
+                    }
+                    return
+                }
+
+                currentFrame = await self.takeNextIngressFrame(runtimeGeneration: runtimeGeneration)
+            }
         }
     }
 
@@ -972,13 +1086,12 @@ public actor MDKEncodedCaptureSession {
 
         self.callbacks = callbacks
         runtimeGeneration &+= 1
+        resetIngressState()
         let currentRuntimeGeneration = runtimeGeneration
         let callbackOnlyDelivery = configuration.deliveryMode == .callbackOnly && callbacks != nil
-        let pendingFrameTracker = MDKEncodedCapturePendingFrameTracker()
         let sourceCadenceTracker = MDKEncodedCaptureSourceCadenceTracker()
         let sourceTimingTracker = MDKEncodedCaptureSourceTimingTracker()
         let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
-        let maximumPendingFrameCount = sourcePreparation.recommendedPendingFrameCount
 
         let outputHandler: @Sendable (MDKEncodedFrame) -> Void = { [weak self] encodedFrame in
             guard let self else {
@@ -1011,28 +1124,20 @@ public actor MDKEncodedCaptureSession {
                 return
             }
 
-            sourceCadenceTracker.record(displayTime: frame.displayTime)
-            sourceTimingTracker.record(frame: frame)
-            guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
-                Task {
-                    await self.handleSourceFrameDropped(
-                        sourceDisplayTime: frame.displayTime,
-                        runtimeGeneration: currentRuntimeGeneration
-                    )
+            Task {
+                sourceCadenceTracker.record(displayTime: frame.displayTime)
+                sourceTimingTracker.record(frame: frame)
+                guard let initialFrame = await self.enqueueSourceFrame(
+                    frame,
+                    runtimeGeneration: currentRuntimeGeneration
+                ) else {
+                    return
                 }
-                return
-            }
-
-            do {
-                try processor.process(frame: frame) {
-                    pendingFrameTracker.releaseOne()
-                }
-            } catch {
-                pendingFrameTracker.releaseOne()
-                let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-                Task {
-                    await self.handleProcessingFailure(description, runtimeGeneration: currentRuntimeGeneration)
-                }
+                await self.launchIngressWorker(
+                    initialFrame: initialFrame,
+                    processor: processor,
+                    runtimeGeneration: currentRuntimeGeneration
+                )
             }
         }
         self.sourceCadenceTracker = sourceCadenceTracker
@@ -1069,12 +1174,12 @@ public actor MDKEncodedCaptureSession {
     }
 
     public func stop() async {
-        stopRuntime(finishingStream: true, stopMessage: "Encoded capture session stopped.")
+        await stopRuntime(finishingStream: true, stopMessage: "Encoded capture session stopped.")
         await drainDeferredDeliveryWork()
     }
 
     public func restart() async throws {
-        stopRuntime(finishingStream: false, emitStopEvent: false)
+        await stopRuntime(finishingStream: false, emitStopEvent: false)
         try await start()
     }
 
@@ -1105,14 +1210,14 @@ public actor MDKEncodedCaptureSession {
         self.continuationToken = token
     }
 
-    private func clearContinuation(ifMatching token: UInt64) {
+    private func clearContinuation(ifMatching token: UInt64) async {
         guard continuationToken == token else {
             return
         }
         continuation = nil
         continuationToken = nil
         if runtime != nil, callbacks == nil {
-            stopRuntime(finishingStream: false, stopMessage: "Encoded frame consumer terminated.")
+            await stopRuntime(finishingStream: false, stopMessage: "Encoded frame consumer terminated.")
         }
     }
 
@@ -1120,7 +1225,7 @@ public actor MDKEncodedCaptureSession {
         _ frame: MDKEncodedFrame,
         runtimeGeneration: UInt64,
         deliveredViaCallback: Bool
-    ) {
+    ) async {
         guard runtime != nil, self.runtimeGeneration == runtimeGeneration else {
             return
         }
@@ -1187,7 +1292,7 @@ public actor MDKEncodedCaptureSession {
                 )
             }
             if runtime != nil, !deliveredViaCallback {
-                stopRuntime(
+                await stopRuntime(
                     finishingStream: false,
                     stopMessage: "Encoded frame consumer terminated during delivery."
                 )
@@ -1203,7 +1308,7 @@ public actor MDKEncodedCaptureSession {
         }
     }
 
-    private func handleProcessingFailure(_ description: String, runtimeGeneration: UInt64) {
+    private func handleProcessingFailure(_ description: String, runtimeGeneration: UInt64) async {
         guard runtime != nil, self.runtimeGeneration == runtimeGeneration else {
             return
         }
@@ -1217,7 +1322,7 @@ public actor MDKEncodedCaptureSession {
             return
         }
         guard configuration.recoveryPolicy.automaticallyRestartOnFailure else {
-            stopRuntime(finishingStream: false, stopMessage: description)
+            await stopRuntime(finishingStream: false, stopMessage: description)
             continuation?.finish(
                 throwing: MDKEncodedCaptureSessionError.processingFailed(description: description)
             )
@@ -1226,7 +1331,7 @@ public actor MDKEncodedCaptureSession {
             return
         }
         guard statistics.automaticRestartCount < UInt64(configuration.recoveryPolicy.maximumAutomaticRestartCount) else {
-            stopRuntime(finishingStream: false, stopMessage: description)
+            await stopRuntime(finishingStream: false, stopMessage: description)
             continuation?.finish(
                 throwing: MDKEncodedCaptureSessionError.restartLimitReached(lastErrorDescription: description)
             )
@@ -1286,7 +1391,7 @@ public actor MDKEncodedCaptureSession {
         scheduledRestartTask = nil
         scheduledRestartGeneration = nil
 
-        stopRuntime(finishingStream: false, emitStopEvent: false)
+        await stopRuntime(finishingStream: false, emitStopEvent: false)
         do {
             try await start()
             statistics = preservedStatistics(
@@ -1316,13 +1421,14 @@ public actor MDKEncodedCaptureSession {
         finishingStream: Bool,
         stopMessage: String? = nil,
         emitStopEvent: Bool = true
-    ) {
+    ) async {
         runtimeGeneration &+= 1
         scheduledRestartTask?.cancel()
         scheduledRestartTask = nil
         scheduledRestartGeneration = nil
 
         guard let runtime else {
+            resetIngressState()
             sourceCadenceTracker = nil
             sourceTimingTracker = nil
             if finishingStream {
@@ -1355,9 +1461,14 @@ public actor MDKEncodedCaptureSession {
         }
 
         let stopStatus = runtime.source.stop()
+        let ingressWorkerTask = self.ingressWorkerTask
+        self.ingressWorkerTask = nil
+        await ingressWorkerTask?.value
         let processingSummary = runtime.processor.finalize()
         let sourceNotes = combinedSourceNotes()
         self.runtime = nil
+        ingressWorkerActive = false
+        stagedIngressFrame = nil
         if finishingStream {
             continuation?.finish()
             continuation = nil
@@ -1458,7 +1569,14 @@ public actor MDKEncodedCaptureSession {
     }
 
     private func combinedSourceNotes() -> [String] {
-        (sourceCadenceTracker?.snapshotNotes() ?? []) + (sourceTimingTracker?.snapshotNotes() ?? [])
+        (sourceCadenceTracker?.snapshotNotes() ?? []) +
+            (sourceTimingTracker?.snapshotNotes() ?? []) + [
+                "sourceIngressScheduler=actor-latest-wins",
+                "sourceIngressLaunchCount=\(ingressLaunchCount)",
+                "sourceIngressReplacedFrameCount=\(ingressReplacedFrameCount)",
+                "sourceIngressFreshOverReplayReplacementCount=\(ingressFreshOverReplayReplacementCount)",
+                "sourceIngressDroppedReplayWhileFreshStagedCount=\(ingressDroppedReplayWhileFreshStagedCount)"
+            ]
     }
 
     private func emitEvent(_ event: MDKEncodedCaptureSessionEvent) {
