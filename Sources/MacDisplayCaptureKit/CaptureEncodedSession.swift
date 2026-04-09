@@ -22,11 +22,6 @@ struct MDKEncodedCaptureSourcePreparation: Sendable {
 }
 
 protocol MDKEncodedCaptureProcessorRuntime: AnyObject, Sendable {
-    func prepare(
-        sourceWidth: Int,
-        sourceHeight: Int,
-        sourcePixelFormat: UInt32
-    ) throws
     func process(
         frame: MDKCaptureFrame,
         releaseSourceFrame: @escaping @Sendable () -> Void
@@ -37,12 +32,6 @@ protocol MDKEncodedCaptureProcessorRuntime: AnyObject, Sendable {
 }
 
 extension MDKEncodedCaptureProcessorRuntime {
-    func prepare(
-        sourceWidth _: Int,
-        sourceHeight _: Int,
-        sourcePixelFormat _: UInt32
-    ) throws {}
-
     func requestImmediateKeyFrame() {}
 }
 
@@ -1017,11 +1006,6 @@ public actor MDKEncodedCaptureSession {
         }
 
         let processor = processorFactory(configuration, outputHandler, failureHandler)
-        try processor.prepare(
-            sourceWidth: max(configuration.streamConfiguration.resolvedOutputWidth, 1),
-            sourceHeight: max(configuration.streamConfiguration.resolvedOutputHeight, 1),
-            sourcePixelFormat: configuration.resolvedCapturePixelFormat
-        )
         let source = sourceFactory(configuration, sourcePreparation) { [weak self, weak processor] frame in
             guard let self, let processor else {
                 return
