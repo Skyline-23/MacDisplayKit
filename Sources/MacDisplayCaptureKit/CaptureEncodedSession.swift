@@ -35,15 +35,10 @@ extension MDKEncodedCaptureProcessorRuntime {
     func requestImmediateKeyFrame() {}
 }
 
-typealias MDKEncodedCaptureSourceFrameHandler = @Sendable (
-    MDKCaptureFrame,
-    @escaping @Sendable () -> Void
-) -> Void
-
 typealias MDKEncodedCaptureSourceFactory = @Sendable (
     MDKEncodedCaptureConfiguration,
     MDKEncodedCaptureSourcePreparation,
-    @escaping MDKEncodedCaptureSourceFrameHandler
+    @escaping @Sendable (MDKCaptureFrame) -> Void
 ) -> any MDKEncodedCaptureSourceRuntime
 
 typealias MDKEncodedCaptureProcessorFactory = @Sendable (
@@ -131,39 +126,25 @@ func MDKResolvedSkyLightDisplayStreamShowCursor(
     return requestedShowCursor
 }
 
-private actor MDKSkyLightEncodedCaptureIngressCoordinator {
-    private let maximumInFlightFrames: Int
-    private let minimumEmissionDeltaMachTicks: UInt64
-    private let frameHandler: MDKEncodedCaptureSourceFrameHandler
-    private var availableCredits: Int
+private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
+    private let lock = NSLock()
     private var lastCaptureSurface: MDKCaptureSurface?
     private var lastDisplayTime: UInt64?
     private var lastEmissionMachTime: UInt64?
-    private var latestPendingFrame: MDKCaptureFrame?
-    private var drainScheduled = false
 
-    init(
-        maximumInFlightFrames: Int,
-        minimumEmissionDeltaMachTicks: UInt64,
-        frameHandler: @escaping MDKEncodedCaptureSourceFrameHandler
-    ) {
-        let resolvedMaximumInFlightFrames = max(maximumInFlightFrames, 1)
-        self.maximumInFlightFrames = resolvedMaximumInFlightFrames
-        self.minimumEmissionDeltaMachTicks = minimumEmissionDeltaMachTicks
-        self.frameHandler = frameHandler
-        self.availableCredits = resolvedMaximumInFlightFrames
-    }
-
-    func ingestCaptureSample(
+    func captureFrame(
         status: CGDisplayStreamFrameStatus,
         displayTime: UInt64,
-        captureSurface: MDKCaptureSurface?,
+        frameSurface: IOSurfaceRef?,
         dirtyRects: [CGRect]?,
         sourceUpdateDropCount: UInt64?
-    ) {
+    ) -> MDKCaptureFrame? {
+        lock.lock()
+        defer { lock.unlock() }
+
         let action = MDKResolveSkyLightEncodedCaptureFrameAction(
             status: status,
-            hasFrameSurface: captureSurface != nil,
+            hasFrameSurface: frameSurface != nil,
             hasLastSurface: lastCaptureSurface != nil,
             displayTime: displayTime,
             lastDisplayTime: lastDisplayTime
@@ -171,50 +152,53 @@ private actor MDKSkyLightEncodedCaptureIngressCoordinator {
 
         switch action {
         case .emitFresh:
-            guard let captureSurface else {
-                return
+            guard let frameSurface else {
+                return nil
             }
+            let captureSurface = MDKCaptureSurface(ioSurface: frameSurface)
             lastCaptureSurface = captureSurface
             lastDisplayTime = displayTime
             lastEmissionMachTime = mach_absolute_time()
-            enqueue(
-                MDKCaptureFrame(
-                    sequenceNumber: displayTime,
-                    displayTime: displayTime,
-                    surfaceID: captureSurface.id,
-                    width: captureSurface.width,
-                    height: captureSurface.height,
-                    pixelFormat: captureSurface.pixelFormat,
-                    surface: captureSurface,
-                    origin: .fresh,
-                    dirtyRects: dirtyRects,
-                    sourceUpdateDropCount: sourceUpdateDropCount
-                )
+            return MDKCaptureFrame(
+                sequenceNumber: displayTime,
+                displayTime: displayTime,
+                surfaceID: captureSurface.id,
+                width: captureSurface.width,
+                height: captureSurface.height,
+                pixelFormat: captureSurface.pixelFormat,
+                surface: captureSurface,
+                origin: .fresh,
+                dirtyRects: dirtyRects,
+                sourceUpdateDropCount: sourceUpdateDropCount
             )
         case .emitIdleReplay:
             guard let lastCaptureSurface else {
-                return
+                return nil
             }
             lastDisplayTime = displayTime
             lastEmissionMachTime = mach_absolute_time()
-            enqueue(
-                MDKCaptureFrame(
-                    sequenceNumber: displayTime,
-                    displayTime: displayTime,
-                    surfaceID: lastCaptureSurface.id,
-                    width: lastCaptureSurface.width,
-                    height: lastCaptureSurface.height,
-                    pixelFormat: lastCaptureSurface.pixelFormat,
-                    surface: lastCaptureSurface,
-                    origin: .idleReplay
-                )
+            return MDKCaptureFrame(
+                sequenceNumber: displayTime,
+                displayTime: displayTime,
+                surfaceID: lastCaptureSurface.id,
+                width: lastCaptureSurface.width,
+                height: lastCaptureSurface.height,
+                pixelFormat: lastCaptureSurface.pixelFormat,
+                surface: lastCaptureSurface,
+                origin: .idleReplay
             )
         case .drop:
-            return
+            return nil
         }
     }
 
-    func ingestTimerReplay(displayTime: UInt64) {
+    func captureTimerReplay(
+        displayTime: UInt64,
+        minimumEmissionDeltaMachTicks: UInt64
+    ) -> MDKCaptureFrame? {
+        lock.lock()
+        defer { lock.unlock() }
+
         let currentMachTime = mach_absolute_time()
         guard MDKShouldEmitSyntheticSkyLightEncodedCaptureReplay(
             hasLastSurface: lastCaptureSurface != nil,
@@ -224,76 +208,36 @@ private actor MDKSkyLightEncodedCaptureIngressCoordinator {
             lastEmissionMachTime: lastEmissionMachTime,
             minimumEmissionDeltaMachTicks: minimumEmissionDeltaMachTicks
         ) else {
-            return
+            return nil
         }
 
         guard let lastCaptureSurface else {
-            return
+            return nil
         }
 
         lastDisplayTime = displayTime
         lastEmissionMachTime = currentMachTime
-        enqueue(
-            MDKCaptureFrame(
-                sequenceNumber: displayTime,
-                displayTime: displayTime,
-                surfaceID: lastCaptureSurface.id,
-                width: lastCaptureSurface.width,
-                height: lastCaptureSurface.height,
-                pixelFormat: lastCaptureSurface.pixelFormat,
-                surface: lastCaptureSurface,
-                origin: .timerReplay
-            )
+        return MDKCaptureFrame(
+            sequenceNumber: displayTime,
+            displayTime: displayTime,
+            surfaceID: lastCaptureSurface.id,
+            width: lastCaptureSurface.width,
+            height: lastCaptureSurface.height,
+            pixelFormat: lastCaptureSurface.pixelFormat,
+            surface: lastCaptureSurface,
+            origin: .timerReplay
         )
-    }
-
-    private func enqueue(_ frame: MDKCaptureFrame) {
-        if frame.origin != .fresh, latestPendingFrame != nil {
-            return
-        }
-
-        latestPendingFrame = frame
-        scheduleDrainIfNeeded()
-    }
-
-    private func scheduleDrainIfNeeded() {
-        guard !drainScheduled,
-              availableCredits > 0,
-              let nextFrame = latestPendingFrame else {
-            return
-        }
-
-        latestPendingFrame = nil
-        availableCredits -= 1
-        drainScheduled = true
-        let frameHandler = self.frameHandler
-
-        Task {
-            frameHandler(nextFrame) {
-                Task {
-                    await self.markFrameReleased()
-                }
-            }
-            await self.markDrainCompleted()
-        }
-    }
-
-    private func markDrainCompleted() {
-        drainScheduled = false
-        scheduleDrainIfNeeded()
-    }
-
-    private func markFrameReleased() {
-        availableCredits = min(availableCredits + 1, maximumInFlightFrames)
-        scheduleDrainIfNeeded()
     }
 }
 
 private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSourceRuntime, @unchecked Sendable {
     private let shimSession: MDKShimSkyLightDisplayStreamSession
     private let tuningSelection: MDKSkyLightDisplayStreamAutotuningSelection?
-    private let ingressCoordinator: MDKSkyLightEncodedCaptureIngressCoordinator
+    private let replayState: MDKSkyLightEncodedCaptureReplayState
+    private let deliveryQueue: DispatchQueue
+    private let frameHandler: @Sendable (MDKCaptureFrame) -> Void
     private let replayIntervalNanoseconds: UInt64
+    private let replayIntervalMachTicks: UInt64
     private var replayTimer: DispatchSourceTimer?
 
     var runtimeDescription: String {
@@ -306,21 +250,20 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
 
     init(
         configuration: MDKEncodedCaptureConfiguration,
-        recommendedPendingFrameCount: Int,
         tuningSelection: MDKSkyLightDisplayStreamAutotuningSelection?,
-        frameHandler: @escaping MDKEncodedCaptureSourceFrameHandler
+        frameHandler: @escaping @Sendable (MDKCaptureFrame) -> Void
     ) {
+        let replayState = MDKSkyLightEncodedCaptureReplayState()
+        let deliveryQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.encoded-capture.skylight.delivery")
         let replayIntervalNanoseconds = UInt64(
             max((1.0 / Double(max(configuration.targetFrameRate, 1))) * 1_000_000_000.0, 1_000_000.0)
         )
-        let ingressCoordinator = MDKSkyLightEncodedCaptureIngressCoordinator(
-            maximumInFlightFrames: recommendedPendingFrameCount,
-            minimumEmissionDeltaMachTicks: max(MDKMachAbsoluteTicksForNanoseconds(replayIntervalNanoseconds), 1),
-            frameHandler: frameHandler
-        )
         self.tuningSelection = tuningSelection
-        self.ingressCoordinator = ingressCoordinator
+        self.replayState = replayState
+        self.deliveryQueue = deliveryQueue
+        self.frameHandler = frameHandler
         self.replayIntervalNanoseconds = replayIntervalNanoseconds
+        self.replayIntervalMachTicks = max(MDKMachAbsoluteTicksForNanoseconds(replayIntervalNanoseconds), 1)
         let tunedQueueDepth = tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth
         let tunedMinimumFrameTime = tuningSelection?.candidate.minimumFrameTime ?? 0
         let tunedShowCursor = MDKResolvedSkyLightDisplayStreamShowCursor(
@@ -337,24 +280,25 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             pixelFormat: configuration.resolvedCapturePixelFormat,
             yCbCrMatrix: configuration.resolvedSkyLightDisplayStreamYCbCrMatrix.map { $0.imageBufferValue as String }
         ) { status, displayTime, frameSurface, reducedDirtyRectData, updateDropCount in
-            let dirtyRects = MDKDecodeCGRectData(reducedDirtyRectData)
-            let captureSurface = frameSurface.map { MDKCaptureSurface(ioSurface: $0) }
-            Task {
-                await ingressCoordinator.ingestCaptureSample(
+            deliveryQueue.async {
+                guard let deliveredFrame = replayState.captureFrame(
                     status: status,
                     displayTime: displayTime,
-                    captureSurface: captureSurface,
-                    dirtyRects: dirtyRects,
+                    frameSurface: frameSurface,
+                    dirtyRects: MDKDecodeCGRectData(reducedDirtyRectData),
                     sourceUpdateDropCount: UInt64(updateDropCount)
-                )
+                ) else {
+                    return
+                }
+
+                frameHandler(deliveredFrame)
             }
         }
     }
 
     func start() throws {
         try shimSession.start()
-        let timerQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.encoded-capture.skylight.replay")
-        let timer = DispatchSource.makeTimerSource(queue: timerQueue)
+        let timer = DispatchSource.makeTimerSource(queue: deliveryQueue)
         let intervalNanoseconds = min(replayIntervalNanoseconds, UInt64(Int.max))
         let leewayNanoseconds = min(max(intervalNanoseconds / 4, 500_000), UInt64(Int.max))
         timer.schedule(
@@ -362,11 +306,19 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             repeating: .nanoseconds(Int(intervalNanoseconds)),
             leeway: .nanoseconds(Int(leewayNanoseconds))
         )
+        let replayState = self.replayState
+        let frameHandler = self.frameHandler
+        let replayIntervalMachTicks = self.replayIntervalMachTicks
         timer.setEventHandler {
             let displayTime = mach_absolute_time()
-            Task {
-                await self.ingressCoordinator.ingestTimerReplay(displayTime: displayTime)
+            guard let replayedFrame = replayState.captureTimerReplay(
+                displayTime: displayTime,
+                minimumEmissionDeltaMachTicks: replayIntervalMachTicks
+            ) else {
+                return
             }
+
+            frameHandler(replayedFrame)
         }
         replayTimer = timer
         timer.resume()
@@ -389,7 +341,7 @@ private final class MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime: MDKEnc
 
     init(
         configuration: MDKEncodedCaptureConfiguration,
-        frameHandler: @escaping MDKEncodedCaptureSourceFrameHandler
+        frameHandler: @escaping @Sendable (MDKCaptureFrame) -> Void
     ) {
         self.sourceBackend = configuration.resolvedSourceBackend
         let requestExtendedRange = configuration.resolvedEncodedHDRConfiguration.map {
@@ -449,8 +401,7 @@ private final class MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime: MDKEnc
                     cursorOverlaySample: cursorOverlaySample,
                     sourceCaptureDurationNanoseconds: captureDurationNanoseconds,
                     sourceCursorCompositeDurationNanoseconds: cursorCompositeDurationNanoseconds
-                ),
-                {}
+                )
             )
         }
     }
@@ -488,18 +439,15 @@ private final class MDKEncodedCapturePendingFrameTracker: @unchecked Sendable {
 }
 
 private actor MDKEncodedCaptureLatestFrameMailbox {
-    private var latestFrame: (frame: MDKCaptureFrame, releaseSourceFrame: @Sendable () -> Void)?
+    private var latestFrame: MDKCaptureFrame?
 
-    func store(
-        _ frame: MDKCaptureFrame,
-        releaseSourceFrame: @escaping @Sendable () -> Void
-    ) -> (frame: MDKCaptureFrame, releaseSourceFrame: @Sendable () -> Void)? {
-        let replacedFrame = latestFrame
-        latestFrame = (frame: frame, releaseSourceFrame: releaseSourceFrame)
-        return replacedFrame
+    func store(_ frame: MDKCaptureFrame) -> UInt64? {
+        let replacedDisplayTime = latestFrame?.displayTime
+        latestFrame = frame
+        return replacedDisplayTime
     }
 
-    func take() -> (frame: MDKCaptureFrame, releaseSourceFrame: @Sendable () -> Void)? {
+    func take() -> MDKCaptureFrame? {
         let frame = latestFrame
         latestFrame = nil
         return frame
@@ -511,7 +459,6 @@ private func MDKProcessMailboxAwareSourceFrame(
     processor: any MDKEncodedCaptureProcessorRuntime,
     pendingFrameTracker: MDKEncodedCapturePendingFrameTracker,
     latestFrameMailbox: MDKEncodedCaptureLatestFrameMailbox,
-    releaseSourceFrame: @escaping @Sendable () -> Void,
     failureHandler: @escaping @Sendable (String) -> Void
 ) {
     do {
@@ -519,23 +466,20 @@ private func MDKProcessMailboxAwareSourceFrame(
             Task {
                 if let latestFrame = await latestFrameMailbox.take() {
                     MDKProcessMailboxAwareSourceFrame(
-                        latestFrame.frame,
+                        latestFrame,
                         processor: processor,
                         pendingFrameTracker: pendingFrameTracker,
                         latestFrameMailbox: latestFrameMailbox,
-                        releaseSourceFrame: latestFrame.releaseSourceFrame,
                         failureHandler: failureHandler
                     )
                     return
                 }
 
                 pendingFrameTracker.releaseOne()
-                releaseSourceFrame()
             }
         }
     } catch {
         pendingFrameTracker.releaseOne()
-        releaseSourceFrame()
         let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
         failureHandler(description)
     }
@@ -951,7 +895,6 @@ public actor MDKEncodedCaptureSession {
             case .skyLightDisplayStream:
                 return MDKSkyLightEncodedCaptureSourceRuntime(
                     configuration: configuration,
-                    recommendedPendingFrameCount: preparation.recommendedPendingFrameCount,
                     tuningSelection: preparation.skyLightTuningSelection,
                     frameHandler: frameHandler
                 )
@@ -1202,9 +1145,8 @@ public actor MDKEncodedCaptureSession {
         }
 
         let processor = processorFactory(configuration, outputHandler, failureHandler)
-        let source = sourceFactory(configuration, sourcePreparation) { [weak self, weak processor] frame, releaseSourceFrame in
+        let source = sourceFactory(configuration, sourcePreparation) { [weak self, weak processor] frame in
             guard let self, let processor else {
-                releaseSourceFrame()
                 return
             }
 
@@ -1212,14 +1154,10 @@ public actor MDKEncodedCaptureSession {
             sourceTimingTracker.record(frame: frame)
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
-                    let replacedFrame = await latestFrameMailbox.store(
-                        frame,
-                        releaseSourceFrame: releaseSourceFrame
-                    )
-                    if let replacedFrame {
-                        replacedFrame.releaseSourceFrame()
+                    let replacedDisplayTime = await latestFrameMailbox.store(frame)
+                    if let replacedDisplayTime {
                         await self.handleSourceFrameDropped(
-                            sourceDisplayTime: replacedFrame.frame.displayTime,
+                            sourceDisplayTime: replacedDisplayTime,
                             runtimeGeneration: currentRuntimeGeneration
                         )
                     }
@@ -1232,7 +1170,6 @@ public actor MDKEncodedCaptureSession {
                 processor: processor,
                 pendingFrameTracker: pendingFrameTracker,
                 latestFrameMailbox: latestFrameMailbox,
-                releaseSourceFrame: releaseSourceFrame,
                 failureHandler: failureHandler
             )
         }
