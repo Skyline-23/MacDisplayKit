@@ -454,52 +454,6 @@ private actor MDKEncodedCaptureLatestFrameMailbox {
     }
 }
 
-private actor MDKEncodedCaptureSourceIngressCoordinator {
-    private var latestFrame: MDKCaptureFrame?
-    private var drainScheduled = false
-
-    func enqueue(_ frame: MDKCaptureFrame) -> Bool {
-        latestFrame = frame
-        guard drainScheduled == false else {
-            return false
-        }
-
-        drainScheduled = true
-        return true
-    }
-
-    func takeLatestForDrain() -> MDKCaptureFrame? {
-        let frame = latestFrame
-        latestFrame = nil
-        return frame
-    }
-
-    func parkForBackpressure(_ frame: MDKCaptureFrame) {
-        if latestFrame == nil {
-            latestFrame = frame
-        }
-        drainScheduled = false
-    }
-
-    func finishDrainCycle() -> Bool {
-        if latestFrame != nil {
-            return true
-        }
-
-        drainScheduled = false
-        return false
-    }
-
-    func resumeDrainIfNeeded() -> Bool {
-        guard latestFrame != nil, drainScheduled == false else {
-            return false
-        }
-
-        drainScheduled = true
-        return true
-    }
-}
-
 private func MDKProcessMailboxAwareSourceFrame(
     _ frame: MDKCaptureFrame,
     processor: any MDKEncodedCaptureProcessorRuntime,
@@ -1159,8 +1113,7 @@ public actor MDKEncodedCaptureSession {
         let currentRuntimeGeneration = runtimeGeneration
         let callbackOnlyDelivery = configuration.deliveryMode == .callbackOnly && callbacks != nil
         let pendingFrameTracker = MDKEncodedCapturePendingFrameTracker()
-        let sourceIngressCoordinator = MDKEncodedCaptureSourceIngressCoordinator()
-        let sourceIngressQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.encoded.source-ingress")
+        let latestFrameMailbox = MDKEncodedCaptureLatestFrameMailbox()
         let sourceCadenceTracker = MDKEncodedCaptureSourceCadenceTracker()
         let sourceTimingTracker = MDKEncodedCaptureSourceTimingTracker()
         let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
@@ -1192,43 +1145,6 @@ public actor MDKEncodedCaptureSession {
         }
 
         let processor = processorFactory(configuration, outputHandler, failureHandler)
-        var scheduleSourceIngressDrain: (@Sendable () -> Void)!
-        scheduleSourceIngressDrain = {
-            sourceIngressQueue.async {
-                Task {
-                    while true {
-                        guard let frame = await sourceIngressCoordinator.takeLatestForDrain() else {
-                            let shouldContinue = await sourceIngressCoordinator.finishDrainCycle()
-                            if shouldContinue {
-                                continue
-                            }
-                            return
-                        }
-
-                        guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
-                            await sourceIngressCoordinator.parkForBackpressure(frame)
-                            return
-                        }
-
-                        do {
-                            try processor.process(frame: frame) {
-                                pendingFrameTracker.releaseOne()
-                                Task {
-                                    if await sourceIngressCoordinator.resumeDrainIfNeeded() {
-                                        scheduleSourceIngressDrain()
-                                    }
-                                }
-                            }
-                        } catch {
-                            pendingFrameTracker.releaseOne()
-                            let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-                            failureHandler(description)
-                            continue
-                        }
-                    }
-                }
-            }
-        }
         let source = sourceFactory(configuration, sourcePreparation) { [weak self, weak processor] frame in
             guard let self, let processor else {
                 return
@@ -1236,12 +1152,26 @@ public actor MDKEncodedCaptureSession {
 
             sourceCadenceTracker.record(displayTime: frame.displayTime)
             sourceTimingTracker.record(frame: frame)
-            Task {
-                let shouldStartDrain = await sourceIngressCoordinator.enqueue(frame)
-                if shouldStartDrain {
-                    scheduleSourceIngressDrain()
+            guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
+                Task {
+                    let replacedDisplayTime = await latestFrameMailbox.store(frame)
+                    if let replacedDisplayTime {
+                        await self.handleSourceFrameDropped(
+                            sourceDisplayTime: replacedDisplayTime,
+                            runtimeGeneration: currentRuntimeGeneration
+                        )
+                    }
                 }
+                return
             }
+
+            MDKProcessMailboxAwareSourceFrame(
+                frame,
+                processor: processor,
+                pendingFrameTracker: pendingFrameTracker,
+                latestFrameMailbox: latestFrameMailbox,
+                failureHandler: failureHandler
+            )
         }
         self.sourceCadenceTracker = sourceCadenceTracker
         self.sourceTimingTracker = sourceTimingTracker
