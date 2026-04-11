@@ -244,11 +244,12 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         tuningSelection: MDKSkyLightDisplayStreamAutotuningSelection?,
         frameHandler: @escaping @Sendable (MDKCaptureFrame) -> Void
     ) {
+        let sourceCoordinator = MDKSkyLightEncodedCaptureSourceCoordinator()
         let replayIntervalNanoseconds = UInt64(
             max((1.0 / Double(max(configuration.targetFrameRate, 1))) * 1_000_000_000.0, 1_000_000.0)
         )
         self.tuningSelection = tuningSelection
-        self.sourceCoordinator = MDKSkyLightEncodedCaptureSourceCoordinator()
+        self.sourceCoordinator = sourceCoordinator
         self.frameHandler = frameHandler
         self.replayIntervalNanoseconds = replayIntervalNanoseconds
         self.replayIntervalMachTicks = max(MDKMachAbsoluteTicksForNanoseconds(replayIntervalNanoseconds), 1)
@@ -269,7 +270,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             yCbCrMatrix: configuration.resolvedSkyLightDisplayStreamYCbCrMatrix.map { $0.imageBufferValue as String }
         ) { status, displayTime, frameSurface, reducedDirtyRectData, updateDropCount in
             let captureSurface = frameSurface.map { MDKCaptureSurface(ioSurface: $0) }
-            Task(priority: .high) { [sourceCoordinator = self.sourceCoordinator] in
+            Task(priority: .high) { [sourceCoordinator] in
                 guard let deliveredFrame = await sourceCoordinator.captureFrame(
                     status: status,
                     displayTime: displayTime,
