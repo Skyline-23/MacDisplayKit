@@ -41,12 +41,18 @@ Best measured output:
 
 - `HEVC`
   - `RUNTIME_SCORE_HEVC=64.33`
-  - `frames=19`
-  - `startup_ms=203.933`
-  - `avg_callback_latency_ms=13.676`
-  - `max_callback_latency_ms=36.385`
+  - `frames=52`
+  - `startup_ms=241.512`
+  - `avg_callback_latency_ms=97.532`
 - `ProRes Proxy`
   - `RUNTIME_SCORE_PRORES_PROXY=64.30`
+
+Current bottleneck read:
+
+- official adaptive-HDR scoring still requires `negotiated_transport == sdr-base-hdr-overlay`
+- same-host raw SkyLight target-sized capture is no longer the ceiling by itself
+  - `3512x2290 x420 q2` plain raw benchmark has now reached `167.4677 fps`
+  - the production encoded path still collapses toward roughly `49-52` `HEVC` frames, so the dominant loss is in the production source-runtime / processor / `VTCompressionSession` contract rather than the raw backend
 
 ### Current keep stack
 
@@ -217,6 +223,30 @@ Best measured output:
     - kept the `426` output-driven drain model, but collapsed the internal ordered-drain backlog to a single latest queued frame so stale pre-submit work could not accumulate
     - the official metric still landed at `95.42` with `HEVC=50 frames`
     - conclusion: stale queued frames inside the coordinator are not the dominant limiter; the next experiments need to attack credit-release timing or a different source-to-encoder contract edge
+  - `432 / b40925e + e4601f71 / 95.42`
+    - granting one extra drain credit immediately after successful HEVC submit when `VT` pending was already low nudged startup slightly but raised callback latency to `62.835 ms` and left progression at `50` frames
+    - conclusion: post-submit credit grants overdrive the pipeline without improving the official score
+  - `433 / 2477fcb + fa8ac29a / 90.21`
+    - limiting that post-submit credit to bootstrap-only still poisoned the shared runtime and dropped total score to `90.21`
+    - conclusion: submit-return credit grants are the wrong control surface even when scoped to startup
+  - `434 / 430d31a / 83.42`
+    - actorizing the SkyLight source coordinator again broke the keep path; raw q2 source remained healthy locally, but official `HEVC` picked up real drop events
+    - conclusion: plain actorization of the source coordinator is closed unless it comes with a different ordering / credit contract
+  - `435 / 5f5676b / 95.42`
+    - splitting source bookkeeping and processor submit queues preserved stability but left `HEVC` pinned at `50` frames with no total-score improvement
+    - conclusion: queue conflation itself is not the dominant remaining limiter
+  - `440 / 07168cc + e1c26dac / build-fail`
+    - deferring fresh HEVC source release on callback backlog never reached runtime because the deferred submission-token path hit a Swift compiler failure
+    - conclusion: this implementation form is closed before scoring
+  - `441 / be3183d + e1c26dac / 95.21`
+    - gating fresh PQ HEVC source release on output backlog `>= 2` preserved stability but regressed back to `49` `HEVC` frames
+    - conclusion: callback-held source permits reintroduce source choke before they reclaim useful freshness
+  - `442 / 59ffdb2 + e1c26dac / 95.21`
+    - adding `kVTCompressionPropertyKey_MaximumRealTimeFrameRate` on top of the existing `240 Hz` expected-rate hint only trimmed startup slightly while `HEVC` stayed pinned at `49` frames
+    - conclusion: missing maximum-submit-rate session metadata is not the limiter
+  - `443 / b4ec55c + 886669e5 / 25.00`
+    - requesting `kVTHDRMetadataInsertionMode_RequestSDRRangePreservation` for the selective-HDR overlay path preserved HEVC HDR signalling but caused the `ProRes Proxy` runtime probe to fail outright
+    - conclusion: HDR metadata insertion mode changes are not a safe performance lever on the current dual-codec path
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
@@ -229,9 +259,10 @@ Best measured output:
 - the limiting path is no longer best explained by queue ownership or simple VT property tuning
 - the current evidence points higher up the stack, at raw source/backend cadence
 - raw source numbers are the critical anchor:
-  - latest raw SkyLight benchmark, `3512x2290`, `q2`, `x420`, `none`: about `84.41 fps`
-    - the same run reported `avgReducedDirtyCoverageRatio=0.256`, `avgReducedDirtyRectCount=2.361`, `avgUpdateDropCount=0.030`, and `WindowServer pcpu≈9.6`
-    - even in this cleaner host state, long-gap ratio over `16 ms` stayed about `0.28`, so the source still misses a stable `120 Hz` cadence
+  - latest same-host raw SkyLight benchmark, `3512x2290`, `q2`, `x420`, `none`: `167.4677 fps`
+    - `callbackCount=345`, `completeFrameCount=344`, `cadenceClassification=120hz-like`, `WindowServer pcpu≈60.1`
+    - first-frame attachments still carried only `CGColorSpace` / disparity keys and did not expose HDR mastering or content-light metadata
+    - conclusion: raw target-sized capture can now outrun the target cadence on this host; the remaining 120 Hz loss is in the production encoded contract, not in raw callback cadence itself
   - latest current-host recheck on the local `MacDisplayKitHost` binary, `3512x2290`, `x420`, `none`, `minimumFrameTime=0`:
     - `q1`: about `63.96 fps`
     - `q2`: about `75.76 fps`
@@ -266,7 +297,6 @@ Best measured output:
     - conclusion: `CGDisplayStreamUpdateRef` is carrying non-trivial partial-update information, but the source still pays a full-surface cadence cost before any downstream dirty-rect logic can help
   - updated reading from the latest `84.4 fps` anchor:
     - source-only SkyLight can materially outrun the official encoded-session metric, so there is still substantial loss in the handoff / processor / encode chain
-    - but even the best source-only target-sized run remains well below `120`, so raw backend cadence and source-visible partial capture are still first-class structural problems
   - full-backing probe shows the same structural limit, not a scaler artifact:
     - default backing (`3840x2160`) with `x420` or `BGRA` still carries no HDR attachment keys beyond `CGColorSpace`
     - `420v` does carry attachment keys, but they are plain SDR `ITU_R_709_2`

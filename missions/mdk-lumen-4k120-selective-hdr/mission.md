@@ -4,6 +4,9 @@ MacDisplayKit를 Lumen이 SPM으로 소비할 수 있는 ScreenCaptureKit-유사
 
 최적화 원칙:
 
+- current best keep는 `exp404`, `33fbf5bd` (Lumen) + `8fc3b9a` (MDK), `AUTORESEARCH_SCORE=95.83`다.
+- current keep의 공식 핵심 수치는 `HEVC=52 frames / 241.512 ms startup / 97.532 ms avg callback latency`, `ProRes Proxy runtime score=64.30`이다.
+- official adaptive-HDR score는 여전히 `sdr-base-hdr-overlay` negotiated transport를 요구한다. transport 자체를 바꾸는 방향은 현재 공식 점수 목표와 호환되지 않는다.
 - 몽키패치, 임시 우회, 측정 없는 추정 최적화는 금지한다.
 - 전체 프레임 재처리를 전제로 한 미세 queue 튜닝보다, source/backend가 partial update와 HDR-active 영역 정보를 얼마나 보존하는지가 우선이다.
 - 모든 실험은 `commit -> official metric -> keep/discard -> 자산화` 순서로 남긴다.
@@ -20,7 +23,7 @@ MacDisplayKit를 Lumen이 SPM으로 소비할 수 있는 ScreenCaptureKit-유사
 - raw SkyLight target dirty-region probe에서도 같은 결론이 강화됐다. 현재 `3512x2290 x420` plain raw benchmark는 host 상태에 따라 `~39-84 fps` 범위까지 흔들리고, 최신 cleaner-host run은 reduced dirty coverage 평균 `0.256`, rect count 평균 `2.361`, update drop 평균 `0.030`에서 `84.41 fps`까지 올라간다. 즉 partial-update metadata는 존재하고 source-only는 official encoded session보다 훨씬 빠를 수 있지만, 여전히 stable `120 Hz`에는 못 미치고 downstream handoff/processor/encode 손실도 크게 남아 있다.
 - current-host 재측정도 같은 방향을 확인했다. `MacDisplayKitHost` raw benchmark에서 `3512x2290 x420 none minimumFrameTime=0` 기준 `q1=63.96 fps`, `q2=75.76 fps`, `q3=61.94 fps`였다. 적어도 지금 host state에서는 source queue-depth를 다시 만지는 것보다 source-visible partial capture나 다른 backend contract를 찾는 편이 낫다.
 - 그런데 최신 current-host 재측정에서 같은 target-sized raw source가 훨씬 강한 상태도 확인됐다. 같은 `3512x2290 x420 none minimumFrameTime=0` 조건에서 `q1=63.43 fps`, `q2=124.13 fps`, `q3=66.80 fps`였다. 이건 “raw backend가 target size에서 절대 120을 못 넘는다”는 가설을 닫는다. 지금 남은 구조 문제는 raw source 이후 production source-runtime / processor / VT chain이다.
-- 최신 same-host raw 재측정은 더 강하다. 같은 `3512x2290 x420 q2` raw benchmark가 `136.63 fps`, `3840x2160 x420 q2` raw benchmark도 `113.52 fps`였다. 반면 local encoded-session diagnostic은 같은 host에서 `observedOutputFrameRate=40.5`, `sourceApproxFrameRate=33.69`, `videoToolboxDirectSubmissionFrameCount=81`, `videoToolboxStagedSubmissionFrameCount=0`만 남겼다. 이제 bottleneck은 더 이상 raw source가 아니라 production encoded contract 자체다.
+- 최신 same-host raw 재측정은 더 강하다. 같은 `3512x2290 x420 q2` raw benchmark가 이제 `167.47 fps`까지 올라갔고, `3840x2160 x420 q2` raw benchmark도 `113.52 fps`였다. 반면 local encoded-session diagnostic은 같은 host에서 여전히 `observedOutputFrameRate≈40-41`, `sourceApproxFrameRate≈33-36`, `videoToolboxDirectSubmissionFrameCount`만 남긴다. 이제 bottleneck은 raw source가 아니라 production encoded contract 자체다.
 - current-host pixel-format 재측정도 같은 결론을 강화했다. 같은 `3512x2290 q2 none minimumFrameTime=0` 조건에서 `x420=74.91 fps`, `bgra=72.93 fps`, `x422=69.76 fps`였다. 지금 host state에서는 raw 포맷을 `BGRA/x422`로 바꾸고 뒤에서 GPU convert를 더 넣는 방향도 source cadence 자체를 올려주지 못한다.
 - latest current-host encoded-session diagnostic도 같은 방향으로 읽힌다. local host binary에서 default production path `callback-only + HEVC + HDR10`을 찍으면 `observedOutputFrameRate=38.5`, `sourceFrameCount=77`, `sourceApproxFrameRate=32.40`이고, notes에는 `skyLightTuningCandidate=min-frame-240hz-q2`, `videoToolboxDirectSubmissionFrameCount=77`, `videoToolboxStagedSubmissionFrameCount=0`가 남는다. 즉 current bottleneck은 raw source 자체보다 `shim callback -> source-runtime emission -> VT direct submission` 사이의 production contract다.
 - target-sized private capture benchmark도 backend 우회 경로를 닫았다. `3512x2290`에서 direct `CGSHWCaptureDisplayIntoIOSurfaceWithOptions`는 SDR/HDR 모두 `~14.6-14.7 fps` 수준이고, proxy `SLSHWCaptureDisplayIntoIOSurfaceProxying`는 iteration은 돌지만 populated frame이 `0`이다. 현재 private backend selection은 정답이 아니다.
@@ -42,3 +45,11 @@ MacDisplayKit를 Lumen이 SPM으로 소비할 수 있는 ScreenCaptureKit-유사
 - 이번 `429`도 닫혔다. 같은 output-driven drain에서 HEVC source pending limit를 `3 -> 2`로 더 줄이면 startup은 `311.729 ms`까지 내려가지만 `HEVC` progression은 그대로 `50 frames`에 묶였다. 이 모델에서 source-backlog tightening만 더 하는 것은 더 이상 핵심 lever가 아니다.
 - 이번 `430`도 닫혔다. current best `404` 경로에 `coalescedFrame` event semantics만 얹어 mailbox replacement를 real drop에서 분리했지만, 오히려 `HEVC=49 frames`, `ProRes Proxy=23 frames`로 내려가 `95.21`에 그쳤다. 즉 `404` keep의 남은 손실은 event accounting만으로 설명되지 않는다.
 - 이번 `431`도 닫혔다. `426`의 output-driven drain 위에서 ordered-drain backlog를 “single latest queued frame”으로 줄여 stale pre-submit work를 잘라냈지만 official metric은 다시 `95.42`였고 `HEVC`는 여전히 `50 frames`였다. 결론은 분명하다: output-driven 모델의 병목은 coordinator 안의 queued stale frame이 아니라 credit-release timing이나 source-to-encoder contract의 다른 경계다.
+- 이번 `432`도 닫혔다. successful HEVC submit 직후 `VT pending<=1`이면 extra drain credit를 하나 더 주는 방식은 startup만 조금 줄였을 뿐 `HEVC=50 frames`에 그대로 묶였고 callback latency를 `62.835 ms`까지 올렸다. submit-return credit grant는 steady-state에서 과공급만 만든다.
+- 이번 `433`도 닫혔다. 같은 post-submit credit를 bootstrap 구간으로만 제한해도 `AUTORESEARCH_SCORE=90.21`까지 무너졌다. submit-return credit 자체가 잘못된 control surface다.
+- 이번 `434`도 닫혔다. source coordinator를 다시 actor로 바꾸는 방향은 raw q2 source 건강도와 무관하게 official `HEVC` drop event를 만들며 `83.42`로 무너졌다. plain actorization은 이제 닫힌 축이다.
+- 이번 `435`도 닫혔다. source bookkeeping queue와 processor submit queue를 분리해도 `HEVC`는 `50 frames`에 머물렀다. queue conflation 자체는 주병목이 아니다.
+- 이번 `440`도 닫혔다. fresh HEVC source release deferral 구현은 runtime까지 가지 못하고 Swift compiler failure로 종료됐다. 이 구현 형태는 실험축에서 제외한다.
+- 이번 `441`도 닫혔다. fresh PQ HEVC source release를 output backlog `>=2`에서만 풀도록 해도 `HEVC=49 frames`로 다시 내려갔다. callback-held source permit는 source choke를 되살린다.
+- 이번 `442`도 닫혔다. `kVTCompressionPropertyKey_MaximumRealTimeFrameRate`를 기존 `240 Hz` expected-rate hint 위에 더 얹어도 `HEVC=49 frames`, `AUTORESEARCH_SCORE=95.21`이었다. missing VT pacing metadata가 아니다.
+- 이번 `443`도 닫혔다. `kVTHDRMetadataInsertionMode_RequestSDRRangePreservation`를 selective-HDR overlay 경로에 적용하자 `ProRes Proxy` runtime probe가 바로 죽으면서 총점이 `25.00`으로 붕괴했다. HDR metadata insertion mode 변경은 현재 dual-codec path에서 금지 축이다.
