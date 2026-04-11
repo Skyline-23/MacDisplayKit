@@ -143,6 +143,9 @@ Best measured output:
     - replacing the source-runtime `deliveryQueue` with an actor replay coordinator and replay-only timer queue removed the single serialized source lane entirely
     - `HEVC` immediately destabilized with `21` drop events and `RUNTIME_SCORE_HEVC=28.42`
     - conclusion: freeing fresh callbacks without keeping a bounded source-side drain just floods the existing VT path; the next source-runtime redesign has to stay bounded and latest-wins rather than fully concurrent
+  - `414 / 5863edc / 95.42`
+    - reworking the same source-runtime ingress into an actor-backed bounded latest-wins drain preserved stability, but it still left `HEVC` pinned at `50` frames with `330.665 ms` startup and `100.152 ms` average callback latency
+    - conclusion: source-runtime-only latest-wins rebinding is not enough either; the remaining ceiling is upstream/downstream of that drain, not in the old serial lane by itself
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
