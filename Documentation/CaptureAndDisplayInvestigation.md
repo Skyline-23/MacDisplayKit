@@ -205,6 +205,18 @@ Best measured output:
     - kept the `426` coalesced-event semantics and the output-driven HEVC drain, but tightened the HEVC source pending limit from `6` to `3`
     - that recovered `HEVC` to `50 frames` with zero stability penalty, but startup remained `356.676 ms` and `ProRes Proxy` still only reached `25 frames`
     - conclusion: backlog control helps this model, but it still trails the `95.83` keep; the remaining open work is the balance between source pending limit, output-driven credits, and callback/startup cost
+  - `429 / 37e3fd6 + 584b1a24 / 95.42`
+    - tightened the same output-driven HEVC source pending limit one step further from `3` to `2`
+    - startup improved to `311.729 ms` with zero drop events, but `HEVC` still stayed at `50 frames`
+    - conclusion: source-backlog tightening alone has stopped moving progression and is no longer the dominant lever in this model
+  - `430 / c1cd3d1 + da2289bf / 95.21`
+    - applied `coalescedFrame` semantics directly onto the old `404` keep without changing its mailbox/drain structure
+    - instead of preserving the `52-frame` keep, `HEVC` fell to `49 frames` and `ProRes Proxy` fell to `23 frames`
+    - conclusion: the old keep's remaining loss is not explained by drop-event accounting alone; simply reclassifying mailbox replacements is not enough
+  - `431 / 3be98b7 + 26d1bb21 / 95.42`
+    - kept the `426` output-driven drain model, but collapsed the internal ordered-drain backlog to a single latest queued frame so stale pre-submit work could not accumulate
+    - the official metric still landed at `95.42` with `HEVC=50 frames`
+    - conclusion: stale queued frames inside the coordinator are not the dominant limiter; the next experiments need to attack credit-release timing or a different source-to-encoder contract edge
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
@@ -223,6 +235,10 @@ Best measured output:
   - latest current-host recheck on the local `MacDisplayKitHost` binary, `3512x2290`, `x420`, `none`, `minimumFrameTime=0`:
     - `q1`: about `63.96 fps`
     - `q2`: about `75.76 fps`
+  - latest keep-state host comparison on the same machine:
+    - raw `SLDisplayStream x420 q2 none` at `3512x2290` still reached about `87.1 fps`
+    - encoded callback diagnostics on the keep path only delivered about `40.5-41.5 fps` with `sourceApproxFrameRate≈33-36`
+    - conclusion: even under the current host load, the production loss is still concentrated in the encoded source-runtime / processor / VT contract rather than the raw source alone
     - `q3`: about `61.94 fps`
     - this keeps `q2` as the least-bad queue-depth on the current host state and closes the “maybe q1/q3 is now better” loop
   - latest current-host pixel-format recheck on the same local binary, `3512x2290`, `q2`, `none`, `minimumFrameTime=0`:
