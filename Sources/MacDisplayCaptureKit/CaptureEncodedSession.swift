@@ -500,82 +500,6 @@ private actor MDKEncodedCaptureSourceIngressCoordinator {
     }
 }
 
-private final class MDKEncodedCaptureSourceIngressDriver: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.encoded.source-ingress")
-    private let coordinator: MDKEncodedCaptureSourceIngressCoordinator
-    private let pendingFrameTracker: MDKEncodedCapturePendingFrameTracker
-    private let maximumPendingFrameCount: Int
-    private let processor: any MDKEncodedCaptureProcessorRuntime
-    private let failureHandler: @Sendable (String) -> Void
-
-    init(
-        coordinator: MDKEncodedCaptureSourceIngressCoordinator,
-        pendingFrameTracker: MDKEncodedCapturePendingFrameTracker,
-        maximumPendingFrameCount: Int,
-        processor: any MDKEncodedCaptureProcessorRuntime,
-        failureHandler: @escaping @Sendable (String) -> Void
-    ) {
-        self.coordinator = coordinator
-        self.pendingFrameTracker = pendingFrameTracker
-        self.maximumPendingFrameCount = maximumPendingFrameCount
-        self.processor = processor
-        self.failureHandler = failureHandler
-    }
-
-    func enqueue(_ frame: MDKCaptureFrame) {
-        Task {
-            let shouldStartDrain = await coordinator.enqueue(frame)
-            if shouldStartDrain {
-                scheduleDrain()
-            }
-        }
-    }
-
-    private func scheduleDrain() {
-        queue.async { [self] in
-            Task {
-                await drainLoop()
-            }
-        }
-    }
-
-    private func drainLoop() async {
-        while true {
-            guard let frame = await coordinator.takeLatestForDrain() else {
-                let shouldContinue = await coordinator.finishDrainCycle()
-                if shouldContinue {
-                    continue
-                }
-                return
-            }
-
-            guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
-                await coordinator.parkForBackpressure(frame)
-                return
-            }
-
-            do {
-                try processor.process(frame: frame) { [pendingFrameTracker, coordinator, weak self] in
-                    pendingFrameTracker.releaseOne()
-                    Task {
-                        guard let self else {
-                            return
-                        }
-                        if await coordinator.resumeDrainIfNeeded() {
-                            self.scheduleDrain()
-                        }
-                    }
-                }
-            } catch {
-                pendingFrameTracker.releaseOne()
-                let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-                failureHandler(description)
-                continue
-            }
-        }
-    }
-}
-
 private func MDKProcessMailboxAwareSourceFrame(
     _ frame: MDKCaptureFrame,
     processor: any MDKEncodedCaptureProcessorRuntime,
@@ -1236,6 +1160,7 @@ public actor MDKEncodedCaptureSession {
         let callbackOnlyDelivery = configuration.deliveryMode == .callbackOnly && callbacks != nil
         let pendingFrameTracker = MDKEncodedCapturePendingFrameTracker()
         let sourceIngressCoordinator = MDKEncodedCaptureSourceIngressCoordinator()
+        let sourceIngressQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.encoded.source-ingress")
         let sourceCadenceTracker = MDKEncodedCaptureSourceCadenceTracker()
         let sourceTimingTracker = MDKEncodedCaptureSourceTimingTracker()
         let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
@@ -1267,17 +1192,56 @@ public actor MDKEncodedCaptureSession {
         }
 
         let processor = processorFactory(configuration, outputHandler, failureHandler)
-        let sourceIngressDriver = MDKEncodedCaptureSourceIngressDriver(
-            coordinator: sourceIngressCoordinator,
-            pendingFrameTracker: pendingFrameTracker,
-            maximumPendingFrameCount: maximumPendingFrameCount,
-            processor: processor,
-            failureHandler: failureHandler
-        )
-        let source = sourceFactory(configuration, sourcePreparation) { frame in
+        var scheduleSourceIngressDrain: (@Sendable () -> Void)!
+        scheduleSourceIngressDrain = {
+            sourceIngressQueue.async {
+                Task {
+                    while true {
+                        guard let frame = await sourceIngressCoordinator.takeLatestForDrain() else {
+                            let shouldContinue = await sourceIngressCoordinator.finishDrainCycle()
+                            if shouldContinue {
+                                continue
+                            }
+                            return
+                        }
+
+                        guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
+                            await sourceIngressCoordinator.parkForBackpressure(frame)
+                            return
+                        }
+
+                        do {
+                            try processor.process(frame: frame) {
+                                pendingFrameTracker.releaseOne()
+                                Task {
+                                    if await sourceIngressCoordinator.resumeDrainIfNeeded() {
+                                        scheduleSourceIngressDrain()
+                                    }
+                                }
+                            }
+                        } catch {
+                            pendingFrameTracker.releaseOne()
+                            let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                            failureHandler(description)
+                            continue
+                        }
+                    }
+                }
+            }
+        }
+        let source = sourceFactory(configuration, sourcePreparation) { [weak self, weak processor] frame in
+            guard let self, let processor else {
+                return
+            }
+
             sourceCadenceTracker.record(displayTime: frame.displayTime)
             sourceTimingTracker.record(frame: frame)
-            sourceIngressDriver.enqueue(frame)
+            Task {
+                let shouldStartDrain = await sourceIngressCoordinator.enqueue(frame)
+                if shouldStartDrain {
+                    scheduleSourceIngressDrain()
+                }
+            }
         }
         self.sourceCadenceTracker = sourceCadenceTracker
         self.sourceTimingTracker = sourceTimingTracker
