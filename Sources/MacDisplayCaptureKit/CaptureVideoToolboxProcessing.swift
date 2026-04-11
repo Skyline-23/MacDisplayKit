@@ -833,6 +833,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private func shouldSuppressImmediateReplayForPendingFrames() -> Bool {
         guard codec == .hevc,
               targetFrameRate >= 100,
+              hdrConfiguration?.transferFunction == .smpteSt2084PQ,
               let compressionSession else {
             return false
         }
