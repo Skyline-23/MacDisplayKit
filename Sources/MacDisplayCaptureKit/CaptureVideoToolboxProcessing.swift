@@ -398,27 +398,17 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
     func liveSummary() -> MDKCaptureFrameProcessingSummary? {
         encodeQueue.sync {}
-        return encodeQueue.sync {
-            let outputSummary = outputQueue.sync {
-                (
-                    outputCallbackCount,
-                    completedOutputFrameCount,
-                    outputCallbackStatusHistogram,
-                    outputCallbackLatencyHistogram,
-                    minOutputCallbackLatencyMilliseconds,
-                    maxOutputCallbackLatencyMilliseconds
-                )
-            }
-            return MDKCaptureFrameProcessingSummary(
+        return outputQueue.sync {
+            MDKCaptureFrameProcessingSummary(
                 processedFrameCount: processedFrameCount,
                 processingFailureCount: processingFailureCount,
                 processingErrorHistogram: processingErrorHistogram,
-                outputCallbackCount: outputSummary.0,
-                completedOutputFrameCount: outputSummary.1,
-                outputCallbackStatusHistogram: outputSummary.2,
-                outputCallbackLatencyHistogram: outputSummary.3,
-                minOutputCallbackLatencyMilliseconds: outputSummary.4,
-                maxOutputCallbackLatencyMilliseconds: outputSummary.5,
+                outputCallbackCount: outputCallbackCount,
+                completedOutputFrameCount: completedOutputFrameCount,
+                outputCallbackStatusHistogram: outputCallbackStatusHistogram,
+                outputCallbackLatencyHistogram: outputCallbackLatencyHistogram,
+                minOutputCallbackLatencyMilliseconds: minOutputCallbackLatencyMilliseconds,
+                maxOutputCallbackLatencyMilliseconds: maxOutputCallbackLatencyMilliseconds,
                 notes: runtimeNotes(
                     submittedFrameCount: submittedFrameCount,
                     directSubmissionFrameCount: directSubmissionFrameCount,
@@ -788,7 +778,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 frame: frame
             )
         }
-        submittedFrameCount += 1
+        outputQueue.sync {
+            submittedFrameCount += 1
+        }
     }
 
     private func replayLastSubmittedFrameAsKeyFrameIfPossible() {
@@ -1442,11 +1434,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         sessionConfigurationNotes.removeAll(keepingCapacity: true)
         directSubmissionFrameCount = 0
         stagedSubmissionFrameCount = 0
-        processedFrameCount = 0
-        processingFailureCount = 0
-        processingErrorHistogram = [:]
-        submittedFrameCount = 0
         outputQueue.sync {
+            submittedFrameCount = 0
             outputCallbackCount = 0
             completedOutputFrameCount = 0
             outputCallbackStatusHistogram = [:]
@@ -1464,17 +1453,21 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     }
 
     private func recordProcessingSuccess(isStaged: Bool) {
-        processedFrameCount += 1
-        if isStaged {
-            stagedSubmissionFrameCount += 1
-        } else {
-            directSubmissionFrameCount += 1
+        outputQueue.sync {
+            processedFrameCount += 1
+            if isStaged {
+                stagedSubmissionFrameCount += 1
+            } else {
+                directSubmissionFrameCount += 1
+            }
         }
     }
 
     private func recordProcessingFailure(_ description: String) {
-        processingFailureCount += 1
-        processingErrorHistogram[description, default: 0] += 1
+        outputQueue.sync {
+            processingFailureCount += 1
+            processingErrorHistogram[description, default: 0] += 1
+        }
     }
 
     fileprivate func recordOutputCallback(
