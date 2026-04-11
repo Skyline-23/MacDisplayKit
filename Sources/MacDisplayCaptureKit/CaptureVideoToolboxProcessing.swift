@@ -90,11 +90,6 @@ private final class MDKVideoToolboxSubmissionToken {
     }
 }
 
-private struct MDKVideoToolboxQueuedFrame {
-    let frame: MDKCaptureFrame
-    let releaseSourceFrame: @Sendable () -> Void
-}
-
 private final class MDKVideoToolboxSendablePixelBuffer: @unchecked Sendable {
     let pixelBuffer: CVPixelBuffer
 
@@ -235,7 +230,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let outputDrainGroup = DispatchGroup()
     private let stagingSubmissionGroup = DispatchGroup()
     private let encodeQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode")
-    private let highRefreshDrainQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.high-refresh-drain")
     private let submissionQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.submit")
     private let encodeQueueSpecificKey = DispatchSpecificKey<UInt8>()
     private let encodeQueueSpecificValue: UInt8 = 1
@@ -245,8 +239,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var lastImmediateRecoveryReplayDisplayTime: UInt64?
     private var immediateReplaySubmissionCount: UInt64 = 0
     private var suppressedImmediateReplayCount: UInt64 = 0
-    private var highRefreshDrainCredits = 3
-    private var highRefreshQueuedFrame: MDKVideoToolboxQueuedFrame?
 
     public init(
         codec: MDKVideoEncoderCodec = .hevc,
@@ -349,18 +341,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 failureHandler?(errorDescription)
             }
         }
-        let usesHighRefreshCreditDrivenHandoff =
-            codec == .hevc &&
-            targetFrameRate >= 100 &&
-            hdrConfiguration?.transferFunction == .smpteSt2084PQ
 
         if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) == encodeQueueSpecificValue {
             submitFrame()
-        } else if usesHighRefreshCreditDrivenHandoff {
-            enqueueHighRefreshFrame(
-                retainedFrame,
-                releaseSourceFrame: releaseSourceFrame
-            )
         } else {
             encodeQueue.sync(execute: submitFrame)
         }
@@ -1531,11 +1514,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         submissionToken?.markCompleted()
-        if usesHighRefreshCreditDrivenHandoff {
-            highRefreshDrainQueue.async { [weak self] in
-                self?.replenishHighRefreshDrainCredit()
-            }
-        }
         outputQueue.async { [self] in
             outputCallbackCount += 1
             outputCallbackStatusHistogram[describe(status: status), default: 0] += 1
@@ -1561,96 +1539,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 failureHandler?("VT output callback failed (\(describe(status: status))).")
             }
             outputDrainGroup.leave()
-        }
-    }
-
-    private var usesHighRefreshCreditDrivenHandoff: Bool {
-        codec == .hevc &&
-            targetFrameRate >= 100 &&
-            hdrConfiguration?.transferFunction == .smpteSt2084PQ
-    }
-
-    private func enqueueHighRefreshFrame(
-        _ frame: MDKCaptureFrame,
-        releaseSourceFrame: @escaping @Sendable () -> Void
-    ) {
-        highRefreshDrainQueue.async { [weak self] in
-            self?.enqueueHighRefreshFrameOnDrainQueue(
-                frame,
-                releaseSourceFrame: releaseSourceFrame
-            )
-        }
-    }
-
-    private func enqueueHighRefreshFrameOnDrainQueue(
-        _ frame: MDKCaptureFrame,
-        releaseSourceFrame: @escaping @Sendable () -> Void
-    ) {
-        if highRefreshDrainCredits > 0 {
-            highRefreshDrainCredits -= 1
-            dispatchHighRefreshFrameToEncodeQueue(
-                frame,
-                releaseSourceFrame: releaseSourceFrame
-            )
-            return
-        }
-
-        if let replacedFrame = highRefreshQueuedFrame {
-            replacedFrame.releaseSourceFrame()
-        }
-        highRefreshQueuedFrame = MDKVideoToolboxQueuedFrame(
-            frame: frame,
-            releaseSourceFrame: releaseSourceFrame
-        )
-    }
-
-    private func replenishHighRefreshDrainCredit() {
-        highRefreshDrainCredits = min(highRefreshDrainCredits + 1, 3)
-        guard highRefreshDrainCredits > 0,
-              let queuedFrame = highRefreshQueuedFrame else {
-            return
-        }
-
-        highRefreshQueuedFrame = nil
-        highRefreshDrainCredits -= 1
-        dispatchHighRefreshFrameToEncodeQueue(
-            queuedFrame.frame,
-            releaseSourceFrame: queuedFrame.releaseSourceFrame
-        )
-    }
-
-    private func dispatchHighRefreshFrameToEncodeQueue(
-        _ frame: MDKCaptureFrame,
-        releaseSourceFrame: @escaping @Sendable () -> Void
-    ) {
-        encodeQueue.async { [weak self] in
-            self?.submitHighRefreshFrameOnEncodeQueue(
-                frame,
-                releaseSourceFrame: releaseSourceFrame
-            )
-        }
-    }
-
-    private func submitHighRefreshFrameOnEncodeQueue(
-        _ frame: MDKCaptureFrame,
-        releaseSourceFrame: @escaping @Sendable () -> Void
-    ) {
-        do {
-            try encode(
-                frame: frame,
-                releaseSourceFrame: releaseSourceFrame
-            )
-        } catch {
-            releaseSourceFrame()
-            let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-            outputQueue.sync {
-                processingFailureCount += 1
-                processingErrorHistogram[errorDescription, default: 0] += 1
-            }
-            failureHandler?(errorDescription)
-            highRefreshDrainQueue.async { [weak self] in
-                self?.replenishHighRefreshDrainCredit()
-            }
         }
     }
 
