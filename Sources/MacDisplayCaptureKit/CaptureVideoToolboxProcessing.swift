@@ -127,49 +127,6 @@ private struct MDKVideoToolboxReplayState {
     let frame: MDKCaptureFrame
 }
 
-private struct MDKVideoToolboxQueuedSubmission {
-    let frame: MDKCaptureFrame
-    let releaseSourceFrame: @Sendable () -> Void
-}
-
-private actor MDKVideoToolboxLatestFrameSubmitCoordinator {
-    private var latestSubmission: MDKVideoToolboxQueuedSubmission?
-    private var submitterActive = false
-
-    func enqueue(
-        _ submission: MDKVideoToolboxQueuedSubmission,
-        submitter: @escaping @Sendable (MDKVideoToolboxQueuedSubmission) -> Void
-    ) {
-        if let replacedSubmission = latestSubmission {
-            replacedSubmission.releaseSourceFrame()
-        }
-        latestSubmission = submission
-        scheduleIfNeeded(submitter: submitter)
-    }
-
-    private func scheduleIfNeeded(
-        submitter: @escaping @Sendable (MDKVideoToolboxQueuedSubmission) -> Void
-    ) {
-        guard !submitterActive, let nextSubmission = latestSubmission else {
-            return
-        }
-
-        latestSubmission = nil
-        submitterActive = true
-        Task {
-            submitter(nextSubmission)
-            self.markSubmissionComplete(submitter: submitter)
-        }
-    }
-
-    private func markSubmissionComplete(
-        submitter: @escaping @Sendable (MDKVideoToolboxQueuedSubmission) -> Void
-    ) {
-        submitterActive = false
-        scheduleIfNeeded(submitter: submitter)
-    }
-}
-
 private struct MDKVideoToolboxStagingSlot {
     let identifier: Int
     let pixelBuffer: CVPixelBuffer
@@ -274,7 +231,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let stagingSubmissionGroup = DispatchGroup()
     private let encodeQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode")
     private let submissionQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.submit")
-    private let latestFrameSubmitCoordinator = MDKVideoToolboxLatestFrameSubmitCoordinator()
     private let encodeQueueSpecificKey = DispatchSpecificKey<UInt8>()
     private let encodeQueueSpecificValue: UInt8 = 1
     private let keyFrameRequestLock = NSLock()
@@ -388,37 +344,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
         if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) == encodeQueueSpecificValue {
             submitFrame()
-        } else if shouldUseBoundedLatestWinsSubmitCoordinator {
-            let queuedSubmission = MDKVideoToolboxQueuedSubmission(
-                frame: retainedFrame,
-                releaseSourceFrame: releaseSourceFrame
-            )
-            let encodeQueue = self.encodeQueue
-            Task {
-                await latestFrameSubmitCoordinator.enqueue(queuedSubmission) { submission in
-                    encodeQueue.sync {
-                        do {
-                            try self.encode(
-                                frame: submission.frame,
-                                releaseSourceFrame: submission.releaseSourceFrame
-                            )
-                        } catch {
-                            let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-                            self.processingFailureCount += 1
-                            self.processingErrorHistogram[errorDescription, default: 0] += 1
-                            submission.releaseSourceFrame()
-                            self.failureHandler?(errorDescription)
-                        }
-                    }
-                }
-            }
         } else {
             encodeQueue.sync(execute: submitFrame)
         }
-    }
-
-    private var shouldUseBoundedLatestWinsSubmitCoordinator: Bool {
-        targetFrameRate >= 100 && codec != .h264
     }
 
     func finalize() -> MDKCaptureFrameProcessingSummary? {
