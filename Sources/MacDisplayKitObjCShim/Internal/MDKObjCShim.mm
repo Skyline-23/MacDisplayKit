@@ -13411,6 +13411,21 @@ static CGRect MDKCreateCursorDrawRect(
         streamProperties,
         nullptr
     );
+    CGDisplayModeRef currentMode = CGDisplayCopyDisplayMode(static_cast<CGDirectDisplayID>(_displayID));
+    if (currentMode != nil) {
+        const CGFloat logicalWidth = static_cast<CGFloat>(std::max<std::size_t>(CGDisplayModeGetWidth(currentMode), 1));
+        const CGFloat logicalHeight = static_cast<CGFloat>(std::max<std::size_t>(CGDisplayModeGetHeight(currentMode), 1));
+        CFRelease(currentMode);
+        streamProperties[(__bridge NSString *) kCGDisplayStreamSourceRect] =
+            (__bridge_transfer NSDictionary *) CGRectCreateDictionaryRepresentation(
+                CGRectMake(0, 0, logicalWidth, logicalHeight)
+            );
+        streamProperties[(__bridge NSString *) kCGDisplayStreamDestinationRect] =
+            (__bridge_transfer NSDictionary *) CGRectCreateDictionaryRepresentation(
+                CGRectMake(0, 0, static_cast<CGFloat>(width), static_cast<CGFloat>(height))
+            );
+        streamProperties[(__bridge NSString *) kCGDisplayStreamPreserveAspectRatio] = @NO;
+    }
     const CFDictionaryRef streamPropertiesRef =
         streamProperties.count > 0 ? (__bridge CFDictionaryRef) streamProperties : nil;
 
