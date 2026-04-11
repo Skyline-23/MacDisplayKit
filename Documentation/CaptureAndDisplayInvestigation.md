@@ -33,22 +33,20 @@ this document remains the broader investigation record.
 
 ### Current best result
 
-- downstream experiment: `367`
-- MDK commit: `097cfff`
-- score: `92.92`
+- downstream experiment: `404`
+- keep commits: `33fbf5bd` (Lumen) + `8fc3b9a` (MDK)
+- score: `95.83`
 
 Best measured output:
 
 - `HEVC`
-  - `RUNTIME_SCORE_HEVC=67.92`
-  - `frames=38`
-  - `startup_ms=285.576`
-  - `avg_callback_latency_ms=20.770`
-  - `max_callback_latency_ms=68.698`
+  - `RUNTIME_SCORE_HEVC=64.33`
+  - `frames=19`
+  - `startup_ms=203.933`
+  - `avg_callback_latency_ms=13.676`
+  - `max_callback_latency_ms=36.385`
 - `ProRes Proxy`
-  - `RUNTIME_SCORE_PRORES_PROXY=80.98`
-  - `frames=35`
-  - `startup_ms=127.171`
+  - `RUNTIME_SCORE_PRORES_PROXY=64.30`
 
 ### Current keep stack
 
@@ -190,6 +188,23 @@ Best measured output:
     - official latency improved sharply (`HEVC` average callback latency fell to `41.876 ms`), but runtime stability still collapsed with `44` drop events and the score returned to `25.00`; `ProRes Proxy` also picked up `2` drop events
     - the same binary's local encoded-session diagnostic regressed to `sourceApproxFrameRate≈32.61`, proving that source-side polling against intermediate pending state simply reintroduces source choke without fixing the official stability contract
     - conclusion: the next gate cannot be source-side polling; it has to be an event-driven credit model fed directly from encoder/output callbacks
+  - `425 / af84640 / 25.00`
+    - fed the actor-ordered HEVC drain with output-callback-driven credits instead of source-side polling
+    - same-host local encoded-session diagnostics recovered `sourceApproxFrameRate≈111.24` with `observedOutputFrameRate≈41` and `avg callback latency≈21.16 ms`, which confirms the source choke really is removed by the new drain contract
+    - the official metric still cratered because intentional mailbox replacements were emitted as `droppedFrame` saturation events (`drop_events=82`)
+    - conclusion: the next step had to separate intentional latest-wins coalescing from real overload/failure events before this structure could be judged fairly
+  - `426 / 1453ec1 + 797737ce / 95.21`
+    - introduced a new `coalescedFrame` event across `MDK -> Lumen bridge -> runtime_probe` so latest-wins freshness replacement no longer counted as a real drop/failure
+    - that eliminated the `425` stability penalty completely (`drop_events=0`), but the output-driven HEVC drain still landed at `49 frames`, `390.162 ms startup`, and `42.847 ms` average callback latency
+    - conclusion: event semantics were a necessary fix, but the remaining loss is now pure startup/progression tuning inside the credit-driven drain itself
+  - `427 / f2ea2ea + d1bf63a3 / 95.21`
+    - raised the output-driven HEVC warmup credit depth from `2` to `3`
+    - `HEVC` startup improved to `335.808 ms`, but `HEVC` still stayed at `49 frames` and `ProRes Proxy` collapsed to `7 frames`
+    - conclusion: extra warmup depth destabilizes the shared runtime and is not a safe tuning axis for this model
+  - `428 / ee20e50 + 779a68b9 / 95.42`
+    - kept the `426` coalesced-event semantics and the output-driven HEVC drain, but tightened the HEVC source pending limit from `6` to `3`
+    - that recovered `HEVC` to `50 frames` with zero stability penalty, but startup remained `356.676 ms` and `ProRes Proxy` still only reached `25 frames`
+    - conclusion: backlog control helps this model, but it still trails the `95.83` keep; the remaining open work is the balance between source pending limit, output-driven credits, and callback/startup cost
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
