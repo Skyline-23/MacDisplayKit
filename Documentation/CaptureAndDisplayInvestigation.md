@@ -171,6 +171,10 @@ Best measured output:
     - inserted an actor-backed bounded latest-wins submit coordinator between `processor.process(...)` and `encodeQueue.sync { VTCompressionSessionEncodeFrame(...) }` so high-refresh frames could replace stale work before the VideoToolbox submit boundary
     - the official metric cratered immediately: `HEVC=48` frames with `321.936 ms` startup and `103.706 ms` average callback latency, while `ProRes Proxy=30` frames with `158.821 ms` startup
     - conclusion: the synchronous VideoToolbox submit/completion boundary is part of the current recovery and drain contract, so latest-wins/drop semantics at that boundary are invalid; the next redesign has to preserve submit ordering and remove cost before submit instead
+  - `421 / 87e0992 / 95.42`
+    - cached HDR `CVBufferSetAttachment(...)` application per direct source surface and per reusable staging slot so the direct/staged submission buffers only received HDR attachments once instead of on every submit
+    - the official metric still flatlined: `HEVC=50` frames with `298.033 ms` startup and `100.770 ms` average callback latency, while `ProRes Proxy` regressed to `24` frames with `148.615 ms` startup
+    - conclusion: repeated HDR attachment writes are not the dominant progression cost; they can trim startup slightly, but they do not move the 120 Hz encode ceiling and they are not worth keeping if ProRes regresses
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
