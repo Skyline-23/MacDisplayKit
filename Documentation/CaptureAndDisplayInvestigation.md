@@ -163,6 +163,10 @@ Best measured output:
     - removed the immediate `arm_wait_for_next_idr(...)` escalation for `capture processing queue is saturated` and `core-forwarder-overflow` drop events in `video.cpp`, while preserving the repeated-saturation restart path
     - the official metric stayed stable but did not move the ceiling: `HEVC=50` frames with `320.597 ms` startup and `100.226 ms` average callback latency, `ProRes Proxy=26` frames with `148.529 ms` startup
     - conclusion: drop-triggered decoder resync is downstream noise, not the primary progression ceiling; the dominant loss still happens before or inside progression itself
+  - `419 / f3f6909 / 95.42`
+    - replaced the SkyLight encoded source's serial `deliveryQueue` with an actor-backed bounded latest-wins ingress that tracked in-flight credits and returned source-release callbacks only when downstream work completed
+    - the official metric remained stable but still flatlined: `HEVC=50` frames with `366.011 ms` startup and `101.338 ms` average callback latency, `ProRes Proxy=27` frames with `144.280 ms` startup
+    - conclusion: even a bounded actor ingress that preserves stability does not move the official ceiling, so source-runtime ingress serialization is no longer the primary suspect
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
