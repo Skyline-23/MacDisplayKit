@@ -341,15 +341,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 failureHandler?(errorDescription)
             }
         }
-        let prefersAsynchronousSubmitHandoff =
-            codec == .hevc &&
-            targetFrameRate >= 100 &&
-            hdrConfiguration?.transferFunction == .smpteSt2084PQ
 
         if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) == encodeQueueSpecificValue {
             submitFrame()
-        } else if prefersAsynchronousSubmitHandoff {
-            encodeQueue.async(execute: submitFrame)
         } else {
             encodeQueue.sync(execute: submitFrame)
         }
