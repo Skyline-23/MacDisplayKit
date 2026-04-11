@@ -226,6 +226,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var sessionConfigurationNotes: [String] = []
     private var directSubmissionFrameCount: UInt64 = 0
     private var stagedSubmissionFrameCount: UInt64 = 0
+    private var replayBypassSubmissionCount: UInt64 = 0
     private let colorConverterInitializationErrorDescription: String?
     private let outputDrainGroup = DispatchGroup()
     private let stagingSubmissionGroup = DispatchGroup()
@@ -371,7 +372,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     minOutputCallbackLatencyMilliseconds,
                     maxOutputCallbackLatencyMilliseconds,
                     directSubmissionFrameCount,
-                    stagedSubmissionFrameCount
+                    stagedSubmissionFrameCount,
+                    replayBypassSubmissionCount
                 )
             }
             return MDKCaptureFrameProcessingSummary(
@@ -388,6 +390,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     submittedFrameCount: outputSummary.3,
                     directSubmissionFrameCount: outputSummary.10,
                     stagedSubmissionFrameCount: outputSummary.11,
+                    replayBypassSubmissionCount: outputSummary.12,
                     includeDrainWaitStatus: true,
                     stagingSubmissionWaitStatus: stagingSubmissionWaitStatus,
                     outputDrainWaitStatus: outputDrainWaitStatus
@@ -413,6 +416,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     submittedFrameCount: submittedFrameCount,
                     directSubmissionFrameCount: directSubmissionFrameCount,
                     stagedSubmissionFrameCount: stagedSubmissionFrameCount,
+                    replayBypassSubmissionCount: replayBypassSubmissionCount,
                     includeDrainWaitStatus: false,
                     stagingSubmissionWaitStatus: nil,
                     outputDrainWaitStatus: nil
@@ -425,6 +429,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         submittedFrameCount: UInt64,
         directSubmissionFrameCount: UInt64,
         stagedSubmissionFrameCount: UInt64,
+        replayBypassSubmissionCount: UInt64,
         includeDrainWaitStatus: Bool,
         stagingSubmissionWaitStatus: DispatchTimeoutResult?,
         outputDrainWaitStatus: DispatchTimeoutResult?
@@ -438,6 +443,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxStagedSourceReleaseMode=post-submit",
             "videoToolboxDirectSubmissionFrameCount=\(directSubmissionFrameCount)",
             "videoToolboxStagedSubmissionFrameCount=\(stagedSubmissionFrameCount)",
+            "videoToolboxReplayBypassSubmissionCount=\(replayBypassSubmissionCount)",
             "videoToolboxColorConversionMode=\(sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) ? "custom" : "passthrough")",
             "videoToolboxMaxInflightStagingSlots=\(maxInflightStagingSlots)",
             "videoToolboxSubmittedFrameCount=\(submittedFrameCount)",
@@ -505,6 +511,18 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             hasCursorOverlay: hasCursorOverlay
         )
 
+        if let replayImageBuffer = reusableReplayImageBuffer(for: frame) {
+            try submitToEncoder(
+                imageBuffer: replayImageBuffer,
+                frame: frame,
+                slotIdentifier: nil,
+                releasePendingFrame: {}
+            )
+            releaseSourceFrame()
+            recordProcessingSuccess(isStaged: false, usedReplayBypass: true)
+            return
+        }
+
         if let commandQueue, requiresDetachedSubmissionSurface {
             try stageAndEncode(
                 frame: frame,
@@ -542,7 +560,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             releasePendingFrame: {}
         )
         releaseSourceFrame()
-        recordProcessingSuccess(isStaged: false)
+        recordProcessingSuccess(isStaged: false, usedReplayBypass: false)
     }
 
     private func stageAndEncode(
@@ -714,7 +732,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     releasePendingFrame: {}
                 )
                 releaseSourceFrame()
-                self.recordProcessingSuccess(isStaged: true)
+                self.recordProcessingSuccess(isStaged: true, usedReplayBypass: false)
             } catch {
                 releaseSourceFrame()
                 let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
@@ -1434,6 +1452,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         sessionConfigurationNotes.removeAll(keepingCapacity: true)
         directSubmissionFrameCount = 0
         stagedSubmissionFrameCount = 0
+        replayBypassSubmissionCount = 0
         outputQueue.sync {
             submittedFrameCount = 0
             outputCallbackCount = 0
@@ -1452,7 +1471,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         recommendedParallelizationLimit = nil
     }
 
-    private func recordProcessingSuccess(isStaged: Bool) {
+    private func recordProcessingSuccess(isStaged: Bool, usedReplayBypass: Bool) {
         outputQueue.sync {
             processedFrameCount += 1
             if isStaged {
@@ -1460,7 +1479,27 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             } else {
                 directSubmissionFrameCount += 1
             }
+            if usedReplayBypass {
+                replayBypassSubmissionCount += 1
+            }
         }
+    }
+
+    private func reusableReplayImageBuffer(for frame: MDKCaptureFrame) -> CVPixelBuffer? {
+        guard frame.origin != .fresh,
+              let lastFreshReplayState else {
+            return nil
+        }
+
+        let previousFrame = lastFreshReplayState.frame
+        guard previousFrame.surfaceID == frame.surfaceID,
+              previousFrame.width == frame.width,
+              previousFrame.height == frame.height,
+              previousFrame.pixelFormat == frame.pixelFormat else {
+            return nil
+        }
+
+        return lastFreshReplayState.imageBuffer.pixelBuffer
     }
 
     private func recordProcessingFailure(_ description: String) {
