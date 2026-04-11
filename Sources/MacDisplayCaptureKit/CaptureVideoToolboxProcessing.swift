@@ -235,6 +235,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let encodeQueueSpecificValue: UInt8 = 1
     private let keyFrameRequestLock = NSLock()
     private var forceNextKeyFrame = false
+    private var sourceDrainCreditHandler: (@Sendable () -> Void)?
     private var lastFreshReplayState: MDKVideoToolboxReplayState?
     private var lastImmediateRecoveryReplayDisplayTime: UInt64?
     private var immediateReplaySubmissionCount: UInt64 = 0
@@ -305,6 +306,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 self?.replayLastSubmittedFrameAsKeyFrameIfPossible()
             }
         }
+    }
+
+    public func installSourceDrainCreditHandler(_ handler: (@Sendable () -> Void)?) {
+        sourceDrainCreditHandler = handler
     }
 
     public func process(
@@ -1514,6 +1519,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         submissionToken?.markCompleted()
+        sourceDrainCreditHandler?()
         outputQueue.async { [self] in
             outputCallbackCount += 1
             outputCallbackStatusHistogram[describe(status: status), default: 0] += 1
