@@ -146,6 +146,10 @@ Best measured output:
   - `414 / 5863edc / 95.42`
     - reworking the same source-runtime ingress into an actor-backed bounded latest-wins drain preserved stability, but it still left `HEVC` pinned at `50` frames with `330.665 ms` startup and `100.152 ms` average callback latency
     - conclusion: source-runtime-only latest-wins rebinding is not enough either; the remaining ceiling is upstream/downstream of that drain, not in the old serial lane by itself
+  - `415 / 257bcaf / 95.21`
+    - moving the bounded latest-wins drain up to the session ingress so the source callback returned immediately still regressed the official metric
+    - `HEVC` fell to `49` frames and `ProRes Proxy` picked up `2` drop events
+    - conclusion: ingress-only decoupling is now closed too; returning from the source callback earlier does not by itself recover the lost progression
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
