@@ -69,6 +69,7 @@ private final class MDKVideoToolboxSubmissionToken {
     let submittedAt: TimeInterval
     let sourceSequenceNumber: UInt64
     let sourceDisplayTime: UInt64
+    let sourceDirtyRect: CGRect?
     private let releasePendingFrame: @Sendable () -> Void
 
     init(
@@ -76,12 +77,14 @@ private final class MDKVideoToolboxSubmissionToken {
         submittedAt: TimeInterval,
         sourceSequenceNumber: UInt64,
         sourceDisplayTime: UInt64,
+        sourceDirtyRect: CGRect?,
         releasePendingFrame: @escaping @Sendable () -> Void
     ) {
         self.slotIdentifier = slotIdentifier
         self.submittedAt = submittedAt
         self.sourceSequenceNumber = sourceSequenceNumber
         self.sourceDisplayTime = sourceDisplayTime
+        self.sourceDirtyRect = sourceDirtyRect
         self.releasePendingFrame = releasePendingFrame
     }
 
@@ -96,6 +99,32 @@ private final class MDKVideoToolboxSendablePixelBuffer: @unchecked Sendable {
     init(pixelBuffer: CVPixelBuffer) {
         self.pixelBuffer = pixelBuffer
     }
+}
+
+private func mdkUnifiedDirtyRect(
+    from dirtyRects: [CGRect]?,
+    frameWidth: Int,
+    frameHeight: Int
+) -> CGRect? {
+    guard let dirtyRects, !dirtyRects.isEmpty else {
+        return nil
+    }
+
+    let frameBounds = CGRect(x: 0, y: 0, width: max(frameWidth, 0), height: max(frameHeight, 0))
+    guard !frameBounds.isEmpty else {
+        return nil
+    }
+
+    var unified: CGRect?
+    for dirtyRect in dirtyRects {
+        let clipped = dirtyRect.intersection(frameBounds)
+        guard !clipped.isNull, !clipped.isEmpty else {
+            continue
+        }
+        unified = unified.map { $0.union(clipped) } ?? clipped
+    }
+
+    return unified
 }
 
 enum MDKVideoToolboxLatencyPolicy {
@@ -324,6 +353,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             pixelFormat: frame.pixelFormat,
             surface: surface,
             origin: frame.origin,
+            dirtyRects: frame.dirtyRects,
             cursorOverlaySample: frame.cursorOverlaySample,
             sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
             sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
@@ -751,6 +781,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 submittedAt: ProcessInfo.processInfo.systemUptime,
                 sourceSequenceNumber: frame.sequenceNumber,
                 sourceDisplayTime: frame.displayTime,
+                sourceDirtyRect: mdkUnifiedDirtyRect(
+                    from: frame.dirtyRects,
+                    frameWidth: frame.width,
+                    frameHeight: frame.height
+                ),
                 releasePendingFrame: releasePendingFrame
             )
         )
@@ -1505,7 +1540,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 codec: codec,
                 sourceSequenceNumber: submissionToken?.sourceSequenceNumber ?? 0,
                 sourceDisplayTime: submissionToken?.sourceDisplayTime ?? 0,
-                outputCallbackLatencyMilliseconds: latencyMilliseconds
+                outputCallbackLatencyMilliseconds: latencyMilliseconds,
+                sourceDirtyRect: submissionToken?.sourceDirtyRect
             )
         }
         if let slotIdentifier = submissionToken?.slotIdentifier {

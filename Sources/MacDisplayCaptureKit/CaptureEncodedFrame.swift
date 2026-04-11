@@ -1,3 +1,4 @@
+import CoreGraphics
 import CoreMedia
 import Foundation
 
@@ -51,19 +52,22 @@ public final class MDKEncodedFrame: @unchecked Sendable {
     public let sourceSequenceNumber: UInt64
     public let sourceDisplayTime: UInt64
     public let outputCallbackLatencyMilliseconds: Double?
+    public let sourceDirtyRect: CGRect?
 
     public init(
         sampleBuffer: CMSampleBuffer,
         codec: MDKVideoEncoderCodec,
         sourceSequenceNumber: UInt64,
         sourceDisplayTime: UInt64,
-        outputCallbackLatencyMilliseconds: Double?
+        outputCallbackLatencyMilliseconds: Double?,
+        sourceDirtyRect: CGRect? = nil
     ) {
         self.sampleBuffer = sampleBuffer
         self.codec = codec
         self.sourceSequenceNumber = sourceSequenceNumber
         self.sourceDisplayTime = sourceDisplayTime
         self.outputCallbackLatencyMilliseconds = outputCallbackLatencyMilliseconds
+        self.sourceDirtyRect = sourceDirtyRect
     }
 
     public var presentationTimeStamp: CMTime {
