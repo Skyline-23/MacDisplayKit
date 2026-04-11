@@ -12679,13 +12679,6 @@ static BOOL MDKPopulateSkyLightDisplayStreamProperties(
         streamProperties[(__bridge NSString *) showCursorKey] = @(showCursor);
         propertyCount += 1;
     }
-    if (CFStringRef colorSpaceKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamColorSpace")) {
-        CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-        if (colorSpace != nil) {
-            streamProperties[(__bridge NSString *) colorSpaceKey] = (__bridge_transfer id) colorSpace;
-            propertyCount += 1;
-        }
-    }
     if (yCbCrMatrix != nil) {
         if (CFStringRef yCbCrMatrixKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamYCbCrMatrix")) {
             streamProperties[(__bridge NSString *) yCbCrMatrixKey] = yCbCrMatrix;
