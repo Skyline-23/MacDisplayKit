@@ -235,6 +235,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
     private let tuningSelection: MDKSkyLightDisplayStreamAutotuningSelection?
     private let replayState: MDKSkyLightEncodedCaptureReplayState
     private let deliveryQueue: DispatchQueue
+    private let processingQueue: DispatchQueue
     private let frameHandler: @Sendable (MDKCaptureFrame) -> Void
     private let replayIntervalNanoseconds: UInt64
     private let replayIntervalMachTicks: UInt64
@@ -255,12 +256,14 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
     ) {
         let replayState = MDKSkyLightEncodedCaptureReplayState()
         let deliveryQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.encoded-capture.skylight.delivery")
+        let processingQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.encoded-capture.skylight.processing")
         let replayIntervalNanoseconds = UInt64(
             max((1.0 / Double(max(configuration.targetFrameRate, 1))) * 1_000_000_000.0, 1_000_000.0)
         )
         self.tuningSelection = tuningSelection
         self.replayState = replayState
         self.deliveryQueue = deliveryQueue
+        self.processingQueue = processingQueue
         self.frameHandler = frameHandler
         self.replayIntervalNanoseconds = replayIntervalNanoseconds
         self.replayIntervalMachTicks = max(MDKMachAbsoluteTicksForNanoseconds(replayIntervalNanoseconds), 1)
@@ -280,6 +283,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             pixelFormat: configuration.resolvedCapturePixelFormat,
             yCbCrMatrix: configuration.resolvedSkyLightDisplayStreamYCbCrMatrix.map { $0.imageBufferValue as String }
         ) { status, displayTime, frameSurface, reducedDirtyRectData, updateDropCount in
+            let processingQueue = processingQueue
             deliveryQueue.async {
                 guard let deliveredFrame = replayState.captureFrame(
                     status: status,
@@ -291,7 +295,9 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
                     return
                 }
 
-                frameHandler(deliveredFrame)
+                processingQueue.async {
+                    frameHandler(deliveredFrame)
+                }
             }
         }
     }
@@ -308,6 +314,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         )
         let replayState = self.replayState
         let frameHandler = self.frameHandler
+        let processingQueue = self.processingQueue
         let replayIntervalMachTicks = self.replayIntervalMachTicks
         timer.setEventHandler {
             let displayTime = mach_absolute_time()
@@ -318,7 +325,9 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
                 return
             }
 
-            frameHandler(replayedFrame)
+            processingQueue.async {
+                frameHandler(replayedFrame)
+            }
         }
         replayTimer = timer
         timer.resume()
