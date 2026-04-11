@@ -235,6 +235,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let encodeQueueSpecificValue: UInt8 = 1
     private let keyFrameRequestLock = NSLock()
     private var forceNextKeyFrame = false
+    private var sourceDrainCreditHandler: (@Sendable () -> Void)?
+    private var bootstrapPostSubmitDrainCreditGrantCount: UInt64 = 0
     private var lastFreshReplayState: MDKVideoToolboxReplayState?
     private var lastImmediateRecoveryReplayDisplayTime: UInt64?
     private var immediateReplaySubmissionCount: UInt64 = 0
@@ -305,6 +307,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 self?.replayLastSubmittedFrameAsKeyFrameIfPossible()
             }
         }
+    }
+
+    public func installSourceDrainCreditHandler(_ handler: (@Sendable () -> Void)?) {
+        sourceDrainCreditHandler = handler
     }
 
     public func process(
@@ -441,6 +447,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxColorConversionMode=\(sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) ? "custom" : "passthrough")",
             "videoToolboxMaxInflightStagingSlots=\(maxInflightStagingSlots)",
             "videoToolboxSubmittedFrameCount=\(submittedFrameCount)",
+            "videoToolboxBootstrapPostSubmitDrainCreditGrantCount=\(bootstrapPostSubmitDrainCreditGrantCount)",
             "videoToolboxImmediateReplaySubmissionCount=\(immediateReplaySubmissionCount)",
             "videoToolboxSuppressedImmediateReplayCount=\(suppressedImmediateReplayCount)",
             "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
@@ -778,8 +785,15 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 frame: frame
             )
         }
+        let shouldGrantBootstrapPostSubmitDrainCredit = shouldGrantBootstrapPostSubmitDrainCredit(compressionSession)
         outputQueue.sync {
             submittedFrameCount += 1
+            if shouldGrantBootstrapPostSubmitDrainCredit {
+                bootstrapPostSubmitDrainCreditGrantCount += 1
+            }
+        }
+        if shouldGrantBootstrapPostSubmitDrainCredit {
+            sourceDrainCreditHandler?()
         }
     }
 
@@ -846,6 +860,26 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         return pendingFrames > 0
+    }
+
+    private func shouldGrantBootstrapPostSubmitDrainCredit(_ session: VTCompressionSession) -> Bool {
+        guard codec == .hevc,
+              targetFrameRate >= 100,
+              hdrConfiguration?.transferFunction == .smpteSt2084PQ,
+              let pendingFrames = copyIntegerSessionProperty(
+                session,
+                key: kVTCompressionPropertyKey_NumberOfPendingFrames
+              ) else {
+            return false
+        }
+
+        guard pendingFrames <= 1 else {
+            return false
+        }
+
+        return outputQueue.sync {
+            completedOutputFrameCount == 0
+        }
     }
 
     private func consumeImmediateKeyFrameRequest() -> Bool {
@@ -1514,6 +1548,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         submissionToken?.markCompleted()
+        sourceDrainCreditHandler?()
         outputQueue.async { [self] in
             outputCallbackCount += 1
             outputCallbackStatusHistogram[describe(status: status), default: 0] += 1
