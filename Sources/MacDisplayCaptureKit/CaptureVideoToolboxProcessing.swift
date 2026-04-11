@@ -947,14 +947,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         )
         setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedDuration, value: NSNumber(value: expectedDurationHint), label: "ExpectedDuration")
         setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: expectedFrameRateHint), label: "ExpectedFrameRate")
-        if #available(macOS 15.0, *), isHighRefreshLowLatency {
-            setSessionProperty(
-                session,
-                key: kVTCompressionPropertyKey_MaximumRealTimeFrameRate,
-                value: NSNumber(value: expectedFrameRateHint),
-                label: "MaximumRealTimeFrameRate"
-            )
-        }
         if #available(macOS 26.0, *),
             let vbvBufferDurationSeconds {
             setSessionProperty(
@@ -1044,11 +1036,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         sessionConfigurationNotes.append("videoToolboxEncodedWidth=\(width)")
         sessionConfigurationNotes.append("videoToolboxEncodedHeight=\(height)")
         sessionConfigurationNotes.append("videoToolboxTargetFrameRateHint=\(expectedFrameRateHint)")
-        if #available(macOS 15.0, *), isHighRefreshLowLatency {
-            sessionConfigurationNotes.append("videoToolboxConfiguredMaximumRealTimeFrameRate=\(expectedFrameRateHint)")
-        } else {
-            sessionConfigurationNotes.append("videoToolboxConfiguredMaximumRealTimeFrameRate=default")
-        }
         sessionConfigurationNotes.append("videoToolboxHighRefreshHDRLowLatencyMode=\(isHighRefreshHDRHEVC ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxAllowTemporalCompression=\(allowsTemporalCompression ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxConfiguredMaxFrameDelayCount=\(maxFrameDelayCount)")
