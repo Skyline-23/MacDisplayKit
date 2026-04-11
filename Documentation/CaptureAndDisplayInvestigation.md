@@ -128,6 +128,17 @@ Best measured output:
     - adding explicit full-display `sourceRect` and target-sized `destinationRect` to the production raw `SLDisplayStream` contract only shifted the tradeoff
     - `HEVC` landed at `50` frames with `309.862 ms` startup and `99.598 ms` average callback latency, but `ProRes Proxy` fell to `25` frames
     - conclusion: explicit rect contract can move source behavior, but it still does not solve the shared two-codec ceiling by itself
+  - `410 / 66fbd3c / 95.42`
+    - bypassing staged replay resubmission copies and reusing the last fresh staged pixel buffer for replay-origin frames did not improve the official path
+    - `HEVC` stayed at `50` frames and startup regressed to `350.261 ms`
+    - conclusion: replay-side duplicate Metal copy is not the dominant source of the current progression ceiling
+  - `411 / f0da95e / 51.42`
+    - making the `processor.process -> encodeQueue` handoff asynchronous destroyed stability instead of improving freshness
+    - `HEVC` reported `22` drop events and the official score cratered, even though startup moved down to `336.406 ms`
+    - conclusion: the current pending-frame and completion contract still relies on a synchronous submit boundary; removing it without redesigning the backpressure model is invalid
+  - `412 / aad190b / 95.21`
+    - raising the production raw `SLDisplayStream` callback queue to `userInteractive` QoS regressed `HEVC` to `49` frames
+    - conclusion: callback-thread priority is not the missing source/backend lever
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
@@ -148,6 +159,11 @@ Best measured output:
     - `q2`: about `75.76 fps`
     - `q3`: about `61.94 fps`
     - this keeps `q2` as the least-bad queue-depth on the current host state and closes the “maybe q1/q3 is now better” loop
+  - latest current-host pixel-format recheck on the same local binary, `3512x2290`, `q2`, `none`, `minimumFrameTime=0`:
+    - `x420`: about `74.91 fps`
+    - `bgra`: about `72.93 fps`
+    - `x422`: about `69.76 fps`
+    - this closes the “maybe switch the raw source away from x420 and recover cadence in GPU conversion” loop for the current host state; `x420` remains the least-bad raw source format
   - earlier raw SkyLight target probes on more loaded host states ranged about `39-51 fps`
   - current raw SkyLight benchmark, `3512x2290`, `q2`, `420v`, `none`: about `45.45 fps`
   - current raw SkyLight benchmark, `3512x2290`, `q8`, `x420`, `none`: about `35.98 fps`
