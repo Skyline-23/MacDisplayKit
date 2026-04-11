@@ -159,6 +159,10 @@ Best measured output:
     - same-host host diagnostics improved materially: `sourceApproxFrameRate` rose from about `49.83` to about `77.92` while raw SkyLight on the same host still measured about `123.74 fps`
     - the official metric still cratered because the `HEVC` runtime probe failed outright; `ProRes Proxy` survived at `79.58`, but the combined score collapsed to `25.00`
     - conclusion: source callback serialization is a real bottleneck, but naive latest-wins ingress breaks the current HEVC recovery/backpressure invariants; the next redesign has to preserve official stability while reclaiming source cadence
+  - `418 / 34ffbeb3 / 95.42`
+    - removed the immediate `arm_wait_for_next_idr(...)` escalation for `capture processing queue is saturated` and `core-forwarder-overflow` drop events in `video.cpp`, while preserving the repeated-saturation restart path
+    - the official metric stayed stable but did not move the ceiling: `HEVC=50` frames with `320.597 ms` startup and `100.226 ms` average callback latency, `ProRes Proxy=26` frames with `148.529 ms` startup
+    - conclusion: drop-triggered decoder resync is downstream noise, not the primary progression ceiling; the dominant loss still happens before or inside progression itself
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
