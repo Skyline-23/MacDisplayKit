@@ -16,6 +16,7 @@ public struct MDKVideoChromaticityPoint: Codable, Equatable, Sendable {
 public enum MDKVideoHDRMetadataInsertionMode: String, Codable, Equatable, Sendable {
     case automatic
     case disabled
+    case requestSDRRangePreservation
 
     var vtValue: CFString {
         switch self {
@@ -23,6 +24,11 @@ public enum MDKVideoHDRMetadataInsertionMode: String, Codable, Equatable, Sendab
             return kVTHDRMetadataInsertionMode_Auto
         case .disabled:
             return kVTHDRMetadataInsertionMode_None
+        case .requestSDRRangePreservation:
+            if #available(macOS 26.0, iOS 26.0, tvOS 26.0, visionOS 26.0, *) {
+                return kVTHDRMetadataInsertionMode_RequestSDRRangePreservation
+            }
+            return kVTHDRMetadataInsertionMode_Auto
         }
     }
 }
