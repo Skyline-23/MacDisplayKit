@@ -203,6 +203,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var pixelBufferAttributes: CFDictionary?
     private var encoderPixelBufferAttributes: CFDictionary?
     private var pixelBufferCache: [UInt32: CVPixelBuffer] = [:]
+    private var hdrConfiguredDirectSurfaceIDs: Set<UInt32> = []
+    private var hdrConfiguredStagingSlotIdentifiers: Set<Int> = []
     private var sourceTextureCache: [UInt32: MDKVideoToolboxSourceTextureCacheEntry] = [:]
     private var stagingPixelBufferPool: CVPixelBufferPool?
     private var stagingSlots: [Int: MDKVideoToolboxStagingSlot] = [:]
@@ -738,7 +740,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: OSStatus(unimpErr))
         }
 
-        hdrConfiguration?.apply(to: imageBuffer)
+        applyHDRConfigurationIfNeeded(
+            to: imageBuffer,
+            frameSurfaceID: frame.surfaceID,
+            slotIdentifier: slotIdentifier
+        )
 
         let resolvedPresentationTimeStamp = presentationTimeStamp ?? {
             let timestamp = CMTime(value: frameIndex, timescale: Int32(targetFrameRate))
@@ -1414,6 +1420,31 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         return wrappedBuffer
     }
 
+    private func applyHDRConfigurationIfNeeded(
+        to imageBuffer: CVImageBuffer,
+        frameSurfaceID: UInt32,
+        slotIdentifier: Int?
+    ) {
+        guard let hdrConfiguration else {
+            return
+        }
+
+        if let slotIdentifier {
+            let inserted = hdrConfiguredStagingSlotIdentifiers.insert(slotIdentifier).inserted
+            guard inserted else {
+                return
+            }
+            hdrConfiguration.apply(to: imageBuffer)
+            return
+        }
+
+        let inserted = hdrConfiguredDirectSurfaceIDs.insert(frameSurfaceID).inserted
+        guard inserted else {
+            return
+        }
+        hdrConfiguration.apply(to: imageBuffer)
+    }
+
     private func invalidateSession() {
         if let compressionSession {
             VTCompressionSessionCompleteFrames(compressionSession, untilPresentationTimeStamp: .invalid)
@@ -1425,6 +1456,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         pixelBufferAttributes = nil
         encoderPixelBufferAttributes = nil
         pixelBufferCache.removeAll(keepingCapacity: true)
+        hdrConfiguredDirectSurfaceIDs.removeAll(keepingCapacity: true)
+        hdrConfiguredStagingSlotIdentifiers.removeAll(keepingCapacity: true)
         sourceTextureCache.removeAll(keepingCapacity: true)
         stagingPixelBufferPool = nil
         stagingSlots.removeAll(keepingCapacity: true)
