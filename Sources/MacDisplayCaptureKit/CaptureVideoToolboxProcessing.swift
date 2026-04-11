@@ -848,24 +848,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         return pendingFrames > 0
     }
 
-    public func shouldHoldSourceDrainAfterSubmit() -> Bool {
-        guard codec == .hevc,
-              targetFrameRate >= 100,
-              hdrConfiguration?.transferFunction == .smpteSt2084PQ,
-              let compressionSession else {
-            return false
-        }
-
-        guard let pendingFrames = copyIntegerSessionProperty(
-            compressionSession,
-            key: kVTCompressionPropertyKey_NumberOfPendingFrames
-        ) else {
-            return false
-        }
-
-        return pendingFrames > 1
-    }
-
     private func consumeImmediateKeyFrameRequest() -> Bool {
         keyFrameRequestLock.lock()
         defer { keyFrameRequestLock.unlock() }
