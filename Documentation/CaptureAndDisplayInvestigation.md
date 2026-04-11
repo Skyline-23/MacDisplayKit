@@ -185,6 +185,11 @@ Best measured output:
     - official stability recovered, but the gate was too conservative: `HEVC=49` frames with `316.606 ms` startup and `101.247 ms` average callback latency, while `ProRes Proxy` improved to `31` frames with `136.372 ms` startup
     - the same binary's local encoded-session diagnostic fell back to `sourceApproxFrameRate≈41.57`, showing that output-callback gating restores the old source choke instead of preserving the `422` source-cadence recovery
     - conclusion: the new flow-control gate needs to sit between `submit returned` and `output callback drained`; `VTCompressionSession` pending-state admission is the next concrete direction
+  - `424 / 362fa57 / 25.00`
+    - kept the `422` actor-ordered source drain, but delayed drain re-entry while `VTCompressionSession` reported more than one pending frame through `kVTCompressionPropertyKey_NumberOfPendingFrames`
+    - official latency improved sharply (`HEVC` average callback latency fell to `41.876 ms`), but runtime stability still collapsed with `44` drop events and the score returned to `25.00`; `ProRes Proxy` also picked up `2` drop events
+    - the same binary's local encoded-session diagnostic regressed to `sourceApproxFrameRate≈32.61`, proving that source-side polling against intermediate pending state simply reintroduces source choke without fixing the official stability contract
+    - conclusion: the next gate cannot be source-side polling; it has to be an event-driven credit model fed directly from encoder/output callbacks
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
