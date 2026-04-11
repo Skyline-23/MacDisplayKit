@@ -236,7 +236,6 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
     private let replayState: MDKSkyLightEncodedCaptureReplayState
     private let deliveryQueue: DispatchQueue
     private let frameHandler: @Sendable (MDKCaptureFrame) -> Void
-    private let captureDiagnosticMetadata: Bool
     private let replayIntervalNanoseconds: UInt64
     private let replayIntervalMachTicks: UInt64
     private var replayTimer: DispatchSourceTimer?
@@ -263,10 +262,6 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         self.replayState = replayState
         self.deliveryQueue = deliveryQueue
         self.frameHandler = frameHandler
-        self.captureDiagnosticMetadata = !(
-            configuration.deliveryMode == .callbackOnly &&
-            configuration.targetFrameRate >= 100
-        )
         self.replayIntervalNanoseconds = replayIntervalNanoseconds
         self.replayIntervalMachTicks = max(MDKMachAbsoluteTicksForNanoseconds(replayIntervalNanoseconds), 1)
         let tunedQueueDepth = tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth
@@ -286,18 +281,12 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             yCbCrMatrix: configuration.resolvedSkyLightDisplayStreamYCbCrMatrix.map { $0.imageBufferValue as String }
         ) { status, displayTime, frameSurface, reducedDirtyRectData, updateDropCount in
             deliveryQueue.async {
-                let dirtyRects = self.captureDiagnosticMetadata
-                    ? MDKDecodeCGRectData(reducedDirtyRectData)
-                    : nil
-                let sourceUpdateDropCount = self.captureDiagnosticMetadata
-                    ? UInt64(updateDropCount)
-                    : nil
                 guard let deliveredFrame = replayState.captureFrame(
                     status: status,
                     displayTime: displayTime,
                     frameSurface: frameSurface,
-                    dirtyRects: dirtyRects,
-                    sourceUpdateDropCount: sourceUpdateDropCount
+                    dirtyRects: MDKDecodeCGRectData(reducedDirtyRectData),
+                    sourceUpdateDropCount: UInt64(updateDropCount)
                 ) else {
                     return
                 }
