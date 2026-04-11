@@ -64,7 +64,7 @@ public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
     }
 }
 
-private final class MDKVideoToolboxSubmissionToken {
+private final class MDKVideoToolboxSubmissionToken: @unchecked Sendable {
     let slotIdentifier: Int?
     let submittedAt: TimeInterval
     let sourceSequenceNumber: UInt64
@@ -226,6 +226,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var sessionConfigurationNotes: [String] = []
     private var directSubmissionFrameCount: UInt64 = 0
     private var stagedSubmissionFrameCount: UInt64 = 0
+    private var pendingOutputCompletionCount: Int = 0
     private let colorConverterInitializationErrorDescription: String?
     private let outputDrainGroup = DispatchGroup()
     private let stagingSubmissionGroup = DispatchGroup()
@@ -535,13 +536,22 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         let imageBuffer = try wrappedPixelBuffer(for: frame, surface: surface)
+        let shouldDeferSourceRelease = shouldDeferFreshHEVCSourceRelease()
+        let callbackReleaseHandler: @Sendable () -> Void
+        if shouldDeferSourceRelease {
+            callbackReleaseHandler = releaseSourceFrame
+        } else {
+            callbackReleaseHandler = {}
+        }
         try submitToEncoder(
             imageBuffer: imageBuffer,
             frame: frame,
             slotIdentifier: nil,
-            releasePendingFrame: {}
+            releasePendingFrame: callbackReleaseHandler
         )
-        releaseSourceFrame()
+        if !shouldDeferSourceRelease {
+            releaseSourceFrame()
+        }
         recordProcessingSuccess(isStaged: false)
     }
 
@@ -706,14 +716,23 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 return
             }
             do {
+                let shouldDeferSourceRelease = self.shouldDeferFreshHEVCSourceRelease()
+                let callbackReleaseHandler: @Sendable () -> Void
+                if shouldDeferSourceRelease {
+                    callbackReleaseHandler = releaseSourceFrame
+                } else {
+                    callbackReleaseHandler = {}
+                }
                 try self.submitToEncoder(
                     imageBuffer: stagedPixelBuffer.pixelBuffer,
                     frame: frame,
                     slotIdentifier: slotIdentifier,
                     presentationTimeStamp: presentationTimeStamp,
-                    releasePendingFrame: {}
+                    releasePendingFrame: callbackReleaseHandler
                 )
-                releaseSourceFrame()
+                if !shouldDeferSourceRelease {
+                    releaseSourceFrame()
+                }
                 self.recordProcessingSuccess(isStaged: true)
             } catch {
                 releaseSourceFrame()
@@ -772,6 +791,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             releasePendingFrame()
             throw MDKVideoToolboxProcessingError.encodeFailed(status: status)
         }
+        pendingOutputCompletionCount += 1
         if frame.origin == .fresh {
             lastFreshReplayState = MDKVideoToolboxReplayState(
                 imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
@@ -781,6 +801,16 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         outputQueue.sync {
             submittedFrameCount += 1
         }
+    }
+
+    private func shouldDeferFreshHEVCSourceRelease() -> Bool {
+        guard codec == .hevc,
+              targetFrameRate >= 100,
+              hdrConfiguration?.transferFunction == .smpteSt2084PQ else {
+            return false
+        }
+
+        return pendingOutputCompletionCount >= 2
     }
 
     private func replayLastSubmittedFrameAsKeyFrameIfPossible() {
@@ -1508,12 +1538,15 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 outputCallbackLatencyMilliseconds: latencyMilliseconds
             )
         }
-        if let slotIdentifier = submissionToken?.slotIdentifier {
+        if let submissionToken {
             encodeQueue.async { [self] in
-                releaseStagingSlot(identifier: slotIdentifier)
+                pendingOutputCompletionCount = max(pendingOutputCompletionCount - 1, 0)
+                if let slotIdentifier = submissionToken.slotIdentifier {
+                    releaseStagingSlot(identifier: slotIdentifier)
+                }
+                submissionToken.markCompleted()
             }
         }
-        submissionToken?.markCompleted()
         outputQueue.async { [self] in
             outputCallbackCount += 1
             outputCallbackStatusHistogram[describe(status: status), default: 0] += 1
