@@ -139,6 +139,10 @@ Best measured output:
   - `412 / aad190b / 95.21`
     - raising the production raw `SLDisplayStream` callback queue to `userInteractive` QoS regressed `HEVC` to `49` frames
     - conclusion: callback-thread priority is not the missing source/backend lever
+  - `413 / a3e5e72 / 53.42`
+    - replacing the source-runtime `deliveryQueue` with an actor replay coordinator and replay-only timer queue removed the single serialized source lane entirely
+    - `HEVC` immediately destabilized with `21` drop events and `RUNTIME_SCORE_HEVC=28.42`
+    - conclusion: freeing fresh callbacks without keeping a bounded source-side drain just floods the existing VT path; the next source-runtime redesign has to stay bounded and latest-wins rather than fully concurrent
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
@@ -164,6 +168,12 @@ Best measured output:
     - `bgra`: about `72.93 fps`
     - `x422`: about `69.76 fps`
     - this closes the “maybe switch the raw source away from x420 and recover cadence in GPU conversion” loop for the current host state; `x420` remains the least-bad raw source format
+  - latest current-host target-sized queue-depth recheck on the same local binary, `3512x2290`, `x420`, `none`, `minimumFrameTime=0`:
+    - `q1`: about `63.43 fps`
+    - `q2`: about `124.13 fps`
+    - `q3`: about `66.80 fps`
+    - this is the most important current anchor: on this host the raw `SLDisplayStream` backend can clear the target cadence at the actual target size, but only with the narrow `q2` contract
+    - practical consequence: the deepest open limit is no longer "raw SkyLight cannot hit 120 at target size"; it is the production source-runtime / processor / VT chain above raw delivery
   - earlier raw SkyLight target probes on more loaded host states ranged about `39-51 fps`
   - current raw SkyLight benchmark, `3512x2290`, `q2`, `420v`, `none`: about `45.45 fps`
   - current raw SkyLight benchmark, `3512x2290`, `q8`, `x420`, `none`: about `35.98 fps`
@@ -185,6 +195,16 @@ Best measured output:
   - current production-facing encoded session diagnostic, `HEVC`, `HDR10`, callback mode:
     - `q1`: about `43.5 fps` output, source cadence about `38.8 fps`
     - `q2`: about `43.5 fps` output, source cadence about `34.1 fps`
+  - latest current-host encoded-session diagnostic on the local host binary, default production path, `callback-only`, `HEVC`, `HDR10`:
+    - `observedOutputFrameRate=38.5`
+    - `sourceFrameCount=77`
+    - `sourceApproxFrameRate=32.40`
+    - runtime notes show:
+      - `skyLightTuningCandidate=min-frame-240hz-q2`
+      - `videoToolboxDirectSubmissionFrameCount=77`
+      - `videoToolboxStagedSubmissionFrameCount=0`
+      - `sourceAverageDisplayDeltaMilliseconds=30.865`
+    - practical consequence: the biggest remaining collapse on this host is between raw callback delivery and production frame emission, before any staged Metal copy even appears
   - current private direct IOSurface benchmark with HDR request at full display size (`5120x2880`): about `34.54 fps`
   - current private target-sized IOSurface benchmark, `3512x2290`:
     - direct `CGSHWCaptureDisplayIntoIOSurfaceWithOptions`: about `14.7 fps` in SDR and about `14.6 fps` in HDR
@@ -192,8 +212,15 @@ Best measured output:
     - conclusion: current private IOSurface paths are materially worse than raw SkyLight at the actual target size, so backend-selection experiments should not pivot to private capture unless a new private entry point changes this baseline
 - the raw `vt-encode` benchmark path at `3512x2290/x420/q2` currently collapses to about `1 fps`, so that benchmark is no longer representative of the production encoded-session path
 - on the current host state, deeper raw queueing is actively harmful for the source ceiling; `q8` is materially worse than `q2`
-- that means the current system is already spending most of the budget before downstream queue policy can matter
-- pure encode-side dirty-rect hints are not enough when the source still hands us a full-frame surface cadence far below `120`
+- that older reading is now narrowed further by the latest target-sized raw recheck:
+  - source-only raw `SLDisplayStream` at `3512x2290/x420/q2` can exceed `120 fps`
+  - the production encoded session on the same host still sees only about `32 fps` source cadence before the encoder summary settles
+  - practical consequence: the next structural work should focus on the source-runtime handoff contract itself:
+    - keep source-side work bounded
+    - preserve latest-wins semantics under saturation
+    - avoid fully concurrent callback flood into VT
+    - avoid reintroducing a single serialized queue that drags fresh callback cadence down to encode pace
+- pure encode-side dirty-rect hints are not enough when the production source-runtime still collapses cadence before the VT path gets a chance to benefit
 - raw dirty-region statistics sharpen that read:
   - the compositor is not reporting "whole frame changed" every time; typical reduced dirty coverage is materially below `1.0`
   - despite that, the raw source still tops out far below target cadence, which means the expensive part is earlier than VT `DirtyRects` and earlier than processor-local partial staging
