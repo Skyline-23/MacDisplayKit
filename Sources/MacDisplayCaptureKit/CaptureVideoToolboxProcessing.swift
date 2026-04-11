@@ -535,36 +535,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         let imageBuffer = try wrappedPixelBuffer(for: frame, surface: surface)
-        let releaseBeforeSubmit =
-            codec == .hevc &&
-            targetFrameRate >= 100 &&
-            hdrConfiguration?.transferFunction == .smpteSt2084PQ
-        var sourceFrameReleased = false
-        let releaseSourceFrameOnce = {
-            guard !sourceFrameReleased else {
-                return
-            }
-            sourceFrameReleased = true
-            releaseSourceFrame()
-        }
-
-        if releaseBeforeSubmit {
-            releaseSourceFrameOnce()
-        }
-
-        do {
-            try submitToEncoder(
-                imageBuffer: imageBuffer,
-                frame: frame,
-                slotIdentifier: nil,
-                releasePendingFrame: {}
-            )
-        } catch {
-            releaseSourceFrameOnce()
-            throw error
-        }
-
-        releaseSourceFrameOnce()
+        try submitToEncoder(
+            imageBuffer: imageBuffer,
+            frame: frame,
+            slotIdentifier: nil,
+            releasePendingFrame: {}
+        )
+        releaseSourceFrame()
         recordProcessingSuccess(isStaged: false)
     }
 
