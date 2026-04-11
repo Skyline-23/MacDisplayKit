@@ -13345,7 +13345,12 @@ static CGRect MDKCreateCursorDrawRect(
     _pixelFormat = pixelFormat;
     _yCbCrMatrix = [yCbCrMatrix copy];
     _frameHandler = [frameHandler copy];
-    _queue = dispatch_queue_create("com.skyline23.MacDisplayKit.skylight.displaystream.session", DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_attr_t queueAttributes = dispatch_queue_attr_make_with_qos_class(
+        DISPATCH_QUEUE_SERIAL,
+        QOS_CLASS_USER_INTERACTIVE,
+        0
+    );
+    _queue = dispatch_queue_create("com.skyline23.MacDisplayKit.skylight.displaystream.session", queueAttributes);
     return self;
 }
 
