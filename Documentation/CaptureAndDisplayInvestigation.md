@@ -180,6 +180,11 @@ Best measured output:
     - official stability collapsed immediately: `HEVC=49` frames with `354.161 ms` startup, `103.671 ms` average callback latency, and `54` drop events, while `ProRes Proxy` rose to `36` frames
     - the same binary's local encoded-session diagnostic was still crucial: `sourceApproxFrameRate≈108.69` and `sourceCadenceClassification=120hz-like` returned while `observedOutputFrameRate` stayed near `43`, which proves the current production source choke is the inline submit coupling, not the raw backend
     - conclusion: decoupling the source callback from `processor.process(...)` is directionally right, but it is invalid unless the new drain is paired with an explicit encoder-side flow-control gate (for example `VTCompressionSession` pending-state admission) so HEVC does not flood as soon as source cadence recovers
+  - `423 / 9fed388 / 95.21`
+    - changed high-refresh HEVC so the source permit was released on the actual encoder output callback instead of immediately after `VTCompressionSessionEncodeFrame(...)` returned
+    - official stability recovered, but the gate was too conservative: `HEVC=49` frames with `316.606 ms` startup and `101.247 ms` average callback latency, while `ProRes Proxy` improved to `31` frames with `136.372 ms` startup
+    - the same binary's local encoded-session diagnostic fell back to `sourceApproxFrameRate≈41.57`, showing that output-callback gating restores the old source choke instead of preserving the `422` source-cadence recovery
+    - conclusion: the new flow-control gate needs to sit between `submit returned` and `output callback drained`; `VTCompressionSession` pending-state admission is the next concrete direction
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
