@@ -26,12 +26,14 @@ protocol MDKEncodedCaptureProcessorRuntime: AnyObject, Sendable {
         frame: MDKCaptureFrame,
         releaseSourceFrame: @escaping @Sendable () -> Void
     ) throws
+    func installSourceDrainCreditHandler(_ handler: (@Sendable () -> Void)?)
     func requestImmediateKeyFrame()
     func finalize() -> MDKCaptureFrameProcessingSummary?
     func liveSummary() -> MDKCaptureFrameProcessingSummary?
 }
 
 extension MDKEncodedCaptureProcessorRuntime {
+    func installSourceDrainCreditHandler(_ handler: (@Sendable () -> Void)?) {}
     func requestImmediateKeyFrame() {}
 }
 
@@ -454,6 +456,94 @@ private actor MDKEncodedCaptureLatestFrameMailbox {
     }
 }
 
+private actor MDKEncodedCaptureOutputDrivenDrainCoordinator {
+    private let processor: any MDKEncodedCaptureProcessorRuntime
+    private let pendingFrameTracker: MDKEncodedCapturePendingFrameTracker
+    private let latestFrameMailbox: MDKEncodedCaptureLatestFrameMailbox
+    private let failureHandler: @Sendable (String) -> Void
+    private let steadyStateCredits: Int
+    private var startupOutputCallbacksRemaining: Int
+    private var activeCreditLimit: Int
+    private var availableCredits: Int
+    private var queuedFrames: [MDKCaptureFrame] = []
+    private var inflightFrames = 0
+
+    init(
+        processor: any MDKEncodedCaptureProcessorRuntime,
+        pendingFrameTracker: MDKEncodedCapturePendingFrameTracker,
+        latestFrameMailbox: MDKEncodedCaptureLatestFrameMailbox,
+        failureHandler: @escaping @Sendable (String) -> Void,
+        startupCredits: Int,
+        steadyStateCredits: Int,
+        startupOutputCallbacks: Int
+    ) {
+        self.processor = processor
+        self.pendingFrameTracker = pendingFrameTracker
+        self.latestFrameMailbox = latestFrameMailbox
+        self.failureHandler = failureHandler
+        self.steadyStateCredits = max(steadyStateCredits, 1)
+        self.startupOutputCallbacksRemaining = max(startupOutputCallbacks, 0)
+        self.activeCreditLimit = max(startupCredits, 1)
+        self.availableCredits = max(startupCredits, 1)
+    }
+
+    func enqueue(_ frame: MDKCaptureFrame) {
+        queuedFrames.append(frame)
+        scheduleIfNeeded()
+    }
+
+    func replenishCredit() {
+        if startupOutputCallbacksRemaining > 0 {
+            startupOutputCallbacksRemaining -= 1
+            if startupOutputCallbacksRemaining == 0 {
+                activeCreditLimit = steadyStateCredits
+                availableCredits = min(availableCredits, activeCreditLimit)
+            }
+        }
+
+        availableCredits = min(availableCredits + 1, activeCreditLimit)
+        scheduleIfNeeded()
+    }
+
+    private func scheduleIfNeeded() {
+        while availableCredits > 0, !queuedFrames.isEmpty {
+            let nextFrame = queuedFrames.removeFirst()
+            availableCredits -= 1
+            inflightFrames += 1
+            Task {
+                do {
+                    try processor.process(frame: nextFrame) {
+                        Task {
+                            await self.finishOne()
+                        }
+                    }
+                } catch {
+                    pendingFrameTracker.releaseOne()
+                    let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                    failureHandler(description)
+                    await self.finishFailedFrame()
+                }
+            }
+        }
+    }
+
+    private func finishOne() async {
+        inflightFrames = max(inflightFrames - 1, 0)
+        if let latestFrame = await latestFrameMailbox.take() {
+            queuedFrames.insert(latestFrame, at: 0)
+        } else {
+            pendingFrameTracker.releaseOne()
+        }
+        scheduleIfNeeded()
+    }
+
+    private func finishFailedFrame() {
+        inflightFrames = max(inflightFrames - 1, 0)
+        availableCredits = min(availableCredits + 1, activeCreditLimit)
+        scheduleIfNeeded()
+    }
+}
+
 private func MDKProcessMailboxAwareSourceFrame(
     _ frame: MDKCaptureFrame,
     processor: any MDKEncodedCaptureProcessorRuntime,
@@ -788,6 +878,7 @@ public enum MDKEncodedCaptureSessionEventKind: String, Codable, Equatable, Senda
     case stopped
     case restarted
     case failed
+    case coalescedFrame
     case droppedFrame
 }
 
@@ -1145,6 +1236,28 @@ public actor MDKEncodedCaptureSession {
         }
 
         let processor = processorFactory(configuration, outputHandler, failureHandler)
+        let usesOutputDrivenDrainCredits =
+            configuration.codec == .hevc &&
+            configuration.targetFrameRate >= 100 &&
+            configuration.resolvedEncodedHDRConfiguration?.transferFunction == .smpteSt2084PQ
+        let outputDrivenDrainCoordinator = usesOutputDrivenDrainCredits
+            ? MDKEncodedCaptureOutputDrivenDrainCoordinator(
+                processor: processor,
+                pendingFrameTracker: pendingFrameTracker,
+                latestFrameMailbox: latestFrameMailbox,
+                failureHandler: failureHandler,
+                startupCredits: maximumPendingFrameCount,
+                steadyStateCredits: min(maximumPendingFrameCount, 2),
+                startupOutputCallbacks: 2
+            )
+            : nil
+        if let outputDrivenDrainCoordinator {
+            processor.installSourceDrainCreditHandler {
+                Task {
+                    await outputDrivenDrainCoordinator.replenishCredit()
+                }
+            }
+        }
         let source = sourceFactory(configuration, sourcePreparation) { [weak self, weak processor] frame in
             guard let self, let processor else {
                 return
@@ -1156,22 +1269,35 @@ public actor MDKEncodedCaptureSession {
                 Task {
                     let replacedDisplayTime = await latestFrameMailbox.store(frame)
                     if let replacedDisplayTime {
-                        await self.handleSourceFrameDropped(
-                            sourceDisplayTime: replacedDisplayTime,
-                            runtimeGeneration: currentRuntimeGeneration
-                        )
+                        if outputDrivenDrainCoordinator != nil {
+                            await self.handleSourceFrameCoalesced(
+                                sourceDisplayTime: replacedDisplayTime,
+                                runtimeGeneration: currentRuntimeGeneration
+                            )
+                        } else {
+                            await self.handleSourceFrameDropped(
+                                sourceDisplayTime: replacedDisplayTime,
+                                runtimeGeneration: currentRuntimeGeneration
+                            )
+                        }
                     }
                 }
                 return
             }
 
-            MDKProcessMailboxAwareSourceFrame(
-                frame,
-                processor: processor,
-                pendingFrameTracker: pendingFrameTracker,
-                latestFrameMailbox: latestFrameMailbox,
-                failureHandler: failureHandler
-            )
+            if let outputDrivenDrainCoordinator {
+                Task {
+                    await outputDrivenDrainCoordinator.enqueue(frame)
+                }
+            } else {
+                MDKProcessMailboxAwareSourceFrame(
+                    frame,
+                    processor: processor,
+                    pendingFrameTracker: pendingFrameTracker,
+                    latestFrameMailbox: latestFrameMailbox,
+                    failureHandler: failureHandler
+                )
+            }
         }
         self.sourceCadenceTracker = sourceCadenceTracker
         self.sourceTimingTracker = sourceTimingTracker
@@ -1408,6 +1534,20 @@ public actor MDKEncodedCaptureSession {
             .init(
                 kind: .droppedFrame,
                 message: "Source frame dropped before processing because the capture processing queue is saturated.",
+                sourceDisplayTime: sourceDisplayTime
+            )
+        )
+    }
+
+    private func handleSourceFrameCoalesced(sourceDisplayTime: UInt64, runtimeGeneration: UInt64) {
+        guard runtime != nil, self.runtimeGeneration == runtimeGeneration else {
+            return
+        }
+
+        emitEvent(
+            .init(
+                kind: .coalescedFrame,
+                message: "Source frame coalesced before processing to preserve latest-frame freshness.",
                 sourceDisplayTime: sourceDisplayTime
             )
         )
