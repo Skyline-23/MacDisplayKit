@@ -226,7 +226,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var sessionConfigurationNotes: [String] = []
     private var directSubmissionFrameCount: UInt64 = 0
     private var stagedSubmissionFrameCount: UInt64 = 0
-    private var pendingOutputCompletionCount: Int = 0
     private let colorConverterInitializationErrorDescription: String?
     private let outputDrainGroup = DispatchGroup()
     private let stagingSubmissionGroup = DispatchGroup()
@@ -536,15 +535,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         let imageBuffer = try wrappedPixelBuffer(for: frame, surface: surface)
-        let sourceReleaseDeferred = try submitToEncoder(
+        try submitToEncoder(
             imageBuffer: imageBuffer,
             frame: frame,
             slotIdentifier: nil,
-            releasePendingFrame: releaseSourceFrame
+            releasePendingFrame: {}
         )
-        if !sourceReleaseDeferred {
-            releaseSourceFrame()
-        }
+        releaseSourceFrame()
         recordProcessingSuccess(isStaged: false)
     }
 
@@ -709,16 +706,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 return
             }
             do {
-                let sourceReleaseDeferred = try self.submitToEncoder(
+                try self.submitToEncoder(
                     imageBuffer: stagedPixelBuffer.pixelBuffer,
                     frame: frame,
                     slotIdentifier: slotIdentifier,
                     presentationTimeStamp: presentationTimeStamp,
-                    releasePendingFrame: releaseSourceFrame
+                    releasePendingFrame: {}
                 )
-                if !sourceReleaseDeferred {
-                    releaseSourceFrame()
-                }
+                releaseSourceFrame()
                 self.recordProcessingSuccess(isStaged: true)
             } catch {
                 releaseSourceFrame()
@@ -738,7 +733,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         slotIdentifier: Int?,
         presentationTimeStamp: CMTime? = nil,
         releasePendingFrame: @escaping @Sendable () -> Void = {}
-    ) throws -> Bool {
+    ) throws {
         guard let compressionSession else {
             throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: OSStatus(unimpErr))
         }
@@ -750,14 +745,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             frameIndex += 1
             return timestamp
         }()
-        let sourceReleaseDeferred = shouldDeferSourceReleaseAfterSubmit(frame: frame)
         let submissionToken = Unmanaged.passRetained(
             MDKVideoToolboxSubmissionToken(
                 slotIdentifier: slotIdentifier,
                 submittedAt: ProcessInfo.processInfo.systemUptime,
                 sourceSequenceNumber: frame.sequenceNumber,
                 sourceDisplayTime: frame.displayTime,
-                releasePendingFrame: sourceReleaseDeferred ? releasePendingFrame : {}
+                releasePendingFrame: releasePendingFrame
             )
         )
 
@@ -775,9 +769,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         guard status == noErr else {
             outputDrainGroup.leave()
             submissionToken.release()
+            releasePendingFrame()
             throw MDKVideoToolboxProcessingError.encodeFailed(status: status)
         }
-        pendingOutputCompletionCount += 1
         if frame.origin == .fresh {
             lastFreshReplayState = MDKVideoToolboxReplayState(
                 imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
@@ -787,18 +781,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         outputQueue.sync {
             submittedFrameCount += 1
         }
-        return sourceReleaseDeferred
-    }
-
-    private func shouldDeferSourceReleaseAfterSubmit(frame: MDKCaptureFrame) -> Bool {
-        guard codec == .hevc,
-              targetFrameRate >= 100,
-              hdrConfiguration?.transferFunction == .smpteSt2084PQ,
-              frame.origin == .fresh else {
-            return false
-        }
-
-        return pendingOutputCompletionCount >= 2
     }
 
     private func replayLastSubmittedFrameAsKeyFrameIfPossible() {
@@ -1526,11 +1508,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 outputCallbackLatencyMilliseconds: latencyMilliseconds
             )
         }
-        if let submissionToken {
+        if let slotIdentifier = submissionToken?.slotIdentifier {
             encodeQueue.async { [self] in
-                completeSubmission(submissionToken)
+                releaseStagingSlot(identifier: slotIdentifier)
             }
         }
+        submissionToken?.markCompleted()
         outputQueue.async { [self] in
             outputCallbackCount += 1
             outputCallbackStatusHistogram[describe(status: status), default: 0] += 1
@@ -1557,14 +1540,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
             outputDrainGroup.leave()
         }
-    }
-
-    private func completeSubmission(_ submissionToken: MDKVideoToolboxSubmissionToken) {
-        pendingOutputCompletionCount = max(pendingOutputCompletionCount - 1, 0)
-        if let slotIdentifier = submissionToken.slotIdentifier {
-            releaseStagingSlot(identifier: slotIdentifier)
-        }
-        submissionToken.markCompleted()
     }
 
     private func describe(status: OSStatus) -> String {
