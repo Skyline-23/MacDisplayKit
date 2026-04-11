@@ -498,18 +498,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let needsScaling = outputDimensions.x != frame.width || outputDimensions.y != frame.height
 
         let hasCursorOverlay = frame.cursorOverlaySample != nil
-        let requiresDetachedSubmissionSurface =
-            codec.requiresDetachedSubmissionSurface(
-                sourcePixelFormat: frame.pixelFormat,
-                targetPixelFormat: targetPixelFormat,
-                needsScaling: needsScaling,
-                hasCursorOverlay: hasCursorOverlay
-            ) ||
-            (
-                codec == .hevc &&
-                targetFrameRate >= 100 &&
-                hdrConfiguration?.transferFunction == .smpteSt2084PQ
-            )
+        let requiresDetachedSubmissionSurface = codec.requiresDetachedSubmissionSurface(
+            sourcePixelFormat: frame.pixelFormat,
+            targetPixelFormat: targetPixelFormat,
+            needsScaling: needsScaling,
+            hasCursorOverlay: hasCursorOverlay
+        )
 
         if let commandQueue, requiresDetachedSubmissionSurface {
             try stageAndEncode(
