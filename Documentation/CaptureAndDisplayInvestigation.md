@@ -167,6 +167,10 @@ Best measured output:
     - replaced the SkyLight encoded source's serial `deliveryQueue` with an actor-backed bounded latest-wins ingress that tracked in-flight credits and returned source-release callbacks only when downstream work completed
     - the official metric remained stable but still flatlined: `HEVC=50` frames with `366.011 ms` startup and `101.338 ms` average callback latency, `ProRes Proxy=27` frames with `144.280 ms` startup
     - conclusion: even a bounded actor ingress that preserves stability does not move the official ceiling, so source-runtime ingress serialization is no longer the primary suspect
+  - `420 / b4ae57e / 25.00`
+    - inserted an actor-backed bounded latest-wins submit coordinator between `processor.process(...)` and `encodeQueue.sync { VTCompressionSessionEncodeFrame(...) }` so high-refresh frames could replace stale work before the VideoToolbox submit boundary
+    - the official metric cratered immediately: `HEVC=48` frames with `321.936 ms` startup and `103.706 ms` average callback latency, while `ProRes Proxy=30` frames with `158.821 ms` startup
+    - conclusion: the synchronous VideoToolbox submit/completion boundary is part of the current recovery and drain contract, so latest-wins/drop semantics at that boundary are invalid; the next redesign has to preserve submit ordering and remove cost before submit instead
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
