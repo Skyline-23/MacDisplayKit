@@ -150,6 +150,10 @@ Best measured output:
     - moving the bounded latest-wins drain up to the session ingress so the source callback returned immediately still regressed the official metric
     - `HEVC` fell to `49` frames and `ProRes Proxy` picked up `2` drop events
     - conclusion: ingress-only decoupling is now closed too; returning from the source callback earlier does not by itself recover the lost progression
+  - `416 / a189aaa + 237d24af / 95.42`
+    - carried the producer dirty-region through `MDKEncodedFrame`, the `LumenCore` ingress ABI, the Swift/ObjC bridge, and finally into `video.cpp` so `sdr_base_hdr_overlay` could build its overlay region from source dirty rects instead of only from the display content box
+    - official metric stayed below keep: `HEVC=50` frames with `425.598 ms` startup and `102.302 ms` average callback latency, `ProRes Proxy=30` frames with `146.281 ms` startup
+    - conclusion: preserving selective-HDR truth through the bridge is valid correctness work, but it is not the current 120 Hz progression bottleneck; the encode path is still paying essentially the same cadence cost
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
@@ -253,6 +257,8 @@ Best measured output:
   - `387` showed that the current bridge/runtime probe still has no independent source of overlay-active truth once the main encoded stream becomes SDR
   - the new raw-source attachment probe explains why: current `SLDisplayStream` `x420`/`BGRA` surfaces do not propagate HDR transfer/static-metadata attachments in the first place
   - any future selective-HDR architecture needs a producer-visible overlay-active signal that survives all the way into measurement without reusing full-frame HDR sample metadata
+  - `416` closes the next layer of that question too: even after source dirty-region truth survives all the way into the overlay contract, the official score does not move
+  - practical consequence: keep the dirty-region/overlay-truth contract as a correctness asset, but do not treat it as a performance lever for the current 120 fps ceiling
 - focus on backend/source changes, not more queue churn:
   - expose partial update metadata and drop counts through the capture source runtime
   - treat `raw x420 source cadence` as the gating metric for any new structural experiment
