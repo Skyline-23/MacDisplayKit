@@ -26,14 +26,12 @@ protocol MDKEncodedCaptureProcessorRuntime: AnyObject, Sendable {
         frame: MDKCaptureFrame,
         releaseSourceFrame: @escaping @Sendable () -> Void
     ) throws
-    func installSourceDrainCreditHandler(_ handler: (@Sendable () -> Void)?)
     func requestImmediateKeyFrame()
     func finalize() -> MDKCaptureFrameProcessingSummary?
     func liveSummary() -> MDKCaptureFrameProcessingSummary?
 }
 
 extension MDKEncodedCaptureProcessorRuntime {
-    func installSourceDrainCreditHandler(_ handler: (@Sendable () -> Void)?) {}
     func requestImmediateKeyFrame() {}
 }
 
@@ -453,83 +451,6 @@ private actor MDKEncodedCaptureLatestFrameMailbox {
         let frame = latestFrame
         latestFrame = nil
         return frame
-    }
-}
-
-private actor MDKEncodedCaptureOrderedDrainCoordinator {
-    private let processor: any MDKEncodedCaptureProcessorRuntime
-    private let pendingFrameTracker: MDKEncodedCapturePendingFrameTracker
-    private let latestFrameMailbox: MDKEncodedCaptureLatestFrameMailbox
-    private let failureHandler: @Sendable (String) -> Void
-    private let maxCredits: Int
-    private var availableCredits: Int
-    private var queuedFrames: [MDKCaptureFrame] = []
-    private var drainActive = false
-
-    init(
-        processor: any MDKEncodedCaptureProcessorRuntime,
-        pendingFrameTracker: MDKEncodedCapturePendingFrameTracker,
-        latestFrameMailbox: MDKEncodedCaptureLatestFrameMailbox,
-        failureHandler: @escaping @Sendable (String) -> Void,
-        initialCredits: Int
-    ) {
-        self.processor = processor
-        self.pendingFrameTracker = pendingFrameTracker
-        self.latestFrameMailbox = latestFrameMailbox
-        self.failureHandler = failureHandler
-        self.maxCredits = max(initialCredits, 1)
-        self.availableCredits = max(initialCredits, 1)
-    }
-
-    func enqueue(_ frame: MDKCaptureFrame) {
-        queuedFrames.append(frame)
-        scheduleIfNeeded()
-    }
-
-    func replenishCredit() {
-        availableCredits = min(availableCredits + 1, maxCredits)
-        scheduleIfNeeded()
-    }
-
-    private func scheduleIfNeeded() {
-        guard !drainActive, !queuedFrames.isEmpty, availableCredits > 0 else {
-            return
-        }
-
-        let nextFrame = queuedFrames.removeFirst()
-        availableCredits -= 1
-        drainActive = true
-        Task {
-            do {
-                try processor.process(frame: nextFrame) {
-                    Task {
-                        await self.finishOne()
-                    }
-                }
-            } catch {
-                pendingFrameTracker.releaseOne()
-                let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-                failureHandler(description)
-                await self.finishFailedFrame()
-            }
-        }
-    }
-
-    private func finishOne() async {
-        if let latestFrame = await latestFrameMailbox.take() {
-            queuedFrames.insert(latestFrame, at: 0)
-        } else {
-            pendingFrameTracker.releaseOne()
-        }
-
-        drainActive = false
-        scheduleIfNeeded()
-    }
-
-    private func finishFailedFrame() {
-        availableCredits = min(availableCredits + 1, maxCredits)
-        drainActive = false
-        scheduleIfNeeded()
     }
 }
 
@@ -1224,26 +1145,6 @@ public actor MDKEncodedCaptureSession {
         }
 
         let processor = processorFactory(configuration, outputHandler, failureHandler)
-        let usesOutputDrivenDrainCredits =
-            configuration.codec == .hevc &&
-            configuration.targetFrameRate >= 100 &&
-            configuration.resolvedEncodedHDRConfiguration?.transferFunction == .smpteSt2084PQ
-        let orderedDrainCoordinator = usesOutputDrivenDrainCredits
-            ? MDKEncodedCaptureOrderedDrainCoordinator(
-                processor: processor,
-                pendingFrameTracker: pendingFrameTracker,
-                latestFrameMailbox: latestFrameMailbox,
-                failureHandler: failureHandler,
-                initialCredits: min(maximumPendingFrameCount, 2)
-            )
-            : nil
-        if let orderedDrainCoordinator {
-            processor.installSourceDrainCreditHandler {
-                Task {
-                    await orderedDrainCoordinator.replenishCredit()
-                }
-            }
-        }
         let source = sourceFactory(configuration, sourcePreparation) { [weak self, weak processor] frame in
             guard let self, let processor else {
                 return
@@ -1264,19 +1165,13 @@ public actor MDKEncodedCaptureSession {
                 return
             }
 
-            if let orderedDrainCoordinator {
-                Task {
-                    await orderedDrainCoordinator.enqueue(frame)
-                }
-            } else {
-                MDKProcessMailboxAwareSourceFrame(
-                    frame,
-                    processor: processor,
-                    pendingFrameTracker: pendingFrameTracker,
-                    latestFrameMailbox: latestFrameMailbox,
-                    failureHandler: failureHandler
-                )
-            }
+            MDKProcessMailboxAwareSourceFrame(
+                frame,
+                processor: processor,
+                pendingFrameTracker: pendingFrameTracker,
+                latestFrameMailbox: latestFrameMailbox,
+                failureHandler: failureHandler
+            )
         }
         self.sourceCadenceTracker = sourceCadenceTracker
         self.sourceTimingTracker = sourceTimingTracker
