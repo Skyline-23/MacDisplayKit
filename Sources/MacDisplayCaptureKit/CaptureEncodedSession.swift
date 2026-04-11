@@ -256,10 +256,6 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
     ) {
         let replayState = MDKSkyLightEncodedCaptureReplayState()
         let deliveryQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.encoded-capture.skylight.delivery")
-        let captureDiagnosticMetadata = !(
-            configuration.deliveryMode == .callbackOnly &&
-            configuration.targetFrameRate >= 100
-        )
         let replayIntervalNanoseconds = UInt64(
             max((1.0 / Double(max(configuration.targetFrameRate, 1))) * 1_000_000_000.0, 1_000_000.0)
         )
@@ -267,7 +263,10 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         self.replayState = replayState
         self.deliveryQueue = deliveryQueue
         self.frameHandler = frameHandler
-        self.captureDiagnosticMetadata = captureDiagnosticMetadata
+        self.captureDiagnosticMetadata = !(
+            configuration.deliveryMode == .callbackOnly &&
+            configuration.targetFrameRate >= 100
+        )
         self.replayIntervalNanoseconds = replayIntervalNanoseconds
         self.replayIntervalMachTicks = max(MDKMachAbsoluteTicksForNanoseconds(replayIntervalNanoseconds), 1)
         let tunedQueueDepth = tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth
@@ -287,10 +286,10 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             yCbCrMatrix: configuration.resolvedSkyLightDisplayStreamYCbCrMatrix.map { $0.imageBufferValue as String }
         ) { status, displayTime, frameSurface, reducedDirtyRectData, updateDropCount in
             deliveryQueue.async {
-                let dirtyRects = captureDiagnosticMetadata
+                let dirtyRects = self.captureDiagnosticMetadata
                     ? MDKDecodeCGRectData(reducedDirtyRectData)
                     : nil
-                let sourceUpdateDropCount = captureDiagnosticMetadata
+                let sourceUpdateDropCount = self.captureDiagnosticMetadata
                     ? UInt64(updateDropCount)
                     : nil
                 guard let deliveredFrame = replayState.captureFrame(
