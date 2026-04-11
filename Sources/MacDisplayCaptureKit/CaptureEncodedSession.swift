@@ -131,7 +131,6 @@ private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
     private var lastCaptureSurface: MDKCaptureSurface?
     private var lastDisplayTime: UInt64?
     private var lastEmissionMachTime: UInt64?
-    private var cachedCaptureSurfaces: [UInt32: MDKCaptureSurface] = [:]
 
     func captureFrame(
         status: CGDisplayStreamFrameStatus,
@@ -156,18 +155,7 @@ private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
             guard let frameSurface else {
                 return nil
             }
-            let surfaceID = IOSurfaceGetID(frameSurface)
-            let captureSurface: MDKCaptureSurface
-            if let cachedCaptureSurface = cachedCaptureSurfaces[surfaceID] {
-                captureSurface = cachedCaptureSurface
-            } else {
-                let createdSurface = MDKCaptureSurface(ioSurface: frameSurface)
-                cachedCaptureSurfaces[surfaceID] = createdSurface
-                if cachedCaptureSurfaces.count > 8 {
-                    cachedCaptureSurfaces = [createdSurface.id: createdSurface]
-                }
-                captureSurface = createdSurface
-            }
+            let captureSurface = MDKCaptureSurface(ioSurface: frameSurface)
             lastCaptureSurface = captureSurface
             lastDisplayTime = displayTime
             lastEmissionMachTime = mach_absolute_time()
