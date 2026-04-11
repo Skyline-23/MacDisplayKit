@@ -175,6 +175,11 @@ Best measured output:
     - cached HDR `CVBufferSetAttachment(...)` application per direct source surface and per reusable staging slot so the direct/staged submission buffers only received HDR attachments once instead of on every submit
     - the official metric still flatlined: `HEVC=50` frames with `298.033 ms` startup and `100.770 ms` average callback latency, while `ProRes Proxy` regressed to `24` frames with `148.615 ms` startup
     - conclusion: repeated HDR attachment writes are not the dominant progression cost; they can trim startup slightly, but they do not move the 120 Hz encode ceiling and they are not worth keeping if ProRes regresses
+  - `422 / 7851f15 / 25.00`
+    - replaced the inline `deliveryQueue -> processor.process(...)` call with an actor-backed ordered drain so source callbacks only enqueued frames and a separate serial actor lane performed `processor.process(...)` in order
+    - official stability collapsed immediately: `HEVC=49` frames with `354.161 ms` startup, `103.671 ms` average callback latency, and `54` drop events, while `ProRes Proxy` rose to `36` frames
+    - the same binary's local encoded-session diagnostic was still crucial: `sourceApproxFrameRate≈108.69` and `sourceCadenceClassification=120hz-like` returned while `observedOutputFrameRate` stayed near `43`, which proves the current production source choke is the inline submit coupling, not the raw backend
+    - conclusion: decoupling the source callback from `processor.process(...)` is directionally right, but it is invalid unless the new drain is paired with an explicit encoder-side flow-control gate (for example `VTCompressionSession` pending-state admission) so HEVC does not flood as soon as source cadence recovers
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
