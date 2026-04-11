@@ -535,13 +535,20 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         let imageBuffer = try wrappedPixelBuffer(for: frame, surface: surface)
+        let deferSourceReleaseUntilOutputCallback = shouldDeferSourceReleaseUntilEncoderOutput
+        let deferredSourceRelease = resolvedDeferredSourceRelease(
+            releaseSourceFrame: releaseSourceFrame,
+            deferUntilOutputCallback: deferSourceReleaseUntilOutputCallback
+        )
         try submitToEncoder(
             imageBuffer: imageBuffer,
             frame: frame,
             slotIdentifier: nil,
-            releasePendingFrame: {}
+            releasePendingFrame: deferredSourceRelease
         )
-        releaseSourceFrame()
+        if !deferSourceReleaseUntilOutputCallback {
+            releaseSourceFrame()
+        }
         recordProcessingSuccess(isStaged: false)
     }
 
@@ -580,6 +587,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         )
         let slotIdentifier = slot.identifier
         let stagedPixelBuffer = MDKVideoToolboxSendablePixelBuffer(pixelBuffer: slot.pixelBuffer)
+        let deferSourceReleaseUntilOutputCallback = shouldDeferSourceReleaseUntilEncoderOutput
+        let deferredSourceRelease = resolvedDeferredSourceRelease(
+            releaseSourceFrame: releaseSourceFrame,
+            deferUntilOutputCallback: deferSourceReleaseUntilOutputCallback
+        )
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             releaseStagingSlot(identifier: slotIdentifier)
@@ -711,9 +723,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     frame: frame,
                     slotIdentifier: slotIdentifier,
                     presentationTimeStamp: presentationTimeStamp,
-                    releasePendingFrame: {}
+                    releasePendingFrame: deferredSourceRelease
                 )
-                releaseSourceFrame()
+                if !deferSourceReleaseUntilOutputCallback {
+                    releaseSourceFrame()
+                }
                 self.recordProcessingSuccess(isStaged: true)
             } catch {
                 releaseSourceFrame()
@@ -854,6 +868,23 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let shouldForceKeyFrame = forceNextKeyFrame
         forceNextKeyFrame = false
         return shouldForceKeyFrame
+    }
+
+    private func resolvedDeferredSourceRelease(
+        releaseSourceFrame: @escaping @Sendable () -> Void,
+        deferUntilOutputCallback: Bool
+    ) -> @Sendable () -> Void {
+        if deferUntilOutputCallback {
+            return releaseSourceFrame
+        }
+
+        return {}
+    }
+
+    private var shouldDeferSourceReleaseUntilEncoderOutput: Bool {
+        codec == .hevc &&
+        targetFrameRate >= 100 &&
+        hdrConfiguration?.transferFunction == .smpteSt2084PQ
     }
 
     private func makeFrameProperties(forceKeyFrame: Bool) -> CFDictionary? {
