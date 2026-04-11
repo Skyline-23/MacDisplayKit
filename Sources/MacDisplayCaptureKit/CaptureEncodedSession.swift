@@ -788,6 +788,7 @@ public enum MDKEncodedCaptureSessionEventKind: String, Codable, Equatable, Senda
     case stopped
     case restarted
     case failed
+    case coalescedFrame
     case droppedFrame
 }
 
@@ -1156,7 +1157,7 @@ public actor MDKEncodedCaptureSession {
                 Task {
                     let replacedDisplayTime = await latestFrameMailbox.store(frame)
                     if let replacedDisplayTime {
-                        await self.handleSourceFrameDropped(
+                        await self.handleSourceFrameCoalesced(
                             sourceDisplayTime: replacedDisplayTime,
                             runtimeGeneration: currentRuntimeGeneration
                         )
@@ -1408,6 +1409,20 @@ public actor MDKEncodedCaptureSession {
             .init(
                 kind: .droppedFrame,
                 message: "Source frame dropped before processing because the capture processing queue is saturated.",
+                sourceDisplayTime: sourceDisplayTime
+            )
+        )
+    }
+
+    private func handleSourceFrameCoalesced(sourceDisplayTime: UInt64, runtimeGeneration: UInt64) {
+        guard runtime != nil, self.runtimeGeneration == runtimeGeneration else {
+            return
+        }
+
+        emitEvent(
+            .init(
+                kind: .coalescedFrame,
+                message: "Source frame coalesced before processing to preserve latest-frame freshness.",
                 sourceDisplayTime: sourceDisplayTime
             )
         )
