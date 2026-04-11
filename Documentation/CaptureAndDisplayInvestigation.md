@@ -112,6 +112,22 @@ Best measured output:
   - `392 / 610705e / 92.50`
     - moving only HEVC high-refresh HDR `timerReplay` frames onto an encode-queue latest slot, while keeping `fresh` frames synchronous, still regressed the official metric
     - conclusion: even synthetic-only mailboxing is too lossy under the current path; replay/handoff experiments are now well explored and should give way to source-visible partial capture or a new backend entry point
+  - `406 / 4042192 / 95.42`
+    - skipping reduced dirty-rect / update-drop metadata decode on the hot high-refresh raw callback path did not improve the official metric
+    - `HEVC` regressed to `50` frames with `320.308 ms` startup and `102.072 ms` average callback latency
+    - conclusion: the current bottleneck is not the diagnostic metadata decode itself
+  - `407 / e8daed1 / 95.21`
+    - splitting raw SkyLight `timerReplay` onto a dedicated replay queue while leaving fresh callback delivery on the old serial lane regressed the official metric
+    - `HEVC` fell to `49` frames with `325.653 ms` startup and `102.190 ms` average callback latency
+    - conclusion: fresh/replay lane separation by itself breaks a progression-supporting ordering relationship in the current best path
+  - `408 / f65e1d4 / 95.42`
+    - adding explicit `kCGDisplayStreamColorSpace=sRGB` to the production raw `SLDisplayStream` property dictionary did not improve the official path
+    - `HEVC` only rose to `50` frames while startup regressed to `379.589 ms`
+    - conclusion: a single extra source color-space property is not enough to recover the current cadence ceiling
+  - `409 / 1dc4c8f / 95.42`
+    - adding explicit full-display `sourceRect` and target-sized `destinationRect` to the production raw `SLDisplayStream` contract only shifted the tradeoff
+    - `HEVC` landed at `50` frames with `309.862 ms` startup and `99.598 ms` average callback latency, but `ProRes Proxy` fell to `25` frames
+    - conclusion: explicit rect contract can move source behavior, but it still does not solve the shared two-codec ceiling by itself
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
@@ -127,6 +143,11 @@ Best measured output:
   - latest raw SkyLight benchmark, `3512x2290`, `q2`, `x420`, `none`: about `84.41 fps`
     - the same run reported `avgReducedDirtyCoverageRatio=0.256`, `avgReducedDirtyRectCount=2.361`, `avgUpdateDropCount=0.030`, and `WindowServer pcpu≈9.6`
     - even in this cleaner host state, long-gap ratio over `16 ms` stayed about `0.28`, so the source still misses a stable `120 Hz` cadence
+  - latest current-host recheck on the local `MacDisplayKitHost` binary, `3512x2290`, `x420`, `none`, `minimumFrameTime=0`:
+    - `q1`: about `63.96 fps`
+    - `q2`: about `75.76 fps`
+    - `q3`: about `61.94 fps`
+    - this keeps `q2` as the least-bad queue-depth on the current host state and closes the “maybe q1/q3 is now better” loop
   - earlier raw SkyLight target probes on more loaded host states ranged about `39-51 fps`
   - current raw SkyLight benchmark, `3512x2290`, `q2`, `420v`, `none`: about `45.45 fps`
   - current raw SkyLight benchmark, `3512x2290`, `q8`, `x420`, `none`: about `35.98 fps`
