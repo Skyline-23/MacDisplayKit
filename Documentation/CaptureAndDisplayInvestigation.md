@@ -154,6 +154,11 @@ Best measured output:
     - carried the producer dirty-region through `MDKEncodedFrame`, the `LumenCore` ingress ABI, the Swift/ObjC bridge, and finally into `video.cpp` so `sdr_base_hdr_overlay` could build its overlay region from source dirty rects instead of only from the display content box
     - official metric stayed below keep: `HEVC=50` frames with `425.598 ms` startup and `102.302 ms` average callback latency, `ProRes Proxy=30` frames with `146.281 ms` startup
     - conclusion: preserving selective-HDR truth through the bridge is valid correctness work, but it is not the current 120 Hz progression bottleneck; the encode path is still paying essentially the same cadence cost
+  - `417 / 23b991e / 25.00`
+    - replaced the SkyLight encoded source's serial `deliveryQueue` with an actor replay state plus `AsyncStream(bufferingNewest: 1)` latest-wins ingress so the raw callback could return immediately without queueing every frame
+    - same-host host diagnostics improved materially: `sourceApproxFrameRate` rose from about `49.83` to about `77.92` while raw SkyLight on the same host still measured about `123.74 fps`
+    - the official metric still cratered because the `HEVC` runtime probe failed outright; `ProRes Proxy` survived at `79.58`, but the combined score collapsed to `25.00`
+    - conclusion: source callback serialization is a real bottleneck, but naive latest-wins ingress breaks the current HEVC recovery/backpressure invariants; the next redesign has to preserve official stability while reclaiming source cadence
   - `387 / 1834570f / 72.71`
     - reworking `sdr_base_hdr_overlay` so `HEVC` used an SDR `420v8` base stream and overlay state came from the external metadata contract did not survive the official metric:
       - synthetic stayed `100`
@@ -263,6 +268,7 @@ Best measured output:
   - expose partial update metadata and drop counts through the capture source runtime
   - treat `raw x420 source cadence` as the gating metric for any new structural experiment
   - stop assuming that moving submit work around will fix the score; experiments `382-385` show that callback/mailbox choreography alone does not beat the keep
+  - `417` sharpens that warning: even when ingress restructuring clearly recovers source cadence in host diagnostics, it is still invalid if it violates the current HEVC runtime-probe stability contract
   - investigate a split architecture where the fast base path stays on the source format that preserves cadence and HDR-active regions are injected from a different truth source, instead of forcing whole-surface HDR semantics through every frame
   - practical consequence: source-visible dirty rects, private compositor statistics, or a private display backend are now more promising than any additional VideoToolbox property sweep
 
