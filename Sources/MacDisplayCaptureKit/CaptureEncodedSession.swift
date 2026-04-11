@@ -26,12 +26,14 @@ protocol MDKEncodedCaptureProcessorRuntime: AnyObject, Sendable {
         frame: MDKCaptureFrame,
         releaseSourceFrame: @escaping @Sendable () -> Void
     ) throws
+    func shouldHoldSourceDrainAfterSubmit() -> Bool
     func requestImmediateKeyFrame()
     func finalize() -> MDKCaptureFrameProcessingSummary?
     func liveSummary() -> MDKCaptureFrameProcessingSummary?
 }
 
 extension MDKEncodedCaptureProcessorRuntime {
+    func shouldHoldSourceDrainAfterSubmit() -> Bool { false }
     func requestImmediateKeyFrame() {}
 }
 
@@ -451,6 +453,111 @@ private actor MDKEncodedCaptureLatestFrameMailbox {
         let frame = latestFrame
         latestFrame = nil
         return frame
+    }
+}
+
+private actor MDKEncodedCaptureOrderedDrainCoordinator {
+    private var queuedFrames: [MDKCaptureFrame] = []
+    private var drainActive = false
+
+    func enqueue(
+        _ frame: MDKCaptureFrame,
+        processor: any MDKEncodedCaptureProcessorRuntime,
+        pendingFrameTracker: MDKEncodedCapturePendingFrameTracker,
+        latestFrameMailbox: MDKEncodedCaptureLatestFrameMailbox,
+        failureHandler: @escaping @Sendable (String) -> Void
+    ) {
+        queuedFrames.append(frame)
+        scheduleIfNeeded(
+            processor: processor,
+            pendingFrameTracker: pendingFrameTracker,
+            latestFrameMailbox: latestFrameMailbox,
+            failureHandler: failureHandler
+        )
+    }
+
+    private func scheduleIfNeeded(
+        processor: any MDKEncodedCaptureProcessorRuntime,
+        pendingFrameTracker: MDKEncodedCapturePendingFrameTracker,
+        latestFrameMailbox: MDKEncodedCaptureLatestFrameMailbox,
+        failureHandler: @escaping @Sendable (String) -> Void
+    ) {
+        guard !drainActive, !queuedFrames.isEmpty else {
+            return
+        }
+
+        let nextFrame = queuedFrames.removeFirst()
+        drainActive = true
+        Task {
+            do {
+                try processor.process(frame: nextFrame) {
+                    Task {
+                        await self.finishOne(
+                            processor: processor,
+                            pendingFrameTracker: pendingFrameTracker,
+                            latestFrameMailbox: latestFrameMailbox,
+                            failureHandler: failureHandler
+                        )
+                    }
+                }
+            } catch {
+                pendingFrameTracker.releaseOne()
+                let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                failureHandler(description)
+                await self.finishFailedFrame(
+                    processor: processor,
+                    pendingFrameTracker: pendingFrameTracker,
+                    latestFrameMailbox: latestFrameMailbox,
+                    failureHandler: failureHandler
+                )
+            }
+        }
+    }
+
+    private func finishOne(
+        processor: any MDKEncodedCaptureProcessorRuntime,
+        pendingFrameTracker: MDKEncodedCapturePendingFrameTracker,
+        latestFrameMailbox: MDKEncodedCaptureLatestFrameMailbox,
+        failureHandler: @escaping @Sendable (String) -> Void
+    ) async {
+        if processor.shouldHoldSourceDrainAfterSubmit() {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+            await finishOne(
+                processor: processor,
+                pendingFrameTracker: pendingFrameTracker,
+                latestFrameMailbox: latestFrameMailbox,
+                failureHandler: failureHandler
+            )
+            return
+        }
+
+        if let latestFrame = await latestFrameMailbox.take() {
+            queuedFrames.insert(latestFrame, at: 0)
+        } else {
+            pendingFrameTracker.releaseOne()
+        }
+        drainActive = false
+        scheduleIfNeeded(
+            processor: processor,
+            pendingFrameTracker: pendingFrameTracker,
+            latestFrameMailbox: latestFrameMailbox,
+            failureHandler: failureHandler
+        )
+    }
+
+    private func finishFailedFrame(
+        processor: any MDKEncodedCaptureProcessorRuntime,
+        pendingFrameTracker: MDKEncodedCapturePendingFrameTracker,
+        latestFrameMailbox: MDKEncodedCaptureLatestFrameMailbox,
+        failureHandler: @escaping @Sendable (String) -> Void
+    ) async {
+        drainActive = false
+        scheduleIfNeeded(
+            processor: processor,
+            pendingFrameTracker: pendingFrameTracker,
+            latestFrameMailbox: latestFrameMailbox,
+            failureHandler: failureHandler
+        )
     }
 }
 
@@ -1114,6 +1221,7 @@ public actor MDKEncodedCaptureSession {
         let callbackOnlyDelivery = configuration.deliveryMode == .callbackOnly && callbacks != nil
         let pendingFrameTracker = MDKEncodedCapturePendingFrameTracker()
         let latestFrameMailbox = MDKEncodedCaptureLatestFrameMailbox()
+        let orderedDrainCoordinator = MDKEncodedCaptureOrderedDrainCoordinator()
         let sourceCadenceTracker = MDKEncodedCaptureSourceCadenceTracker()
         let sourceTimingTracker = MDKEncodedCaptureSourceTimingTracker()
         let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
@@ -1165,13 +1273,15 @@ public actor MDKEncodedCaptureSession {
                 return
             }
 
-            MDKProcessMailboxAwareSourceFrame(
-                frame,
-                processor: processor,
-                pendingFrameTracker: pendingFrameTracker,
-                latestFrameMailbox: latestFrameMailbox,
-                failureHandler: failureHandler
-            )
+            Task {
+                await orderedDrainCoordinator.enqueue(
+                    frame,
+                    processor: processor,
+                    pendingFrameTracker: pendingFrameTracker,
+                    latestFrameMailbox: latestFrameMailbox,
+                    failureHandler: failureHandler
+                )
+            }
         }
         self.sourceCadenceTracker = sourceCadenceTracker
         self.sourceTimingTracker = sourceTimingTracker
