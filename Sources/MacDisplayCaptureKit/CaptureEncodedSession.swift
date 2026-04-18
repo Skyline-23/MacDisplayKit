@@ -118,24 +118,6 @@ func MDKShouldEmitSyntheticSkyLightEncodedCaptureReplay(
     return (currentMachTime - lastEmissionMachTime) >= minimumEmissionDeltaMachTicks
 }
 
-func MDKSyntheticSkyLightEncodedReplayIntervalNanoseconds(
-    configuration: MDKEncodedCaptureConfiguration
-) -> UInt64 {
-    let effectiveReplayFrameRate: Int
-    if configuration.codec == .hevc,
-       configuration.targetFrameRate >= 100,
-       configuration.deliveryMode == .callbackOnly,
-       configuration.resolvedSkyLightProcessingMode != nil {
-        effectiveReplayFrameRate = max(configuration.targetFrameRate * 2, configuration.targetFrameRate)
-    } else {
-        effectiveReplayFrameRate = max(configuration.targetFrameRate, 1)
-    }
-
-    return UInt64(
-        max((1.0 / Double(max(effectiveReplayFrameRate, 1))) * 1_000_000_000.0, 1_000_000.0)
-    )
-}
-
 func MDKResolvedSkyLightDisplayStreamShowCursor(
     requestedShowCursor: Bool,
     tuningSelection: MDKSkyLightDisplayStreamAutotuningSelection?
@@ -273,8 +255,8 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
     ) {
         let replayState = MDKSkyLightEncodedCaptureReplayState()
         let deliveryQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.encoded-capture.skylight.delivery")
-        let replayIntervalNanoseconds = MDKSyntheticSkyLightEncodedReplayIntervalNanoseconds(
-            configuration: configuration
+        let replayIntervalNanoseconds = UInt64(
+            max((1.0 / Double(max(configuration.targetFrameRate, 1))) * 1_000_000_000.0, 1_000_000.0)
         )
         self.tuningSelection = tuningSelection
         self.replayState = replayState
@@ -997,7 +979,7 @@ public actor MDKEncodedCaptureSession {
                     "skyLightSyntheticIdleReplay=true",
                     String(
                         format: "skyLightSyntheticIdleReplayIntervalMilliseconds=%.3f",
-                        Double(MDKSyntheticSkyLightEncodedReplayIntervalNanoseconds(configuration: configuration)) / 1_000_000.0
+                        1000.0 / Double(max(configuration.targetFrameRate, 1))
                     ),
                     "skyLightPendingPolicy=\(pendingPolicy)",
                     "skyLightRecommendedPendingFrameCount=\(recommendedPendingFrameCount)"
