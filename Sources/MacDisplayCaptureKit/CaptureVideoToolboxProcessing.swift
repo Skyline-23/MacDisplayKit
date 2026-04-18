@@ -954,6 +954,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 value: NSNumber(value: 40),
                 label: "MaxAllowedFrameQP"
             )
+            setSessionProperty(
+                session,
+                key: kVTCompressionPropertyKey_MinAllowedFrameQP,
+                value: NSNumber(value: 20),
+                label: "MinAllowedFrameQP"
+            )
         }
         if #available(macOS 26.0, *),
             let vbvBufferDurationSeconds {
