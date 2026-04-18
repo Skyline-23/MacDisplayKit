@@ -108,6 +108,13 @@ public enum MDKSkyLightDisplayStreamTuningMatrix {
         showCursor: false
     )
 
+    public static let request120LikeQueue3Candidate = MDKSkyLightDisplayStreamTuningCandidate(
+        identifier: "min-frame-240hz-q3",
+        minimumFrameTime: 1.0 / 240.0,
+        queueDepth: 3,
+        showCursor: false
+    )
+
     public static let request120LikeCandidate = MDKSkyLightDisplayStreamTuningCandidate(
         identifier: "min-frame-240hz-q1",
         minimumFrameTime: 1.0 / 240.0,
@@ -219,6 +226,7 @@ public enum MDKSkyLightDisplayStreamTuningAdvisor {
             var candidates = [
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue2Candidate,
                 MDKSkyLightDisplayStreamTuningMatrix.request120LikeQueue2Candidate,
+                MDKSkyLightDisplayStreamTuningMatrix.request120LikeQueue3Candidate,
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue3Candidate,
                 MDKSkyLightDisplayStreamTuningMatrix.baselineQueue1Candidate,
                 MDKSkyLightDisplayStreamTuningMatrix.request120LikeCandidate,

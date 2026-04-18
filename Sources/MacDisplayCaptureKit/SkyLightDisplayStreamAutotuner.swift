@@ -232,6 +232,14 @@ actor MDKSkyLightDisplayStreamAutotuner {
             return nil
         }
 
+        if processingMode == .videoToolboxEncode {
+            return candidates.first {
+                $0.identifier == MDKSkyLightDisplayStreamTuningMatrix.request120LikeQueue3Candidate.identifier
+            } ?? candidates.first {
+                $0.identifier == MDKSkyLightDisplayStreamTuningMatrix.request120LikeQueue2Candidate.identifier
+            } ?? candidates.first
+        }
+
         return candidates.first {
             $0.identifier == MDKSkyLightDisplayStreamTuningMatrix.request120LikeQueue2Candidate.identifier
         } ?? candidates.first {
