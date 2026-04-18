@@ -927,6 +927,15 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             targetFrameRate: targetFrameRate
         )
 
+        if #available(macOS 26.0, *),
+            isHighRefreshHDRHEVC {
+            applyCompressionPresetIfAvailable(
+                session,
+                preset: kVTCompressionPreset_HighSpeed,
+                label: "PresetHighSpeed"
+            )
+        }
+
         setSessionProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue, label: "RealTime")
         setSessionProperty(session, key: kVTCompressionPropertyKey_ProgressiveScan, value: kCFBooleanTrue, label: "ProgressiveScan")
         setSessionProperty(
@@ -1617,6 +1626,37 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             return nil
         }
         return value?.takeRetainedValue()
+    }
+
+    @available(macOS 26.0, *)
+    private func applyCompressionPresetIfAvailable(
+        _ session: VTCompressionSession,
+        preset: CFString,
+        label: String
+    ) {
+        guard let supportedPresets = copyDictionarySessionProperty(
+            session,
+            key: kVTCompressionPropertyKey_SupportedPresetDictionaries
+        ) else {
+            sessionConfigurationNotes.append("videoToolbox\(label)=unavailable")
+            return
+        }
+
+        guard let presetDictionaryPointer = CFDictionaryGetValue(
+            supportedPresets,
+            Unmanaged.passUnretained(preset).toOpaque()
+        ) else {
+            sessionConfigurationNotes.append("videoToolbox\(label)=unavailable")
+            return
+        }
+
+        let presetDictionary = unsafeBitCast(presetDictionaryPointer, to: CFDictionary.self)
+        let status = VTSessionSetProperties(session, propertyDictionary: presetDictionary)
+        if status == noErr {
+            sessionConfigurationNotes.append("videoToolbox\(label)=applied")
+        } else {
+            sessionConfigurationNotes.append("videoToolbox\(label)=\(status)")
+        }
     }
 
     private func releaseStagingSlot(identifier: Int) {
