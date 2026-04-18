@@ -221,7 +221,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var maxOutputCallbackLatencyMilliseconds: Double?
     private var submittedFrameCount: UInt64 = 0
     private var usingHardwareAcceleratedEncoder: Bool?
-    private var encoderIdentifier: String?
     private var encoderPixelBufferPoolIsShared: Bool?
     private var recommendedParallelizationLimit: Int?
     private var sessionConfigurationNotes: [String] = []
@@ -445,7 +444,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxImmediateReplaySubmissionCount=\(immediateReplaySubmissionCount)",
             "videoToolboxSuppressedImmediateReplayCount=\(suppressedImmediateReplayCount)",
             "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
-            "videoToolboxEncoderID=\(encoderIdentifier ?? "unknown")",
             "videoToolboxPixelBufferPoolIsShared=\(describeHardwareAcceleration(encoderPixelBufferPoolIsShared))",
             "videoToolboxRecommendedParallelizationLimit=\(recommendedParallelizationLimit.map(String.init) ?? "unknown")",
             "videoToolboxPixelBufferCacheSize=\(pixelBufferCache.count)"
@@ -1084,10 +1082,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             session,
             key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder
         )
-        encoderIdentifier = copyStringSessionProperty(
-            session,
-            key: kVTCompressionPropertyKey_EncoderID
-        )
         encoderPixelBufferPoolIsShared = copyBooleanSessionProperty(
             session,
             key: kVTCompressionPropertyKey_PixelBufferPoolIsShared
@@ -1110,25 +1104,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         var encoderSpecification: [CFString: Any] = [
             kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: true as CFBoolean
         ]
-        if let encoderIdentifier = preferredHardwareEncoderIdentifier {
-            encoderSpecification[kVTVideoEncoderSpecification_EncoderID] = encoderIdentifier as CFString
-            sessionConfigurationNotes.append("videoToolboxRequestedEncoderID=\(encoderIdentifier)")
-        }
         if codec.lowLatencyRateControlSupported {
             encoderSpecification[kVTVideoEncoderSpecification_EnableLowLatencyRateControl] = true as CFBoolean
         }
         return encoderSpecification as CFDictionary
-    }
-
-    private var preferredHardwareEncoderIdentifier: String? {
-        switch codec {
-        case .h264:
-            return "com.apple.videotoolbox.videoencoder.ave.avc"
-        case .hevc:
-            return "com.apple.videotoolbox.videoencoder.ave.hevc"
-        case .proResProxy:
-            return "com.apple.videotoolbox.videoencoder.appleproreshw.422proxy"
-        }
     }
 
     private func resolvedAverageBitRate(
@@ -1626,21 +1605,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         return (copiedValue as? NSNumber)?.intValue
-    }
-
-    private func copyStringSessionProperty(
-        _ session: VTCompressionSession,
-        key: CFString
-    ) -> String? {
-        guard let copiedValue = copySessionProperty(session, key: key) else {
-            return nil
-        }
-
-        guard CFGetTypeID(copiedValue) == CFStringGetTypeID() else {
-            return nil
-        }
-
-        return copiedValue as? String
     }
 
     private func copySessionProperty(
