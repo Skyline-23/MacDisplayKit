@@ -947,14 +947,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         )
         setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedDuration, value: NSNumber(value: expectedDurationHint), label: "ExpectedDuration")
         setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: expectedFrameRateHint), label: "ExpectedFrameRate")
-        if isHighRefreshHDRHEVC {
-            setSessionProperty(
-                session,
-                key: kVTCompressionPropertyKey_MaxAllowedFrameQP,
-                value: NSNumber(value: 40),
-                label: "MaxAllowedFrameQP"
-            )
-        }
         if #available(macOS 26.0, *),
             let vbvBufferDurationSeconds {
             setSessionProperty(
