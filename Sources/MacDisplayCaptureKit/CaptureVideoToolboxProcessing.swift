@@ -1006,7 +1006,16 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             setSessionProperty(session, key: kVTCompressionPropertyKey_Quality, value: NSNumber(value: codec.targetQuality), label: "Quality")
         }
         if codec.supportsReferenceBufferCount {
-            setSessionProperty(session, key: kVTCompressionPropertyKey_ReferenceBufferCount, value: NSNumber(value: codec.referenceBufferCount), label: "ReferenceBufferCount")
+            let referenceBufferCount =
+                (codec == .hevc && isHighRefreshLowLatency)
+                ? 0
+                : codec.referenceBufferCount
+            setSessionProperty(
+                session,
+                key: kVTCompressionPropertyKey_ReferenceBufferCount,
+                value: NSNumber(value: referenceBufferCount),
+                label: "ReferenceBufferCount"
+            )
         }
         if let profileLevel = codec.defaultProfileLevel(for: pixelFormat) {
             setSessionProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: profileLevel, label: "ProfileLevel")
