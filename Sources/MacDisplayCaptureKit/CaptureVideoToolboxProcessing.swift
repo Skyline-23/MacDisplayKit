@@ -951,7 +951,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             setSessionProperty(
                 session,
                 key: kVTCompressionPropertyKey_MaxAllowedFrameQP,
-                value: NSNumber(value: 40),
+                value: NSNumber(value: 42),
                 label: "MaxAllowedFrameQP"
             )
         }
