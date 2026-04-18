@@ -927,6 +927,15 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             targetFrameRate: targetFrameRate
         )
 
+        if #available(macOS 26.0, *),
+            isHighRefreshHDRHEVC {
+            applyCompressionPresetIfAvailable(
+                session,
+                preset: kVTCompressionPreset_VideoConferencing,
+                label: "PresetVideoConferencing"
+            )
+        }
+
         setSessionProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue, label: "RealTime")
         setSessionProperty(session, key: kVTCompressionPropertyKey_ProgressiveScan, value: kCFBooleanTrue, label: "ProgressiveScan")
         setSessionProperty(
@@ -1617,6 +1626,29 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             return nil
         }
         return value?.takeRetainedValue()
+    }
+
+    @available(macOS 26.0, *)
+    private func applyCompressionPresetIfAvailable(
+        _ session: VTCompressionSession,
+        preset: CFString,
+        label: String
+    ) {
+        guard let supportedPresets = copyDictionarySessionProperty(
+            session,
+            key: kVTCompressionPropertyKey_SupportedPresetDictionaries
+        ) as? [CFString: Any],
+        let presetDictionary = supportedPresets[preset] as? CFDictionary else {
+            sessionConfigurationNotes.append("videoToolbox\(label)=unavailable")
+            return
+        }
+
+        let status = VTSessionSetProperties(session, propertyDictionary: presetDictionary)
+        if status == noErr {
+            sessionConfigurationNotes.append("videoToolbox\(label)=applied")
+        } else {
+            sessionConfigurationNotes.append("videoToolbox\(label)=\(status)")
+        }
     }
 
     private func releaseStagingSlot(identifier: Int) {
