@@ -1043,11 +1043,9 @@ final class MacDisplayKitTests: XCTestCase {
 
         XCTAssertEqual(candidates.first?.identifier, "baseline-q2")
         XCTAssertEqual(candidates.dropFirst().first?.identifier, "min-frame-240hz-q2")
-        XCTAssertEqual(candidates.dropFirst(2).first?.identifier, "min-frame-240hz-q3")
-        XCTAssertEqual(candidates.dropFirst(3).first?.identifier, "baseline-q3")
+        XCTAssertEqual(candidates.dropFirst(2).first?.identifier, "baseline-q3")
         XCTAssertTrue(candidates.contains(where: { $0.identifier == "baseline-q1" }))
         XCTAssertTrue(candidates.contains(where: { $0.identifier == "min-frame-240hz-q2" }))
-        XCTAssertTrue(candidates.contains(where: { $0.identifier == "min-frame-240hz-q3" }))
         XCTAssertTrue(candidates.contains(where: { $0.identifier == "min-frame-240hz-q1" }))
         XCTAssertTrue(candidates.contains(where: { $0.identifier == "baseline-q4" }))
         XCTAssertTrue(candidates.contains(where: { $0.identifier == "baseline-q8" }))
@@ -1820,7 +1818,7 @@ final class MacDisplayKitTests: XCTestCase {
                 targetFrameRate: 120,
                 displayRefreshRate: 240
             ),
-            MDKSkyLightDisplayStreamTuningMatrix.request120LikeQueue3Candidate
+            MDKSkyLightDisplayStreamTuningMatrix.request120LikeQueue2Candidate
         )
     }
 
