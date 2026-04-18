@@ -454,6 +454,32 @@ private actor MDKEncodedCaptureLatestFrameMailbox {
     }
 }
 
+private actor MDKEncodedCaptureLatestOnlyProcessingCoordinator {
+    private var inFlight = false
+    private var queuedFrame: MDKCaptureFrame?
+
+    func enqueue(_ frame: MDKCaptureFrame) -> (frameToProcess: MDKCaptureFrame?, replacedDisplayTime: UInt64?) {
+        if inFlight {
+            let replacedDisplayTime = queuedFrame?.displayTime
+            queuedFrame = frame
+            return (nil, replacedDisplayTime)
+        }
+
+        inFlight = true
+        return (frame, nil)
+    }
+
+    func finishCurrentFrame() -> MDKCaptureFrame? {
+        if let queuedFrame {
+            self.queuedFrame = nil
+            return queuedFrame
+        }
+
+        inFlight = false
+        return nil
+    }
+}
+
 private func MDKProcessMailboxAwareSourceFrame(
     _ frame: MDKCaptureFrame,
     processor: any MDKEncodedCaptureProcessorRuntime,
@@ -1117,6 +1143,12 @@ public actor MDKEncodedCaptureSession {
         let callbackOnlyDelivery = configuration.deliveryMode == .callbackOnly && callbacks != nil
         let pendingFrameTracker = MDKEncodedCapturePendingFrameTracker()
         let latestFrameMailbox = MDKEncodedCaptureLatestFrameMailbox()
+        let latestOnlyProcessingCoordinator =
+            configuration.deliveryMode == .callbackOnly &&
+            configuration.resolvedSkyLightProcessingMode != nil &&
+            configuration.targetFrameRate >= 100
+            ? MDKEncodedCaptureLatestOnlyProcessingCoordinator()
+            : nil
         let sourceCadenceTracker = MDKEncodedCaptureSourceCadenceTracker()
         let sourceTimingTracker = MDKEncodedCaptureSourceTimingTracker()
         let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
@@ -1148,6 +1180,34 @@ public actor MDKEncodedCaptureSession {
         }
 
         let processor = processorFactory(configuration, outputHandler, failureHandler)
+        var processLatestOnlyFrame: (@Sendable (MDKCaptureFrame) -> Void)!
+        processLatestOnlyFrame = { frame in
+            do {
+                try processor.process(frame: frame) {
+                    Task {
+                        guard let latestOnlyProcessingCoordinator else {
+                            return
+                        }
+
+                        if let nextFrame = await latestOnlyProcessingCoordinator.finishCurrentFrame() {
+                            processLatestOnlyFrame(nextFrame)
+                        }
+                    }
+                }
+            } catch {
+                let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                failureHandler(description)
+                Task {
+                    guard let latestOnlyProcessingCoordinator else {
+                        return
+                    }
+
+                    if let nextFrame = await latestOnlyProcessingCoordinator.finishCurrentFrame() {
+                        processLatestOnlyFrame(nextFrame)
+                    }
+                }
+            }
+        }
         let source = sourceFactory(configuration, sourcePreparation) { [weak self, weak processor] frame in
             guard let self, let processor else {
                 return
@@ -1155,6 +1215,21 @@ public actor MDKEncodedCaptureSession {
 
             sourceCadenceTracker.record(displayTime: frame.displayTime)
             sourceTimingTracker.record(frame: frame)
+            if let latestOnlyProcessingCoordinator {
+                Task {
+                    let enqueueResult = await latestOnlyProcessingCoordinator.enqueue(frame)
+                    if let replacedDisplayTime = enqueueResult.replacedDisplayTime {
+                        await self.handleSourceFrameDropped(
+                            sourceDisplayTime: replacedDisplayTime,
+                            runtimeGeneration: currentRuntimeGeneration
+                        )
+                    }
+                    if let frameToProcess = enqueueResult.frameToProcess {
+                        processLatestOnlyFrame(frameToProcess)
+                    }
+                }
+                return
+            }
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
                     let replacedDisplayTime = await latestFrameMailbox.store(frame)
