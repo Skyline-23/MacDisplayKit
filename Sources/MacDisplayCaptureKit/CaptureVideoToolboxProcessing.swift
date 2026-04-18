@@ -745,12 +745,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             frameIndex += 1
             return timestamp
         }()
-        let encodeDuration: CMTime =
-            if codec == .hevc && targetFrameRate >= 100 {
-                CMTime(value: 1, timescale: Int32(targetFrameRate))
-            } else {
-                .invalid
-            }
         let submissionToken = Unmanaged.passRetained(
             MDKVideoToolboxSubmissionToken(
                 slotIdentifier: slotIdentifier,
@@ -767,7 +761,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             compressionSession,
             imageBuffer: imageBuffer,
             presentationTimeStamp: resolvedPresentationTimeStamp,
-            duration: encodeDuration,
+            duration: .invalid,
             frameProperties: makeFrameProperties(forceKeyFrame: consumeImmediateKeyFrameRequest()),
             sourceFrameRefcon: submissionToken.toOpaque(),
             infoFlagsOut: nil
