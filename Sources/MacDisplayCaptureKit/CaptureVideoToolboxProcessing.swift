@@ -223,6 +223,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var usingHardwareAcceleratedEncoder: Bool?
     private var encoderPixelBufferPoolIsShared: Bool?
     private var recommendedParallelizationLimit: Int?
+    private var supportsBaseFrameQP: Bool?
     private var sessionConfigurationNotes: [String] = []
     private var directSubmissionFrameCount: UInt64 = 0
     private var stagedSubmissionFrameCount: UInt64 = 0
@@ -857,13 +858,21 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     }
 
     private func makeFrameProperties(forceKeyFrame: Bool) -> CFDictionary? {
-        guard forceKeyFrame else {
-            return nil
+        var frameProperties: [CFString: Any] = [:]
+        if forceKeyFrame {
+            frameProperties[kVTEncodeFrameOptionKey_ForceKeyFrame] = kCFBooleanTrue
+        }
+        if codec == .hevc,
+            targetFrameRate >= 100,
+            hdrConfiguration?.transferFunction == .smpteSt2084PQ,
+            supportsBaseFrameQP == true {
+            frameProperties[kVTEncodeFrameOptionKey_BaseFrameQP] = NSNumber(value: 28)
         }
 
-        return [
-            kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue as Any
-        ] as CFDictionary
+        guard !frameProperties.isEmpty else {
+            return nil
+        }
+        return frameProperties as CFDictionary
     }
 
     private func ensureCompressionSession(
@@ -1020,6 +1029,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             setSessionProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: profileLevel, label: "ProfileLevel")
             sessionConfigurationNotes.append("videoToolboxConfiguredProfileLevel=\(profileLevel)")
         }
+        supportsBaseFrameQP = copyBooleanSessionProperty(
+            session,
+            key: kVTCompressionPropertyKey_SupportsBaseFrameQP
+        )
+        sessionConfigurationNotes.append("videoToolboxSupportsBaseFrameQP=\(describeHardwareAcceleration(supportsBaseFrameQP))")
         if let hdrConfiguration {
             for property in hdrConfiguration.sessionProperties {
                 setSessionProperty(
@@ -1458,6 +1472,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         usingHardwareAcceleratedEncoder = nil
         encoderPixelBufferPoolIsShared = nil
         recommendedParallelizationLimit = nil
+        supportsBaseFrameQP = nil
     }
 
     private func recordProcessingSuccess(isStaged: Bool) {
