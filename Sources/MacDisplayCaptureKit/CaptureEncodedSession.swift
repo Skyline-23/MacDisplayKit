@@ -1002,6 +1002,9 @@ public actor MDKEncodedCaptureSession {
             if configuration.codec == .proResProxy && configuration.targetFrameRate >= 100 {
                 return 8
             }
+            if configuration.codec == .hevc && configuration.targetFrameRate >= 100 {
+                return 2
+            }
             if configuration.targetFrameRate >= 100 {
                 return min(max(effectiveQueueDepth + 4, 6), 8)
             } else if configuration.targetFrameRate >= 60 {
