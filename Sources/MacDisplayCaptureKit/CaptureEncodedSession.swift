@@ -999,6 +999,9 @@ public actor MDKEncodedCaptureSession {
             configuration.resolvedSkyLightProcessingMode != nil
 
         if usesLowLatencyCallbackEncode {
+            if configuration.codec == .proResProxy && configuration.targetFrameRate >= 100 {
+                return 8
+            }
             if configuration.targetFrameRate >= 100 {
                 return min(max(effectiveQueueDepth + 4, 6), 8)
             } else if configuration.targetFrameRate >= 60 {
