@@ -218,6 +218,10 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
             return false
         }
 
+        if codec == .proResProxy && targetFrameRate >= 100 {
+            return true
+        }
+
         // The direct IOSurface path currently emits BGRA surfaces, so any YUV-
         // oriented encoded session still pays a BGRA->YUV staging cost. The raw
         // private SLDisplayStream path can emit YUV surfaces directly, which is
