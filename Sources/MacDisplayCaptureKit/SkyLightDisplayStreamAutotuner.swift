@@ -233,6 +233,8 @@ actor MDKSkyLightDisplayStreamAutotuner {
         }
 
         return candidates.first {
+            $0.identifier == MDKSkyLightDisplayStreamTuningMatrix.baselineQueue1Candidate.identifier
+        } ?? candidates.first {
             $0.identifier == MDKSkyLightDisplayStreamTuningMatrix.request120LikeQueue2Candidate.identifier
         } ?? candidates.first {
             $0.identifier == MDKSkyLightDisplayStreamTuningMatrix.baselineQueue2Candidate.identifier
