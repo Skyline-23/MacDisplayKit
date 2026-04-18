@@ -997,7 +997,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 label: "AverageBitRate"
             )
         }
-        if codec.supportsDataRateLimits {
+        if codec.supportsDataRateLimits &&
+            !(codec == .hevc && isHighRefreshLowLatency) {
             let dataRateLimits = resolvedDataRateLimits(
                 width: width,
                 height: height,
