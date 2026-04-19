@@ -1078,6 +1078,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             sessionConfigurationNotes.append("videoToolboxConfiguredDataRateLimits=default")
         }
         sessionConfigurationNotes.append("videoToolboxHighRefreshLowLatencyMode=\(isHighRefreshLowLatency ? "enabled" : "disabled")")
+        sessionConfigurationNotes.append("videoToolboxLowLatencyRateControl=\(shouldEnableLowLatencyRateControl ? "enabled" : "disabled")")
         usingHardwareAcceleratedEncoder = copyBooleanSessionProperty(
             session,
             key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder
@@ -1104,10 +1105,22 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         var encoderSpecification: [CFString: Any] = [
             kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: true as CFBoolean
         ]
-        if codec.lowLatencyRateControlSupported {
+        if shouldEnableLowLatencyRateControl {
             encoderSpecification[kVTVideoEncoderSpecification_EnableLowLatencyRateControl] = true as CFBoolean
         }
         return encoderSpecification as CFDictionary
+    }
+
+    private var shouldEnableLowLatencyRateControl: Bool {
+        guard codec.lowLatencyRateControlSupported else {
+            return false
+        }
+
+        return !(
+            codec == .hevc &&
+            targetFrameRate >= 100 &&
+            hdrConfiguration?.transferFunction == .smpteSt2084PQ
+        )
     }
 
     private func resolvedAverageBitRate(
