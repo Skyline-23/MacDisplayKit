@@ -1115,10 +1115,16 @@ public actor MDKEncodedCaptureSession {
         runtimeGeneration &+= 1
         let currentRuntimeGeneration = runtimeGeneration
         let callbackOnlyDelivery = configuration.deliveryMode == .callbackOnly && callbacks != nil
+        let shouldRecordSourceDiagnostics = !(
+            configuration.codec == .hevc &&
+            configuration.targetFrameRate >= 100 &&
+            callbackOnlyDelivery &&
+            configuration.resolvedSkyLightProcessingMode != nil
+        )
         let pendingFrameTracker = MDKEncodedCapturePendingFrameTracker()
         let latestFrameMailbox = MDKEncodedCaptureLatestFrameMailbox()
-        let sourceCadenceTracker = MDKEncodedCaptureSourceCadenceTracker()
-        let sourceTimingTracker = MDKEncodedCaptureSourceTimingTracker()
+        let sourceCadenceTracker = shouldRecordSourceDiagnostics ? MDKEncodedCaptureSourceCadenceTracker() : nil
+        let sourceTimingTracker = shouldRecordSourceDiagnostics ? MDKEncodedCaptureSourceTimingTracker() : nil
         let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
         let maximumPendingFrameCount = sourcePreparation.recommendedPendingFrameCount
 
@@ -1153,8 +1159,8 @@ public actor MDKEncodedCaptureSession {
                 return
             }
 
-            sourceCadenceTracker.record(displayTime: frame.displayTime)
-            sourceTimingTracker.record(frame: frame)
+            sourceCadenceTracker?.record(displayTime: frame.displayTime)
+            sourceTimingTracker?.record(frame: frame)
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
                     let replacedDisplayTime = await latestFrameMailbox.store(frame)
@@ -1179,6 +1185,9 @@ public actor MDKEncodedCaptureSession {
         self.sourceCadenceTracker = sourceCadenceTracker
         self.sourceTimingTracker = sourceTimingTracker
         runtimeDiagnosticNotes = sourcePreparation.diagnosticNotes
+        if !shouldRecordSourceDiagnostics {
+            runtimeDiagnosticNotes.append("sourceHotPathDiagnostics=disabled")
+        }
 
         do {
             try source.start()
