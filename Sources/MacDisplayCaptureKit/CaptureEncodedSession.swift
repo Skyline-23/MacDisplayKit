@@ -438,26 +438,16 @@ private final class MDKEncodedCapturePendingFrameTracker: @unchecked Sendable {
     }
 }
 
-private let MDKEncodedCaptureMailboxDrainQueue = DispatchQueue(
-    label: "com.skyline23.MacDisplayKit.encoded-capture.mailbox-drain",
-    attributes: .concurrent
-)
-
-private final class MDKEncodedCaptureLatestFrameMailbox: @unchecked Sendable {
-    private let lock = NSLock()
+private actor MDKEncodedCaptureLatestFrameMailbox {
     private var latestFrame: MDKCaptureFrame?
 
     func store(_ frame: MDKCaptureFrame) -> UInt64? {
-        lock.lock()
-        defer { lock.unlock() }
         let replacedDisplayTime = latestFrame?.displayTime
         latestFrame = frame
         return replacedDisplayTime
     }
 
     func take() -> MDKCaptureFrame? {
-        lock.lock()
-        defer { lock.unlock() }
         let frame = latestFrame
         latestFrame = nil
         return frame
@@ -473,8 +463,8 @@ private func MDKProcessMailboxAwareSourceFrame(
 ) {
     do {
         try processor.process(frame: frame) {
-            MDKEncodedCaptureMailboxDrainQueue.async {
-                if let latestFrame = latestFrameMailbox.take() {
+            Task {
+                if let latestFrame = await latestFrameMailbox.take() {
                     MDKProcessMailboxAwareSourceFrame(
                         latestFrame,
                         processor: processor,
@@ -1167,7 +1157,7 @@ public actor MDKEncodedCaptureSession {
             sourceTimingTracker.record(frame: frame)
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
-                    let replacedDisplayTime = latestFrameMailbox.store(frame)
+                    let replacedDisplayTime = await latestFrameMailbox.store(frame)
                     if let replacedDisplayTime {
                         await self.handleSourceFrameDropped(
                             sourceDisplayTime: replacedDisplayTime,
