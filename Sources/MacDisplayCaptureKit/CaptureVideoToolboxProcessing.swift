@@ -919,6 +919,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             (codec == .hevc && isHighRefreshLowLatency)
             ? max(targetFrameRate * 2, targetFrameRate)
             : targetFrameRate
+        let maximumRealTimeFrameRateHint =
+            (codec == .hevc && isHighRefreshHDRHEVC && !shouldEnableLowLatencyRateControl)
+            ? max((targetFrameRate * 15) / 8, targetFrameRate)
+            : nil
         let expectedDurationHint = 1.0 / Double(expectedFrameRateHint)
         let vbvBufferDurationSeconds: Double? =
             (isHighRefreshHDRHEVC && shouldEnableLowLatencyRateControl)
@@ -954,13 +958,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedDuration, value: NSNumber(value: expectedDurationHint), label: "ExpectedDuration")
         setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: expectedFrameRateHint), label: "ExpectedFrameRate")
         if #available(macOS 15.0, *),
-            codec == .hevc &&
-            isHighRefreshHDRHEVC &&
-            !shouldEnableLowLatencyRateControl {
+            let maximumRealTimeFrameRateHint {
             setSessionProperty(
                 session,
                 key: kVTCompressionPropertyKey_MaximumRealTimeFrameRate,
-                value: NSNumber(value: expectedFrameRateHint),
+                value: NSNumber(value: maximumRealTimeFrameRateHint),
                 label: "MaximumRealTimeFrameRate"
             )
         }
@@ -1054,10 +1056,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         sessionConfigurationNotes.append("videoToolboxEncodedHeight=\(height)")
         sessionConfigurationNotes.append("videoToolboxTargetFrameRateHint=\(expectedFrameRateHint)")
         if #available(macOS 15.0, *),
-            codec == .hevc &&
-            isHighRefreshHDRHEVC &&
-            !shouldEnableLowLatencyRateControl {
-            sessionConfigurationNotes.append("videoToolboxConfiguredMaximumRealTimeFrameRate=\(expectedFrameRateHint)")
+            let maximumRealTimeFrameRateHint {
+            sessionConfigurationNotes.append("videoToolboxConfiguredMaximumRealTimeFrameRate=\(maximumRealTimeFrameRateHint)")
         } else {
             sessionConfigurationNotes.append("videoToolboxConfiguredMaximumRealTimeFrameRate=default")
         }
