@@ -901,25 +901,17 @@ public actor MDKEncodedCaptureSession {
             }
         }
         self.processorFactory = { configuration, outputHandler, failureHandler in
-            let maxInflightStagingSlots: Int
-            if configuration.codec == .hevc,
-               configuration.targetFrameRate >= 100,
-               configuration.resolvedEncodedHDRConfiguration?.transferFunction == .smpteSt2084PQ {
-                maxInflightStagingSlots = 4
-            } else {
-                maxInflightStagingSlots = 128
-            }
-
             return MDKVideoToolboxEncodingProcessor(
                 codec: configuration.codec,
                 preprocessStrategy: configuration.preprocessStrategy,
                 targetFrameRate: configuration.targetFrameRate,
                 encoderInputStrategy: configuration.resolvedEncoderInputStrategy,
-                maxInflightStagingSlots: maxInflightStagingSlots,
+                maxInflightStagingSlots: 128,
                 outputHandler: outputHandler,
                 failureHandler: failureHandler,
                 hdrConfiguration: configuration.resolvedEncodedHDRConfiguration,
-                targetAverageBitRateBitsPerSecond: configuration.targetAverageBitRateBitsPerSecond
+                targetAverageBitRateBitsPerSecond: configuration.targetAverageBitRateBitsPerSecond,
+                tileMetadata: configuration.tileLayout.metadata(frameGroupID: 0)
             )
         }
     }
@@ -950,6 +942,7 @@ public actor MDKEncodedCaptureSession {
             return MDKEncodedCaptureSourcePreparation(
                 recommendedPendingFrameCount: max(configuration.resolvedPrivateCaptureSurfaceCount - 1, 1),
                 diagnosticNotes: [
+                    "sourceBackend=\(MDKEncodedCaptureSourceBackend.privateDirectIOSurface.rawValue)",
                     String(format: "privateCaptureSourcePixelFormat=0x%08X", kCVPixelFormatType_32BGRA),
                     String(format: "privateCaptureRequestedPixelFormat=0x%08X", configuration.resolvedCapturePixelFormat),
                     "privateCaptureExtendedRange=\(requestsExtendedRange)",
@@ -973,6 +966,7 @@ public actor MDKEncodedCaptureSession {
             return MDKEncodedCaptureSourcePreparation(
                 recommendedPendingFrameCount: recommendedPendingFrameCount,
                 diagnosticNotes: (tuningSelection?.notes ?? []) + [
+                    "sourceBackend=\(MDKEncodedCaptureSourceBackend.skyLightDisplayStream.rawValue)",
                     "rawPrivateDisplayStream=true",
                     String(format: "rawPrivateDisplayStreamRequestedPixelFormat=0x%08X", configuration.resolvedCapturePixelFormat),
                     "rawPrivateDisplayStreamRequestedMatrix=\(configuration.resolvedSkyLightDisplayStreamYCbCrMatrix?.imageBufferValue as String? ?? "unset")",
@@ -999,11 +993,8 @@ public actor MDKEncodedCaptureSession {
             configuration.resolvedSkyLightProcessingMode != nil
 
         if usesLowLatencyCallbackEncode {
-            if configuration.codec == .proResProxy && configuration.targetFrameRate >= 100 {
-                return 8
-            }
             if configuration.targetFrameRate >= 100 {
-                return min(max(effectiveQueueDepth + 4, 6), 8)
+                return 16
             } else if configuration.targetFrameRate >= 60 {
                 return min(max(effectiveQueueDepth + 1, 3), 5)
             }

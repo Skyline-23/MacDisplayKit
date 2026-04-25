@@ -1,6 +1,7 @@
 import XCTest
 import CoreGraphics
 import CoreVideo
+import Metal
 import VideoToolbox
 @testable import MacDisplayKit
 @testable import MacDisplayCaptureKit
@@ -143,7 +144,7 @@ final class MacDisplayKitTests: XCTestCase {
     func testHighRefreshRealTimeEncodeUsesCodecSpecificLowLatencyFrameDelay() {
         XCTAssertEqual(
             MDKVideoToolboxLatencyPolicy.maxFrameDelayCount(codec: .hevc, targetFrameRate: 120),
-            1
+            0
         )
         XCTAssertEqual(
             MDKVideoToolboxLatencyPolicy.maxFrameDelayCount(codec: .h264, targetFrameRate: 120),
@@ -271,6 +272,45 @@ final class MacDisplayKitTests: XCTestCase {
         )
     }
 
+    func testProcessorStagesRawYUVPassthroughWhenMetalQueueIsAvailable() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device is not available on this host.")
+        }
+        let processor = MDKVideoToolboxEncodingProcessor(
+            codec: .hevc,
+            targetFrameRate: 60,
+            device: device,
+            hdrConfiguration: nil
+        )
+
+        XCTAssertTrue(
+            processor.shouldUseDetachedSubmissionSurface(
+                sourcePixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                targetPixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                needsScaling: false,
+                hasCursorOverlay: false
+            )
+        )
+    }
+
+    func testProcessorKeepsRawYUVDirectSubmissionWhenMetalQueueIsUnavailable() {
+        let processor = MDKVideoToolboxEncodingProcessor(
+            codec: .hevc,
+            targetFrameRate: 120,
+            device: nil,
+            hdrConfiguration: nil
+        )
+
+        XCTAssertFalse(
+            processor.shouldUseDetachedSubmissionSurface(
+                sourcePixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                targetPixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+                needsScaling: false,
+                hasCursorOverlay: false
+            )
+        )
+    }
+
     func testAutoEncoderInputStrategyTracksResolvedCaptureBackend() {
         let baseStreamConfiguration = MDKSkyLightDisplayStreamConfiguration(
             queueDepth: 2,
@@ -366,7 +406,7 @@ final class MacDisplayKitTests: XCTestCase {
         )
     }
 
-    func testSkyLightPendingFrameCountStaysTightForCallbackOnlyEncodedCapture() {
+    func testSkyLightPendingFrameCountUsesSharedHighRefreshWindowForCallbackOnlyEncodedCapture() {
         let callbackOnlyQ2 = MDKEncodedCaptureConfiguration(
             displayID: 7,
             streamConfiguration: .panelNative(
@@ -406,20 +446,40 @@ final class MacDisplayKitTests: XCTestCase {
             targetFrameRate: 120,
             deliveryMode: .multiplexed
         )
+        let callbackOnlyProResQ2 = MDKEncodedCaptureConfiguration(
+            displayID: 7,
+            streamConfiguration: .panelNative(
+                queueDepth: 2,
+                queueProfile: .q2,
+                showCursor: false,
+                pixelFormat: kCVPixelFormatType_32BGRA
+            ),
+            codec: .proResProxy,
+            preprocessStrategy: .none,
+            targetFrameRate: 120,
+            deliveryMode: .callbackOnly
+        )
 
         XCTAssertEqual(
             MDKEncodedCaptureSession.recommendedSkyLightPendingFrameCount(
                 for: callbackOnlyQ2,
                 queueDepth: 2
             ),
-            4
+            16
         )
         XCTAssertEqual(
             MDKEncodedCaptureSession.recommendedSkyLightPendingFrameCount(
                 for: callbackOnlyQ3,
                 queueDepth: 3
             ),
-            5
+            16
+        )
+        XCTAssertEqual(
+            MDKEncodedCaptureSession.recommendedSkyLightPendingFrameCount(
+                for: callbackOnlyProResQ2,
+                queueDepth: 2
+            ),
+            16
         )
         XCTAssertEqual(
             MDKEncodedCaptureSession.recommendedSkyLightPendingFrameCount(
@@ -1805,9 +1865,13 @@ final class MacDisplayKitTests: XCTestCase {
         )
     }
 
-    func testSkyLightAutotunerUsesHighRefreshProductionBootstrapForVTEncode() {
+    func testSkyLightAutotunerUsesSharedBaselineBootstrapForHighRefreshVTEncode() {
         let candidates = MDKSkyLightDisplayStreamTuningAdvisor.recommendedCandidates(
             for: .videoToolboxEncode,
+            targetFrameRate: 120
+        )
+        let proResCandidates = MDKSkyLightDisplayStreamTuningAdvisor.recommendedCandidates(
+            for: .videoToolboxEncodeProResProxyExperimental,
             targetFrameRate: 120
         )
 
@@ -1818,7 +1882,16 @@ final class MacDisplayKitTests: XCTestCase {
                 targetFrameRate: 120,
                 displayRefreshRate: 240
             ),
-            MDKSkyLightDisplayStreamTuningMatrix.request120LikeQueue2Candidate
+            MDKSkyLightDisplayStreamTuningMatrix.baselineQueue2Candidate
+        )
+        XCTAssertEqual(
+            MDKSkyLightDisplayStreamAutotuner.highRefreshProductionBootstrapCandidate(
+                processingMode: .videoToolboxEncodeProResProxyExperimental,
+                candidates: proResCandidates,
+                targetFrameRate: 120,
+                displayRefreshRate: 240
+            ),
+            MDKSkyLightDisplayStreamTuningMatrix.baselineQueue2Candidate
         )
     }
 
@@ -3049,5 +3122,36 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(enqueueSummary.imageOffsetHistogram["766532"], 3)
         XCTAssertEqual(enqueueSummary.cadenceClassification, "60hz-like")
         XCTAssertEqual(enqueueSummary.firstEvents.count, 3)
+    }
+
+    func testEncodedCaptureTileLayoutDefaultsToSingleFrameMetadata() {
+        let configuration = MDKEncodedCaptureConfiguration.panelNative(displayID: 7)
+
+        XCTAssertTrue(configuration.tileLayout.isSingleFrame)
+        let metadata = configuration.tileLayout.metadata(frameGroupID: 42)
+        XCTAssertEqual(metadata.frameGroupID, 42)
+        XCTAssertEqual(metadata.tileIndex, 0)
+        XCTAssertEqual(metadata.tileCount, 1)
+        XCTAssertEqual(metadata.encodedLaneIndex, 0)
+        XCTAssertEqual(metadata.encodedLaneCount, 1)
+        XCTAssertNil(metadata.tileRegion)
+    }
+
+    func testEncodedCaptureTileLayoutPreservesExplicitLaneTopology() {
+        let layout = MDKEncodedCaptureTileLayout(tileCount: 4, encodedLaneCount: 2)
+        let metadata = layout.metadata(
+            frameGroupID: 99,
+            tileIndex: 3,
+            encodedLaneIndex: 1,
+            tileRegion: CGRect(x: 1920, y: 0, width: 1920, height: 1080)
+        )
+
+        XCTAssertFalse(layout.isSingleFrame)
+        XCTAssertEqual(metadata.frameGroupID, 99)
+        XCTAssertEqual(metadata.tileIndex, 3)
+        XCTAssertEqual(metadata.tileCount, 4)
+        XCTAssertEqual(metadata.encodedLaneIndex, 1)
+        XCTAssertEqual(metadata.encodedLaneCount, 2)
+        XCTAssertEqual(metadata.tileRegion, CGRect(x: 1920, y: 0, width: 1920, height: 1080))
     }
 }

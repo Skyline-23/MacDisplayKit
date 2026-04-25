@@ -1,3 +1,4 @@
+import CoreGraphics
 import CoreVideo
 import Foundation
 
@@ -52,6 +53,41 @@ public enum MDKEncodedCaptureEncoderInputStrategy: String, Codable, Equatable, S
     case yuv420v10 = "420v10"
 }
 
+public struct MDKEncodedCaptureTileLayout: Codable, Equatable, Sendable {
+    public static let singleFrame = MDKEncodedCaptureTileLayout()
+
+    public let tileCount: UInt32
+    public let encodedLaneCount: UInt32
+
+    public init(
+        tileCount: UInt32 = 1,
+        encodedLaneCount: UInt32 = 1
+    ) {
+        self.tileCount = max(1, tileCount)
+        self.encodedLaneCount = max(1, encodedLaneCount)
+    }
+
+    public var isSingleFrame: Bool {
+        tileCount <= 1 && encodedLaneCount <= 1
+    }
+
+    public func metadata(
+        frameGroupID: UInt64,
+        tileIndex: UInt32 = 0,
+        encodedLaneIndex: UInt32 = 0,
+        tileRegion: CGRect? = nil
+    ) -> MDKEncodedFrameTileMetadata {
+        MDKEncodedFrameTileMetadata(
+            frameGroupID: frameGroupID,
+            tileIndex: tileIndex,
+            tileCount: tileCount,
+            encodedLaneIndex: encodedLaneIndex,
+            encodedLaneCount: encodedLaneCount,
+            tileRegion: tileRegion
+        )
+    }
+}
+
 public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
     public let displayID: UInt32
     public let streamConfiguration: MDKSkyLightDisplayStreamConfiguration
@@ -65,6 +101,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
     public let hdrConfiguration: MDKVideoHDRConfiguration?
     public let backpressurePolicy: MDKEncodedCaptureBackpressurePolicy
     public let recoveryPolicy: MDKEncodedCaptureRecoveryPolicy
+    public let tileLayout: MDKEncodedCaptureTileLayout
 
     public init(
         displayID: UInt32,
@@ -78,7 +115,8 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         encoderInputStrategy: MDKEncodedCaptureEncoderInputStrategy = .auto,
         hdrConfiguration: MDKVideoHDRConfiguration? = nil,
         backpressurePolicy: MDKEncodedCaptureBackpressurePolicy = .dropOldest(limit: 8),
-        recoveryPolicy: MDKEncodedCaptureRecoveryPolicy = MDKEncodedCaptureRecoveryPolicy()
+        recoveryPolicy: MDKEncodedCaptureRecoveryPolicy = MDKEncodedCaptureRecoveryPolicy(),
+        tileLayout: MDKEncodedCaptureTileLayout = .singleFrame
     ) {
         self.displayID = displayID
         self.streamConfiguration = streamConfiguration
@@ -92,6 +130,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         self.hdrConfiguration = hdrConfiguration
         self.backpressurePolicy = backpressurePolicy
         self.recoveryPolicy = recoveryPolicy
+        self.tileLayout = tileLayout
     }
 
     public static func panelNative(
@@ -108,7 +147,8 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         encoderInputStrategy: MDKEncodedCaptureEncoderInputStrategy = .auto,
         hdrConfiguration: MDKVideoHDRConfiguration? = nil,
         backpressurePolicy: MDKEncodedCaptureBackpressurePolicy = .dropOldest(limit: 8),
-        recoveryPolicy: MDKEncodedCaptureRecoveryPolicy = MDKEncodedCaptureRecoveryPolicy()
+        recoveryPolicy: MDKEncodedCaptureRecoveryPolicy = MDKEncodedCaptureRecoveryPolicy(),
+        tileLayout: MDKEncodedCaptureTileLayout = .singleFrame
     ) -> Self {
         Self(
             displayID: displayID,
@@ -116,7 +156,10 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
                 queueDepth: queueDepth,
                 queueProfile: queueProfile,
                 showCursor: showCursor,
-                pixelFormat: capturePixelFormat ?? codec.preferredCapturePixelFormat
+                pixelFormat: Self.defaultPanelNativeCapturePixelFormat(
+                    codec: codec,
+                    explicitCapturePixelFormat: capturePixelFormat
+                )
             ),
             codec: codec,
             preprocessStrategy: preprocessStrategy,
@@ -127,12 +170,26 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
             encoderInputStrategy: encoderInputStrategy,
             hdrConfiguration: hdrConfiguration,
             backpressurePolicy: backpressurePolicy,
-            recoveryPolicy: recoveryPolicy
+            recoveryPolicy: recoveryPolicy,
+            tileLayout: tileLayout
         )
     }
 
     var resolvedCapturePixelFormat: UInt32 {
         capturePixelFormat ?? streamConfiguration.pixelFormat ?? codec.preferredCapturePixelFormat
+    }
+
+    private static func defaultPanelNativeCapturePixelFormat(
+        codec: MDKVideoEncoderCodec,
+        explicitCapturePixelFormat: UInt32?
+    ) -> UInt32 {
+        if let explicitCapturePixelFormat {
+            return explicitCapturePixelFormat
+        }
+        if codec == .hevc {
+            return kCVPixelFormatType_32BGRA
+        }
+        return codec.preferredCapturePixelFormat
     }
 
     private static func sanitizedAverageBitRate(_ value: Int?) -> Int? {
@@ -218,7 +275,7 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
             return false
         }
 
-        if codec == .proResProxy && targetFrameRate >= 100 {
+        if codec == .proResProxy || codec == .hevc {
             return true
         }
 

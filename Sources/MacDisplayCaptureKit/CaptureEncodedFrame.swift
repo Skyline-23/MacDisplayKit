@@ -1,5 +1,33 @@
 import CoreMedia
+import CoreGraphics
 import Foundation
+
+public struct MDKEncodedFrameTileMetadata: Codable, Equatable, Sendable {
+    public static let singleFrame = MDKEncodedFrameTileMetadata()
+
+    public let frameGroupID: UInt64
+    public let tileIndex: UInt32
+    public let tileCount: UInt32
+    public let encodedLaneIndex: UInt32
+    public let encodedLaneCount: UInt32
+    public let tileRegion: CGRect?
+
+    public init(
+        frameGroupID: UInt64 = 0,
+        tileIndex: UInt32 = 0,
+        tileCount: UInt32 = 1,
+        encodedLaneIndex: UInt32 = 0,
+        encodedLaneCount: UInt32 = 1,
+        tileRegion: CGRect? = nil
+    ) {
+        self.frameGroupID = frameGroupID
+        self.tileIndex = tileIndex
+        self.tileCount = max(1, tileCount)
+        self.encodedLaneIndex = encodedLaneIndex
+        self.encodedLaneCount = max(1, encodedLaneCount)
+        self.tileRegion = tileRegion
+    }
+}
 
 public struct MDKEncodedFrameHDRValidationReport: Codable, Equatable, Sendable {
     public let colorPrimaries: String?
@@ -51,19 +79,22 @@ public final class MDKEncodedFrame: @unchecked Sendable {
     public let sourceSequenceNumber: UInt64
     public let sourceDisplayTime: UInt64
     public let outputCallbackLatencyMilliseconds: Double?
+    public let tileMetadata: MDKEncodedFrameTileMetadata
 
     public init(
         sampleBuffer: CMSampleBuffer,
         codec: MDKVideoEncoderCodec,
         sourceSequenceNumber: UInt64,
         sourceDisplayTime: UInt64,
-        outputCallbackLatencyMilliseconds: Double?
+        outputCallbackLatencyMilliseconds: Double?,
+        tileMetadata: MDKEncodedFrameTileMetadata = .singleFrame
     ) {
         self.sampleBuffer = sampleBuffer
         self.codec = codec
         self.sourceSequenceNumber = sourceSequenceNumber
         self.sourceDisplayTime = sourceDisplayTime
         self.outputCallbackLatencyMilliseconds = outputCallbackLatencyMilliseconds
+        self.tileMetadata = tileMetadata
     }
 
     public var presentationTimeStamp: CMTime {

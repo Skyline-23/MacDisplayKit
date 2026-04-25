@@ -115,7 +115,7 @@ enum MDKVideoToolboxLatencyPolicy {
         case .h264:
             return 2
         case .hevc:
-            return 1
+            return 0
         case .proResProxy:
             return 0
         }
@@ -196,6 +196,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let failureHandler: (@Sendable (String) -> Void)?
     private let hdrConfiguration: MDKVideoHDRConfiguration?
     private let targetAverageBitRateBitsPerSecond: Int?
+    private let tileMetadata: MDKEncodedFrameTileMetadata
 
     private var compressionSession: VTCompressionSession?
     private var activeDimensions: SIMD2<Int>?
@@ -250,7 +251,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         outputHandler: (@Sendable (MDKEncodedFrame) -> Void)? = nil,
         failureHandler: (@Sendable (String) -> Void)? = nil,
         hdrConfiguration: MDKVideoHDRConfiguration? = nil,
-        targetAverageBitRateBitsPerSecond: Int? = nil
+        targetAverageBitRateBitsPerSecond: Int? = nil,
+        tileMetadata: MDKEncodedFrameTileMetadata = .singleFrame
     ) {
         self.codec = codec
         self.preprocessStrategy = preprocessStrategy
@@ -276,6 +278,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.failureHandler = failureHandler
         self.hdrConfiguration = hdrConfiguration?.negotiatedForEncodedDelivery(codec: codec)
         self.targetAverageBitRateBitsPerSecond = targetAverageBitRateBitsPerSecond.flatMap { $0 > 0 ? $0 : nil }
+        self.tileMetadata = tileMetadata
         self.encodeQueue.setSpecific(key: encodeQueueSpecificKey, value: encodeQueueSpecificValue)
     }
 
@@ -498,7 +501,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let needsScaling = outputDimensions.x != frame.width || outputDimensions.y != frame.height
 
         let hasCursorOverlay = frame.cursorOverlaySample != nil
-        let requiresDetachedSubmissionSurface = codec.requiresDetachedSubmissionSurface(
+        let requiresDetachedSubmissionSurface = shouldUseDetachedSubmissionSurface(
             sourcePixelFormat: frame.pixelFormat,
             targetPixelFormat: targetPixelFormat,
             needsScaling: needsScaling,
@@ -523,6 +526,43 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 frame: frame,
                 releaseSourceFrame: releaseSourceFrame
             )
+        }
+    }
+
+    func shouldUseDetachedSubmissionSurface(
+        sourcePixelFormat: UInt32,
+        targetPixelFormat: UInt32,
+        needsScaling: Bool,
+        hasCursorOverlay: Bool
+    ) -> Bool {
+        if codec.requiresDetachedSubmissionSurface(
+            sourcePixelFormat: sourcePixelFormat,
+            targetPixelFormat: targetPixelFormat,
+            needsScaling: needsScaling,
+            hasCursorOverlay: hasCursorOverlay
+        ) {
+            return true
+        }
+
+        guard !needsScaling,
+              !hasCursorOverlay,
+              sourcePixelFormat == targetPixelFormat,
+              commandQueue != nil else {
+            return false
+        }
+
+        switch sourcePixelFormat {
+        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+             kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr8BiPlanarVideoRange,
+             kCVPixelFormatType_422YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
+             kCVPixelFormatType_422YpCbCr10BiPlanarFullRange:
+            return true
+        default:
+            return false
         }
     }
 
@@ -915,10 +955,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             isHighRefreshLowLatency &&
             hdrConfiguration?.transferFunction == .smpteSt2084PQ
         let allowsTemporalCompression = codec != .proResProxy
-        let expectedFrameRateHint =
-            (codec == .hevc && isHighRefreshLowLatency)
-            ? max(targetFrameRate * 2, targetFrameRate)
-            : targetFrameRate
+        let expectedFrameRateHint = targetFrameRate
         let maximumRealTimeFrameRateHint =
             (codec == .hevc && isHighRefreshHDRHEVC && !shouldEnableLowLatencyRateControl)
             ? max((targetFrameRate * 15) / 8, targetFrameRate)
@@ -1537,13 +1574,23 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 isKeyFrame: isKeyFrame
             ) ?? sampleBuffer
         }
+        let sourceSequenceNumber = submissionToken?.sourceSequenceNumber ?? 0
+        let resolvedTileMetadata = MDKEncodedFrameTileMetadata(
+            frameGroupID: tileMetadata.frameGroupID == 0 ? sourceSequenceNumber : tileMetadata.frameGroupID,
+            tileIndex: tileMetadata.tileIndex,
+            tileCount: tileMetadata.tileCount,
+            encodedLaneIndex: tileMetadata.encodedLaneIndex,
+            encodedLaneCount: tileMetadata.encodedLaneCount,
+            tileRegion: tileMetadata.tileRegion
+        )
         let encodedFrame = resolvedSampleBuffer.map {
             MDKEncodedFrame(
                 sampleBuffer: $0,
                 codec: codec,
-                sourceSequenceNumber: submissionToken?.sourceSequenceNumber ?? 0,
+                sourceSequenceNumber: sourceSequenceNumber,
                 sourceDisplayTime: submissionToken?.sourceDisplayTime ?? 0,
-                outputCallbackLatencyMilliseconds: latencyMilliseconds
+                outputCallbackLatencyMilliseconds: latencyMilliseconds,
+                tileMetadata: resolvedTileMetadata
             )
         }
         if let slotIdentifier = submissionToken?.slotIdentifier {

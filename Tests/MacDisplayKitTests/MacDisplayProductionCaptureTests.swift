@@ -6,7 +6,7 @@ import MacDisplayKitObjCShim
 import XCTest
 
 final class MacDisplayProductionCaptureTests: XCTestCase {
-    func testEncodedCaptureConfigurationDefaultsToCodecFriendlyPanelNativeSurface() {
+    func testEncodedCaptureConfigurationDefaultsHEVCToSharedBGRASourceSurface() {
         let configuration = MDKEncodedCaptureConfiguration.panelNative(displayID: 7)
 
         XCTAssertEqual(configuration.displayID, 7)
@@ -16,15 +16,23 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         XCTAssertEqual(configuration.streamConfiguration.queueProfile, .q2)
         XCTAssertEqual(
             configuration.streamConfiguration.pixelFormat,
-            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            kCVPixelFormatType_32BGRA
         )
         XCTAssertEqual(
             configuration.resolvedCapturePixelFormat,
+            kCVPixelFormatType_32BGRA
+        )
+        XCTAssertEqual(
+            MDKVideoEncoderCodec.hevc.preferredInputPixelFormat(
+                for: configuration.resolvedCapturePixelFormat,
+                hdrConfiguration: .hdr10(),
+                strategy: .auto
+            ),
             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
         )
     }
 
-    func testEncodedCaptureConfigurationPrefersRawPrivateDisplayStreamForYUVEncodedSessions() {
+    func testEncodedCaptureConfigurationPrefersRawPrivateDisplayStreamForHEVC() {
         let configuration = MDKEncodedCaptureConfiguration.panelNative(displayID: 7)
 
         XCTAssertEqual(
@@ -43,7 +51,34 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         )
     }
 
-    func testEncodedCaptureConfigurationKeepsPrivateDirectIOSurfaceForBGRAEncodedSessions() {
+    func testHDRCodecsShareRawPrivateDisplayStreamBackendWhenAvailable() {
+        let capabilities = MDKPrivateCaptureCapabilities(
+            desktopCaptureAvailable: true,
+            displayIOSurfaceCaptureAvailable: true,
+            displayIOSurfaceCaptureWithOptionsAvailable: true,
+            displayIOSurfaceProxyCaptureAvailable: true,
+            displayStreamProxyAvailable: true,
+            rawSkyLightDisplayStreamAvailable: true,
+            extendedRangeOptionAvailable: true
+        )
+        let hevcConfiguration = MDKEncodedCaptureConfiguration.panelNative(
+            displayID: 7,
+            codec: .hevc,
+            targetFrameRate: 120,
+            hdrConfiguration: .hdr10()
+        )
+        let proResConfiguration = MDKEncodedCaptureConfiguration.panelNative(
+            displayID: 7,
+            codec: .proResProxy,
+            targetFrameRate: 120,
+            hdrConfiguration: .hdr10()
+        )
+
+        XCTAssertEqual(hevcConfiguration.resolvedSourceBackend(using: capabilities), .skyLightDisplayStream)
+        XCTAssertEqual(proResConfiguration.resolvedSourceBackend(using: capabilities), .skyLightDisplayStream)
+    }
+
+    func testBGRAEncodedSessionsUseRawSkyLightWhenAvailable() {
         let configuration = MDKEncodedCaptureConfiguration.panelNative(
             displayID: 7,
             codec: .proResProxy,
@@ -59,6 +94,29 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
                     displayIOSurfaceProxyCaptureAvailable: false,
                     displayStreamProxyAvailable: false,
                     rawSkyLightDisplayStreamAvailable: true,
+                    extendedRangeOptionAvailable: false
+                )
+            ),
+            .skyLightDisplayStream
+        )
+    }
+
+    func testBGRAEncodedSessionsUsePrivateDirectIOSurfaceWhenRawSkyLightIsUnavailable() {
+        let configuration = MDKEncodedCaptureConfiguration.panelNative(
+            displayID: 7,
+            codec: .proResProxy,
+            capturePixelFormat: kCVPixelFormatType_32BGRA
+        )
+
+        XCTAssertEqual(
+            configuration.resolvedSourceBackend(
+                using: .init(
+                    desktopCaptureAvailable: false,
+                    displayIOSurfaceCaptureAvailable: true,
+                    displayIOSurfaceCaptureWithOptionsAvailable: true,
+                    displayIOSurfaceProxyCaptureAvailable: false,
+                    displayStreamProxyAvailable: false,
+                    rawSkyLightDisplayStreamAvailable: false,
                     extendedRangeOptionAvailable: false
                 )
             ),
@@ -900,6 +958,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         let session = makeTestSession(
             configuration: .panelNative(
                 displayID: 14,
+                codec: .proResProxy,
                 deliveryMode: .callbackOnly
             ),
             source: source,
