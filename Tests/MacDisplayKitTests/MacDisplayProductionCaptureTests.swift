@@ -6,7 +6,7 @@ import MacDisplayKitObjCShim
 import XCTest
 
 final class MacDisplayProductionCaptureTests: XCTestCase {
-    func testEncodedCaptureConfigurationDefaultsHEVCToNativeTenBitSourceSurface() {
+    func testEncodedCaptureConfigurationDefaultsHEVCToSharedBGRASourceSurface() {
         let configuration = MDKEncodedCaptureConfiguration.panelNative(displayID: 7)
 
         XCTAssertEqual(configuration.displayID, 7)
@@ -16,11 +16,11 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         XCTAssertEqual(configuration.streamConfiguration.queueProfile, .q2)
         XCTAssertEqual(
             configuration.streamConfiguration.pixelFormat,
-            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            kCVPixelFormatType_32BGRA
         )
         XCTAssertEqual(
             configuration.resolvedCapturePixelFormat,
-            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            kCVPixelFormatType_32BGRA
         )
         XCTAssertEqual(
             MDKVideoEncoderCodec.hevc.preferredInputPixelFormat(
