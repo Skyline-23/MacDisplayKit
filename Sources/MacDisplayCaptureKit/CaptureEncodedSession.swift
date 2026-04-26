@@ -485,6 +485,186 @@ private func MDKProcessMailboxAwareSourceFrame(
     }
 }
 
+private actor MDKEncodedLaneReleaseCoordinator {
+    private let expectedReleaseCount: Int
+    private var releaseCount = 0
+    private let releaseSourceFrame: @Sendable () -> Void
+
+    init(
+        expectedReleaseCount: Int,
+        releaseSourceFrame: @escaping @Sendable () -> Void
+    ) {
+        self.expectedReleaseCount = max(expectedReleaseCount, 1)
+        self.releaseSourceFrame = releaseSourceFrame
+    }
+
+    func releaseOne() {
+        guard releaseCount < expectedReleaseCount else {
+            return
+        }
+
+        releaseCount += 1
+        if releaseCount == expectedReleaseCount {
+            releaseSourceFrame()
+        }
+    }
+}
+
+private final class MDKEncodedLaneVideoToolboxProcessor: MDKEncodedCaptureProcessorRuntime, @unchecked Sendable {
+    private let laneProcessors: [MDKVideoToolboxEncodingProcessor]
+    private let laneCount: Int
+
+    init(
+        laneCount: Int,
+        configuration: MDKEncodedCaptureConfiguration,
+        outputHandler: @escaping @Sendable (MDKEncodedFrame) -> Void,
+        failureHandler: @escaping @Sendable (String) -> Void
+    ) {
+        let resolvedLaneCount = max(laneCount, 1)
+        self.laneCount = resolvedLaneCount
+        self.laneProcessors = (0..<resolvedLaneCount).map { laneIndex in
+            MDKVideoToolboxEncodingProcessor(
+                codec: configuration.codec,
+                preprocessStrategy: configuration.preprocessStrategy,
+                targetFrameRate: configuration.targetFrameRate,
+                encoderInputStrategy: configuration.resolvedEncoderInputStrategy,
+                maxInflightStagingSlots: 128,
+                outputHandler: outputHandler,
+                failureHandler: failureHandler,
+                hdrConfiguration: configuration.resolvedEncodedHDRConfiguration,
+                targetAverageBitRateBitsPerSecond: configuration.targetAverageBitRateBitsPerSecond,
+                tileMetadata: MDKEncodedFrameTileMetadata(
+                    frameGroupID: 0,
+                    tileIndex: UInt32(laneIndex),
+                    tileCount: UInt32(resolvedLaneCount),
+                    encodedLaneIndex: UInt32(laneIndex),
+                    encodedLaneCount: UInt32(resolvedLaneCount),
+                    tileRegion: nil
+                )
+            )
+        }
+    }
+
+    func process(
+        frame: MDKCaptureFrame,
+        releaseSourceFrame: @escaping @Sendable () -> Void
+    ) throws {
+        let coordinator = MDKEncodedLaneReleaseCoordinator(
+            expectedReleaseCount: laneProcessors.count,
+            releaseSourceFrame: releaseSourceFrame
+        )
+        var firstError: Error?
+
+        for (laneIndex, processor) in laneProcessors.enumerated() {
+            do {
+                try processor.process(
+                    frame: laneFrame(for: frame, laneIndex: laneIndex),
+                    releaseSourceFrame: {
+                        Task {
+                            await coordinator.releaseOne()
+                        }
+                    }
+                )
+            } catch {
+                firstError = firstError ?? error
+                Task {
+                    await coordinator.releaseOne()
+                }
+            }
+        }
+
+        if let firstError {
+            throw firstError
+        }
+    }
+
+    func requestImmediateKeyFrame() {
+        for processor in laneProcessors {
+            processor.requestImmediateKeyFrame()
+        }
+    }
+
+    func finalize() -> MDKCaptureFrameProcessingSummary? {
+        mergedSummary(includeFinal: true)
+    }
+
+    func liveSummary() -> MDKCaptureFrameProcessingSummary? {
+        mergedSummary(includeFinal: false)
+    }
+
+    private func laneFrame(
+        for frame: MDKCaptureFrame,
+        laneIndex: Int
+    ) -> MDKCaptureFrame {
+        let laneHeight = max(frame.height / laneCount, 1) & ~1
+        let yOrigin = laneIndex * laneHeight
+        let remainingHeight = max(frame.height - yOrigin, 1)
+        let resolvedHeight = laneIndex == laneCount - 1
+            ? max(remainingHeight & ~1, laneHeight)
+            : laneHeight
+
+        return MDKCaptureFrame(
+            sequenceNumber: frame.sequenceNumber,
+            displayTime: frame.displayTime,
+            surfaceID: frame.surfaceID,
+            width: frame.width,
+            height: resolvedHeight,
+            pixelFormat: frame.pixelFormat,
+            surface: frame.surface,
+            origin: frame.origin,
+            cursorOverlaySample: nil,
+            sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
+            sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
+        )
+    }
+
+    private func mergedSummary(includeFinal: Bool) -> MDKCaptureFrameProcessingSummary? {
+        let summaries = laneProcessors.compactMap {
+            includeFinal ? $0.finalize() : $0.liveSummary()
+        }
+        guard !summaries.isEmpty else {
+            return nil
+        }
+
+        let processedFrameCount = summaries.map(\.processedFrameCount).reduce(0, +)
+        let processingFailureCount = summaries.map(\.processingFailureCount).reduce(0, +)
+        let outputCallbackCount = summaries.compactMap(\.outputCallbackCount).reduce(0, +)
+        let completedOutputFrameCount = summaries.compactMap(\.completedOutputFrameCount).reduce(0, +)
+        let minLatency = summaries.compactMap(\.minOutputCallbackLatencyMilliseconds).min()
+        let maxLatency = summaries.compactMap(\.maxOutputCallbackLatencyMilliseconds).max()
+        var notes = [
+            "videoToolboxEncodedLanePrototype=true",
+            "videoToolboxEncodedLaneCount=\(laneCount)"
+        ]
+        notes += summaries.first?.notes ?? []
+
+        return MDKCaptureFrameProcessingSummary(
+            processedFrameCount: processedFrameCount,
+            processingFailureCount: processingFailureCount,
+            processingErrorHistogram: mergeHistograms(summaries.map(\.processingErrorHistogram)),
+            outputCallbackCount: outputCallbackCount,
+            completedOutputFrameCount: completedOutputFrameCount,
+            outputCallbackStatusHistogram: mergeOptionalHistograms(summaries.map(\.outputCallbackStatusHistogram)),
+            outputCallbackLatencyHistogram: mergeOptionalHistograms(summaries.map(\.outputCallbackLatencyHistogram)),
+            minOutputCallbackLatencyMilliseconds: minLatency,
+            maxOutputCallbackLatencyMilliseconds: maxLatency,
+            notes: notes
+        )
+    }
+
+    private func mergeHistograms(_ histograms: [[String: Int]]) -> [String: Int] {
+        histograms.reduce(into: [:]) { result, histogram in
+            for (key, value) in histogram {
+                result[key, default: 0] += value
+            }
+        }
+    }
+
+    private func mergeOptionalHistograms(_ histograms: [[String: Int]?]) -> [String: Int] {
+        mergeHistograms(histograms.compactMap { $0 })
+    }
+}
+
 private final class MDKEncodedCaptureSourceCadenceTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var frameCount: UInt64 = 0
@@ -901,6 +1081,17 @@ public actor MDKEncodedCaptureSession {
             }
         }
         self.processorFactory = { configuration, outputHandler, failureHandler in
+            if configuration.codec == .hevc,
+               configuration.targetFrameRate >= 100,
+               configuration.resolvedEncodedHDRConfiguration?.transferFunction == .smpteSt2084PQ {
+                return MDKEncodedLaneVideoToolboxProcessor(
+                    laneCount: 2,
+                    configuration: configuration,
+                    outputHandler: outputHandler,
+                    failureHandler: failureHandler
+                )
+            }
+
             return MDKVideoToolboxEncodingProcessor(
                 codec: configuration.codec,
                 preprocessStrategy: configuration.preprocessStrategy,
