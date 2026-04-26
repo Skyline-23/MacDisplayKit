@@ -973,6 +973,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             codec: codec,
             targetFrameRate: targetFrameRate
         )
+        let shouldConfigureDataRateLimits = !(
+            isHighRefreshHDRHEVC &&
+            !shouldEnableLowLatencyRateControl
+        )
 
         setSessionProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue, label: "RealTime")
         setSessionProperty(session, key: kVTCompressionPropertyKey_ProgressiveScan, value: kCFBooleanTrue, label: "ProgressiveScan")
@@ -1045,7 +1049,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 label: "AverageBitRate"
             )
         }
-        if codec.supportsDataRateLimits {
+        if codec.supportsDataRateLimits && shouldConfigureDataRateLimits {
             let dataRateLimits = resolvedDataRateLimits(
                 width: width,
                 height: height,
@@ -1124,7 +1128,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         } else {
             sessionConfigurationNotes.append("videoToolboxConfiguredAverageBitRate=default")
         }
-        if codec.supportsDataRateLimits {
+        if codec.supportsDataRateLimits && shouldConfigureDataRateLimits {
             let dataRateLimitsDescription = resolvedDataRateLimits(
                 width: width,
                 height: height,
