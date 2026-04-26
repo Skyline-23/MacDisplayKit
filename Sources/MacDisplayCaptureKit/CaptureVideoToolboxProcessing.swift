@@ -958,7 +958,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let expectedFrameRateHint = targetFrameRate
         let maximumRealTimeFrameRateHint =
             (codec == .hevc && isHighRefreshHDRHEVC && !shouldEnableLowLatencyRateControl)
-            ? max(targetFrameRate * 2, targetFrameRate)
+            ? max((targetFrameRate * 15) / 8, targetFrameRate)
             : nil
         let expectedDurationHint = 1.0 / Double(expectedFrameRateHint)
         let vbvBufferDurationSeconds: Double? =
