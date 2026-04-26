@@ -231,6 +231,8 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         switch self {
         case .h264, .hevc:
             switch sourcePixelFormat {
+            case kCVPixelFormatType_32BGRA:
+                return false
             case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
                  kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
                  kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,

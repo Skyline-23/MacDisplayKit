@@ -303,6 +303,9 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
             case .h264:
                 return .yuv420v8
             case .hevc:
+                if resolvedCapturePixelFormat == kCVPixelFormatType_32BGRA {
+                    return .bgra
+                }
                 let usesHDRTransfer = resolvedEncodedHDRConfiguration.map { $0.transferFunction != .ituR709 } ?? false
                 return usesHDRTransfer ? .yuv420v10 : .yuv420v8
             case .proResProxy:
