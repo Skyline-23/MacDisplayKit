@@ -965,10 +965,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             (isHighRefreshHDRHEVC && shouldEnableLowLatencyRateControl)
             ? (1.0 / 30.0)
             : nil
-        let vbvInitialDelayPercentage: Double? =
-            (codec == .hevc && isHighRefreshLowLatency && !shouldEnableLowLatencyRateControl)
-            ? 0
-            : nil
+        let vbvInitialDelayPercentage: Double? = nil
         let maxFrameDelayCount = MDKVideoToolboxLatencyPolicy.maxFrameDelayCount(
             codec: codec,
             targetFrameRate: targetFrameRate
