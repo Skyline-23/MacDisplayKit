@@ -98,6 +98,33 @@ private final class MDKVideoToolboxSendablePixelBuffer: @unchecked Sendable {
     }
 }
 
+private struct MDKVideoToolboxTimingAccumulator {
+    var sampleCount: UInt64 = 0
+    var totalMilliseconds: Double = 0
+    var maxMilliseconds: Double = 0
+
+    mutating func record(_ milliseconds: Double) {
+        let boundedMilliseconds = max(milliseconds, 0)
+        sampleCount += 1
+        totalMilliseconds += boundedMilliseconds
+        maxMilliseconds = max(maxMilliseconds, boundedMilliseconds)
+    }
+
+    var averageMilliseconds: Double {
+        guard sampleCount > 0 else {
+            return 0
+        }
+        return totalMilliseconds / Double(sampleCount)
+    }
+}
+
+private enum MDKVideoToolboxTimingMetric {
+    case encodeQueueWait
+    case encodeInvocation
+    case metalStage
+    case vtEncodeCall
+}
+
 enum MDKVideoToolboxLatencyPolicy {
     static func maxFrameDelayCount(
         codec: MDKVideoEncoderCodec,
@@ -234,12 +261,15 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let submissionQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.submit")
     private let encodeQueueSpecificKey = DispatchSpecificKey<UInt8>()
     private let encodeQueueSpecificValue: UInt8 = 1
-    private let keyFrameRequestLock = NSLock()
     private var forceNextKeyFrame = false
     private var lastFreshReplayState: MDKVideoToolboxReplayState?
     private var lastImmediateRecoveryReplayDisplayTime: UInt64?
     private var immediateReplaySubmissionCount: UInt64 = 0
     private var suppressedImmediateReplayCount: UInt64 = 0
+    private var encodeQueueWaitTiming = MDKVideoToolboxTimingAccumulator()
+    private var encodeInvocationTiming = MDKVideoToolboxTimingAccumulator()
+    private var metalStageTiming = MDKVideoToolboxTimingAccumulator()
+    private var vtEncodeCallTiming = MDKVideoToolboxTimingAccumulator()
 
     public init(
         codec: MDKVideoEncoderCodec = .hevc,
@@ -297,15 +327,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     }
 
     public func requestImmediateKeyFrame() {
-        keyFrameRequestLock.lock()
-        forceNextKeyFrame = true
-        keyFrameRequestLock.unlock()
-
         if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) == encodeQueueSpecificValue {
+            forceNextKeyFrame = true
             replayLastSubmittedFrameAsKeyFrameIfPossible()
         } else {
-            encodeQueue.async { [weak self] in
-                self?.replayLastSubmittedFrameAsKeyFrameIfPossible()
+            encodeQueue.async { [self] in
+                forceNextKeyFrame = true
+                replayLastSubmittedFrameAsKeyFrameIfPossible()
             }
         }
     }
@@ -314,6 +342,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         frame: MDKCaptureFrame,
         releaseSourceFrame: @escaping @Sendable () -> Void
     ) throws {
+        let processRequestedAt = ProcessInfo.processInfo.systemUptime
         guard let surface = frame.surface else {
             throw MDKVideoToolboxProcessingError.surfaceUnavailable
         }
@@ -332,6 +361,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
         )
         let submitFrame = { [self, retainedFrame] in
+            let encodeStartedAt = ProcessInfo.processInfo.systemUptime
+            recordTiming(.encodeQueueWait, startedAt: processRequestedAt, endedAt: encodeStartedAt)
             do {
                 try encode(
                     frame: retainedFrame,
@@ -343,6 +374,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 processingErrorHistogram[errorDescription, default: 0] += 1
                 failureHandler?(errorDescription)
             }
+            recordTiming(.encodeInvocation, startedAt: encodeStartedAt)
         }
 
         if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) == encodeQueueSpecificValue {
@@ -449,7 +481,19 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
             "videoToolboxPixelBufferPoolIsShared=\(describeHardwareAcceleration(encoderPixelBufferPoolIsShared))",
             "videoToolboxRecommendedParallelizationLimit=\(recommendedParallelizationLimit.map(String.init) ?? "unknown")",
-            "videoToolboxPixelBufferCacheSize=\(pixelBufferCache.count)"
+            "videoToolboxPixelBufferCacheSize=\(pixelBufferCache.count)",
+            "videoToolboxEncodeQueueWaitSampleCount=\(encodeQueueWaitTiming.sampleCount)",
+            "videoToolboxEncodeQueueWaitAverageMilliseconds=\(formatMilliseconds(encodeQueueWaitTiming.averageMilliseconds))",
+            "videoToolboxEncodeQueueWaitMaxMilliseconds=\(formatMilliseconds(encodeQueueWaitTiming.maxMilliseconds))",
+            "videoToolboxEncodeInvocationSampleCount=\(encodeInvocationTiming.sampleCount)",
+            "videoToolboxEncodeInvocationAverageMilliseconds=\(formatMilliseconds(encodeInvocationTiming.averageMilliseconds))",
+            "videoToolboxEncodeInvocationMaxMilliseconds=\(formatMilliseconds(encodeInvocationTiming.maxMilliseconds))",
+            "videoToolboxMetalStageSampleCount=\(metalStageTiming.sampleCount)",
+            "videoToolboxMetalStageAverageMilliseconds=\(formatMilliseconds(metalStageTiming.averageMilliseconds))",
+            "videoToolboxMetalStageMaxMilliseconds=\(formatMilliseconds(metalStageTiming.maxMilliseconds))",
+            "videoToolboxVTEncodeCallSampleCount=\(vtEncodeCallTiming.sampleCount)",
+            "videoToolboxVTEncodeCallAverageMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.averageMilliseconds))",
+            "videoToolboxVTEncodeCallMaxMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.maxMilliseconds))"
         ]
         if includeDrainWaitStatus {
             notes.append("videoToolboxStagingSubmissionWait=\(stagingSubmissionWaitStatus == .success ? "success" : "timeout")")
@@ -620,6 +664,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         )
         let slotIdentifier = slot.identifier
         let stagedPixelBuffer = MDKVideoToolboxSendablePixelBuffer(pixelBuffer: slot.pixelBuffer)
+        let metalStageStartedAt = ProcessInfo.processInfo.systemUptime
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             releaseStagingSlot(identifier: slotIdentifier)
@@ -745,6 +790,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 self.stagingSubmissionGroup.leave()
                 return
             }
+            self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
             do {
                 try self.submitToEncoder(
                     imageBuffer: stagedPixelBuffer.pixelBuffer,
@@ -797,6 +843,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
         outputDrainGroup.enter()
 
+        let vtEncodeCallStartedAt = ProcessInfo.processInfo.systemUptime
         let status = VTCompressionSessionEncodeFrame(
             compressionSession,
             imageBuffer: imageBuffer,
@@ -806,6 +853,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             sourceFrameRefcon: submissionToken.toOpaque(),
             infoFlagsOut: nil
         )
+        recordTiming(.vtEncodeCall, startedAt: vtEncodeCallStartedAt)
         guard status == noErr else {
             outputDrainGroup.leave()
             submissionToken.release()
@@ -889,8 +937,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     }
 
     private func consumeImmediateKeyFrameRequest() -> Bool {
-        keyFrameRequestLock.lock()
-        defer { keyFrameRequestLock.unlock() }
+        if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) != encodeQueueSpecificValue {
+            return encodeQueue.sync {
+                consumeImmediateKeyFrameRequest()
+            }
+        }
+
         let shouldForceKeyFrame = forceNextKeyFrame
         forceNextKeyFrame = false
         return shouldForceKeyFrame
@@ -1517,6 +1569,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             outputCallbackLatencyHistogram = [:]
             minOutputCallbackLatencyMilliseconds = nil
             maxOutputCallbackLatencyMilliseconds = nil
+            encodeQueueWaitTiming = MDKVideoToolboxTimingAccumulator()
+            encodeInvocationTiming = MDKVideoToolboxTimingAccumulator()
+            metalStageTiming = MDKVideoToolboxTimingAccumulator()
+            vtEncodeCallTiming = MDKVideoToolboxTimingAccumulator()
         }
         lastFreshReplayState = nil
         lastImmediateRecoveryReplayDisplayTime = nil
@@ -1634,6 +1690,30 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private func roundedLatencyBucket(for latencyMilliseconds: Double) -> String {
         let rounded = (latencyMilliseconds * 10.0).rounded() / 10.0
         return String(format: "%.1fms", rounded)
+    }
+
+    private func formatMilliseconds(_ milliseconds: Double) -> String {
+        String(format: "%.3f", milliseconds)
+    }
+
+    private func recordTiming(
+        _ metric: MDKVideoToolboxTimingMetric,
+        startedAt: TimeInterval,
+        endedAt: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) {
+        let elapsedMilliseconds = (endedAt - startedAt) * 1000.0
+        outputQueue.sync {
+            switch metric {
+            case .encodeQueueWait:
+                encodeQueueWaitTiming.record(elapsedMilliseconds)
+            case .encodeInvocation:
+                encodeInvocationTiming.record(elapsedMilliseconds)
+            case .metalStage:
+                metalStageTiming.record(elapsedMilliseconds)
+            case .vtEncodeCall:
+                vtEncodeCallTiming.record(elapsedMilliseconds)
+            }
+        }
     }
 
     private func describeHardwareAcceleration(_ value: Bool?) -> String {
