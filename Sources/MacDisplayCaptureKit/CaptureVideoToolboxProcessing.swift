@@ -955,10 +955,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             isHighRefreshLowLatency &&
             hdrConfiguration?.transferFunction == .smpteSt2084PQ
         let allowsTemporalCompression = codec != .proResProxy
-        let expectedFrameRateHint =
-            isHighRefreshHDRHEVC
-            ? max(targetFrameRate, 144)
-            : targetFrameRate
+        let expectedFrameRateHint = targetFrameRate
         let maximumRealTimeFrameRateHint =
             (codec == .hevc && isHighRefreshHDRHEVC && !shouldEnableLowLatencyRateControl)
             ? max((targetFrameRate * 15) / 8, targetFrameRate)
