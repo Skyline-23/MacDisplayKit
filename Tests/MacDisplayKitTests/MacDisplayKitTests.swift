@@ -261,8 +261,8 @@ final class MacDisplayKitTests: XCTestCase {
         )
     }
 
-    func testHEVCBGRASourceCanUseDirectSubmission() {
-        XCTAssertFalse(
+    func testHEVCBGRASourceStillRequiresDetachedSubmission() {
+        XCTAssertTrue(
             MDKVideoEncoderCodec.hevc.requiresDetachedSubmissionSurface(
                 sourcePixelFormat: kCVPixelFormatType_32BGRA,
                 targetPixelFormat: kCVPixelFormatType_32BGRA,
@@ -351,7 +351,7 @@ final class MacDisplayKitTests: XCTestCase {
         )
         XCTAssertEqual(
             hevcSDRConfiguration.resolvedEncoderInputStrategy(using: privateCapabilities),
-            MDKEncodedCaptureEncoderInputStrategy.bgra
+            MDKEncodedCaptureEncoderInputStrategy.yuv420v8
         )
 
         let hevcHDRConfiguration = MDKEncodedCaptureConfiguration(
@@ -368,7 +368,7 @@ final class MacDisplayKitTests: XCTestCase {
         )
         XCTAssertEqual(
             hevcHDRConfiguration.resolvedEncoderInputStrategy(using: privateCapabilities),
-            MDKEncodedCaptureEncoderInputStrategy.bgra
+            MDKEncodedCaptureEncoderInputStrategy.yuv420v10
         )
 
         let h264Configuration = MDKEncodedCaptureConfiguration(
