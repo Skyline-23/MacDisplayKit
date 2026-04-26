@@ -115,7 +115,7 @@ enum MDKVideoToolboxLatencyPolicy {
         case .h264:
             return 2
         case .hevc:
-            return 2
+            return 1
         case .proResProxy:
             return 0
         }
