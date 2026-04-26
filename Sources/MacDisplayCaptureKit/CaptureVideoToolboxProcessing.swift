@@ -791,7 +791,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 return
             }
             self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
-            releaseSourceFrame()
             self.submissionQueue.async { [self] in
                 do {
                     try submitToEncoder(
@@ -801,8 +800,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                         presentationTimeStamp: presentationTimeStamp,
                         releasePendingFrame: {}
                     )
+                    releaseSourceFrame()
                     recordProcessingSuccess(isStaged: true)
                 } catch {
+                    releaseSourceFrame()
                     let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
                     recordProcessingFailure(errorDescription)
                     releaseStagingSlot(identifier: slotIdentifier)
