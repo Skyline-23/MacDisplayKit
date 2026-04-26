@@ -186,9 +186,6 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         if let explicitCapturePixelFormat {
             return explicitCapturePixelFormat
         }
-        if codec == .hevc {
-            return kCVPixelFormatType_32BGRA
-        }
         return codec.preferredCapturePixelFormat
     }
 
