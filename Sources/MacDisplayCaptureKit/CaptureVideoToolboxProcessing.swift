@@ -791,24 +791,26 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 return
             }
             self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
-            do {
-                try self.submitToEncoder(
-                    imageBuffer: stagedPixelBuffer.pixelBuffer,
-                    frame: frame,
-                    slotIdentifier: slotIdentifier,
-                    presentationTimeStamp: presentationTimeStamp,
-                    releasePendingFrame: {}
-                )
-                releaseSourceFrame()
-                self.recordProcessingSuccess(isStaged: true)
-            } catch {
-                releaseSourceFrame()
-                let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-                self.recordProcessingFailure(errorDescription)
-                self.releaseStagingSlot(identifier: slotIdentifier)
-                self.failureHandler?(errorDescription)
+            self.submissionQueue.async { [self] in
+                do {
+                    try submitToEncoder(
+                        imageBuffer: stagedPixelBuffer.pixelBuffer,
+                        frame: frame,
+                        slotIdentifier: slotIdentifier,
+                        presentationTimeStamp: presentationTimeStamp,
+                        releasePendingFrame: {}
+                    )
+                    releaseSourceFrame()
+                    recordProcessingSuccess(isStaged: true)
+                } catch {
+                    releaseSourceFrame()
+                    let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                    recordProcessingFailure(errorDescription)
+                    releaseStagingSlot(identifier: slotIdentifier)
+                    failureHandler?(errorDescription)
+                }
+                stagingSubmissionGroup.leave()
             }
-            self.stagingSubmissionGroup.leave()
         }
         commandBuffer.commit()
     }
