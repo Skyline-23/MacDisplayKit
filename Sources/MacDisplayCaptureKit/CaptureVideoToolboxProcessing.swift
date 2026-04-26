@@ -1178,11 +1178,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             return false
         }
 
-        return !(
-            codec == .hevc &&
-            targetFrameRate >= 100 &&
-            hdrConfiguration?.transferFunction == .smpteSt2084PQ
-        )
+        return true
     }
 
     private func resolvedAverageBitRate(
