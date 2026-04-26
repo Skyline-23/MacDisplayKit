@@ -848,12 +848,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         case .skyLightDisplayStream:
             {
                 let effectiveQueueDepth = max(configuration.streamConfiguration.resolvedQueueDepth, 1)
-                if configuration.targetFrameRate >= 100 {
-                    return min(max(effectiveQueueDepth * 3, 10), 16)
-                } else if configuration.targetFrameRate >= 60 {
-                    return min(max(effectiveQueueDepth * 2, 3), 10)
-                }
-                return min(max(effectiveQueueDepth * 2, 2), 8)
+                return min(max(effectiveQueueDepth * 3, 10), 16)
             }()
         }
         let expectedDroppedCount = UInt64(10 - expectedPendingLimit)

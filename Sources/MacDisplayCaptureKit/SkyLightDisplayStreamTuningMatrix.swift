@@ -203,7 +203,7 @@ public enum MDKSkyLightDisplayStreamTuningAdvisor {
         for processingMode: MDKCaptureBenchmarkProcessingMode,
         targetFrameRate: Int? = nil
     ) -> [MDKSkyLightDisplayStreamTuningCandidate] {
-        let prefersHighRefreshCandidates = (targetFrameRate ?? 0) >= 100
+        let prefersHighRefreshCandidates = (targetFrameRate ?? 0) > 60
 
         switch processingMode {
         case .videoToolboxEncodeProResProxyExperimental:

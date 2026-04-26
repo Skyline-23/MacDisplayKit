@@ -227,9 +227,9 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         let height = max(streamConfiguration.resolvedOutputHeight, 1)
         let estimatedSurfaceBytes = width * height * 4
         if estimatedSurfaceBytes >= 20_000_000 {
-            return targetFrameRate >= 100 ? 8 : 6
+            return 8
         }
-        return targetFrameRate >= 100 ? 10 : 6
+        return 10
     }
 
     var resolvedEncodedHDRConfiguration: MDKVideoHDRConfiguration? {

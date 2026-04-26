@@ -134,10 +134,6 @@ enum MDKVideoToolboxLatencyPolicy {
             return 0
         }
 
-        guard targetFrameRate >= 100 else {
-            return 1
-        }
-
         switch codec {
         case .h264:
             return 2
@@ -922,7 +918,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
     private func shouldSuppressImmediateReplayForPendingFrames() -> Bool {
         guard codec == .hevc,
-              targetFrameRate >= 100,
               hdrConfiguration?.transferFunction == .smpteSt2084PQ,
               let compressionSession else {
             return false
@@ -1001,9 +996,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: status)
         }
 
-        let isHighRefreshLowLatency =
-            codec != .proResProxy &&
-            targetFrameRate >= 100
+        let isHighRefreshLowLatency = codec != .proResProxy
         let isHighRefreshHDRHEVC =
             codec == .hevc &&
             isHighRefreshLowLatency &&
@@ -1234,7 +1227,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
         return !(
             codec == .hevc &&
-            targetFrameRate >= 100 &&
             hdrConfiguration?.transferFunction == .smpteSt2084PQ
         )
     }

@@ -993,22 +993,10 @@ public actor MDKEncodedCaptureSession {
             configuration.resolvedSkyLightProcessingMode != nil
 
         if usesLowLatencyCallbackEncode {
-            if configuration.targetFrameRate >= 100 {
-                return 16
-            } else if configuration.targetFrameRate >= 60 {
-                return min(max(effectiveQueueDepth + 1, 3), 5)
-            }
-
-            return min(max(effectiveQueueDepth + 1, 2), 4)
+            return 16
         }
 
-        if configuration.targetFrameRate >= 100 {
-            return min(max(effectiveQueueDepth * 3, 10), 16)
-        } else if configuration.targetFrameRate >= 60 {
-            return min(max(effectiveQueueDepth * 2, 3), 10)
-        }
-
-        return min(max(effectiveQueueDepth * 2, 2), 8)
+        return min(max(effectiveQueueDepth * 3, 10), 16)
     }
 
     public func frames() -> AsyncThrowingStream<MDKEncodedFrame, Error> {
@@ -1108,7 +1096,6 @@ public actor MDKEncodedCaptureSession {
         let callbackOnlyDelivery = configuration.deliveryMode == .callbackOnly && callbacks != nil
         let shouldRecordSourceDiagnostics = !(
             configuration.codec == .hevc &&
-            configuration.targetFrameRate >= 100 &&
             callbackOnlyDelivery &&
             configuration.resolvedSkyLightProcessingMode != nil
         )
