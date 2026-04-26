@@ -485,6 +485,82 @@ private func MDKProcessMailboxAwareSourceFrame(
     }
 }
 
+private final class MDKHalfHeightHEVCThroughputProbeProcessor: MDKEncodedCaptureProcessorRuntime, @unchecked Sendable {
+    private let processor: MDKVideoToolboxEncodingProcessor
+
+    init(
+        configuration: MDKEncodedCaptureConfiguration,
+        outputHandler: @escaping @Sendable (MDKEncodedFrame) -> Void,
+        failureHandler: @escaping @Sendable (String) -> Void
+    ) {
+        self.processor = MDKVideoToolboxEncodingProcessor(
+            codec: configuration.codec,
+            preprocessStrategy: configuration.preprocessStrategy,
+            targetFrameRate: configuration.targetFrameRate,
+            encoderInputStrategy: configuration.resolvedEncoderInputStrategy,
+            maxInflightStagingSlots: 128,
+            outputHandler: outputHandler,
+            failureHandler: failureHandler,
+            hdrConfiguration: configuration.resolvedEncodedHDRConfiguration,
+            targetAverageBitRateBitsPerSecond: configuration.targetAverageBitRateBitsPerSecond,
+            tileMetadata: configuration.tileLayout.metadata(frameGroupID: 0)
+        )
+    }
+
+    func process(
+        frame: MDKCaptureFrame,
+        releaseSourceFrame: @escaping @Sendable () -> Void
+    ) throws {
+        try processor.process(
+            frame: MDKCaptureFrame(
+                sequenceNumber: frame.sequenceNumber,
+                displayTime: frame.displayTime,
+                surfaceID: frame.surfaceID,
+                width: frame.width,
+                height: max((frame.height / 2) & ~1, 2),
+                pixelFormat: frame.pixelFormat,
+                surface: frame.surface,
+                origin: frame.origin,
+                cursorOverlaySample: nil,
+                sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
+                sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
+            ),
+            releaseSourceFrame: releaseSourceFrame
+        )
+    }
+
+    func requestImmediateKeyFrame() {
+        processor.requestImmediateKeyFrame()
+    }
+
+    func finalize() -> MDKCaptureFrameProcessingSummary? {
+        summaryWithProbeNote(processor.finalize())
+    }
+
+    func liveSummary() -> MDKCaptureFrameProcessingSummary? {
+        summaryWithProbeNote(processor.liveSummary())
+    }
+
+    private func summaryWithProbeNote(_ summary: MDKCaptureFrameProcessingSummary?) -> MDKCaptureFrameProcessingSummary? {
+        guard let summary else {
+            return nil
+        }
+
+        return MDKCaptureFrameProcessingSummary(
+            processedFrameCount: summary.processedFrameCount,
+            processingFailureCount: summary.processingFailureCount,
+            processingErrorHistogram: summary.processingErrorHistogram,
+            outputCallbackCount: summary.outputCallbackCount,
+            completedOutputFrameCount: summary.completedOutputFrameCount,
+            outputCallbackStatusHistogram: summary.outputCallbackStatusHistogram,
+            outputCallbackLatencyHistogram: summary.outputCallbackLatencyHistogram,
+            minOutputCallbackLatencyMilliseconds: summary.minOutputCallbackLatencyMilliseconds,
+            maxOutputCallbackLatencyMilliseconds: summary.maxOutputCallbackLatencyMilliseconds,
+            notes: ["videoToolboxHalfHeightThroughputProbe=true"] + summary.notes
+        )
+    }
+}
+
 private final class MDKEncodedCaptureSourceCadenceTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var frameCount: UInt64 = 0
@@ -901,6 +977,16 @@ public actor MDKEncodedCaptureSession {
             }
         }
         self.processorFactory = { configuration, outputHandler, failureHandler in
+            if configuration.codec == .hevc,
+               configuration.targetFrameRate >= 100,
+               configuration.resolvedEncodedHDRConfiguration?.transferFunction == .smpteSt2084PQ {
+                return MDKHalfHeightHEVCThroughputProbeProcessor(
+                    configuration: configuration,
+                    outputHandler: outputHandler,
+                    failureHandler: failureHandler
+                )
+            }
+
             return MDKVideoToolboxEncodingProcessor(
                 codec: configuration.codec,
                 preprocessStrategy: configuration.preprocessStrategy,
