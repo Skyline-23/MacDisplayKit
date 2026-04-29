@@ -126,8 +126,7 @@ func MDKResolvedSkyLightDisplayStreamShowCursor(
     return requestedShowCursor
 }
 
-private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
-    private let lock = NSLock()
+private actor MDKSkyLightEncodedCaptureReplayState {
     private var lastCaptureSurface: MDKCaptureSurface?
     private var lastDisplayTime: UInt64?
     private var lastEmissionMachTime: UInt64?
@@ -135,13 +134,10 @@ private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
     func captureFrame(
         status: CGDisplayStreamFrameStatus,
         displayTime: UInt64,
-        frameSurface: IOSurfaceRef?,
+        frameSurface: MDKCaptureSurface?,
         dirtyRects: [CGRect]?,
         sourceUpdateDropCount: UInt64?
     ) -> MDKCaptureFrame? {
-        lock.lock()
-        defer { lock.unlock() }
-
         let action = MDKResolveSkyLightEncodedCaptureFrameAction(
             status: status,
             hasFrameSurface: frameSurface != nil,
@@ -152,10 +148,9 @@ private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
 
         switch action {
         case .emitFresh:
-            guard let frameSurface else {
+            guard let captureSurface = frameSurface else {
                 return nil
             }
-            let captureSurface = MDKCaptureSurface(ioSurface: frameSurface)
             lastCaptureSurface = captureSurface
             lastDisplayTime = displayTime
             lastEmissionMachTime = mach_absolute_time()
@@ -196,9 +191,6 @@ private final class MDKSkyLightEncodedCaptureReplayState: @unchecked Sendable {
         displayTime: UInt64,
         minimumEmissionDeltaMachTicks: UInt64
     ) -> MDKCaptureFrame? {
-        lock.lock()
-        defer { lock.unlock() }
-
         let currentMachTime = mach_absolute_time()
         guard MDKShouldEmitSyntheticSkyLightEncodedCaptureReplay(
             hasLastSurface: lastCaptureSurface != nil,
@@ -280,18 +272,23 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             pixelFormat: configuration.resolvedCapturePixelFormat,
             yCbCrMatrix: configuration.resolvedSkyLightDisplayStreamYCbCrMatrix.map { $0.imageBufferValue as String }
         ) { status, displayTime, frameSurface, reducedDirtyRectData, updateDropCount in
+            let captureSurface = frameSurface.map(MDKCaptureSurface.init(ioSurface:))
+            let dirtyRects = MDKDecodeCGRectData(reducedDirtyRectData)
+            let sourceUpdateDropCount = UInt64(updateDropCount)
             deliveryQueue.async {
-                guard let deliveredFrame = replayState.captureFrame(
-                    status: status,
-                    displayTime: displayTime,
-                    frameSurface: frameSurface,
-                    dirtyRects: MDKDecodeCGRectData(reducedDirtyRectData),
-                    sourceUpdateDropCount: UInt64(updateDropCount)
-                ) else {
-                    return
-                }
+                Task {
+                    guard let deliveredFrame = await replayState.captureFrame(
+                        status: status,
+                        displayTime: displayTime,
+                        frameSurface: captureSurface,
+                        dirtyRects: dirtyRects,
+                        sourceUpdateDropCount: sourceUpdateDropCount
+                    ) else {
+                        return
+                    }
 
-                frameHandler(deliveredFrame)
+                    frameHandler(deliveredFrame)
+                }
             }
         }
     }
@@ -311,14 +308,16 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         let replayIntervalMachTicks = self.replayIntervalMachTicks
         timer.setEventHandler {
             let displayTime = mach_absolute_time()
-            guard let replayedFrame = replayState.captureTimerReplay(
-                displayTime: displayTime,
-                minimumEmissionDeltaMachTicks: replayIntervalMachTicks
-            ) else {
-                return
-            }
+            Task {
+                guard let replayedFrame = await replayState.captureTimerReplay(
+                    displayTime: displayTime,
+                    minimumEmissionDeltaMachTicks: replayIntervalMachTicks
+                ) else {
+                    return
+                }
 
-            frameHandler(replayedFrame)
+                frameHandler(replayedFrame)
+            }
         }
         replayTimer = timer
         timer.resume()
