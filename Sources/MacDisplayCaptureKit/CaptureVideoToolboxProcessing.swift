@@ -1293,11 +1293,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             pixelFormat: pixelFormat
         )
 
-        if !availableStagingSlotIdentifiers.isEmpty {
-            let reusableIdentifier = availableStagingSlotIdentifiers.removeFirst()
-            if let reusableSlot = stagingSlots[reusableIdentifier] {
-                return reusableSlot
-            }
+        if let reusableIdentifier = availableStagingSlotIdentifiers.popLast(),
+           let reusableSlot = stagingSlots[reusableIdentifier] {
+            return reusableSlot
         }
 
         guard stagingSlots.count < maxInflightStagingSlots else {
