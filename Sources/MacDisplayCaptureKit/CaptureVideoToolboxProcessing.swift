@@ -619,10 +619,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             imageBuffer: imageBuffer,
             frame: frame,
             slotIdentifier: nil,
-            releasePendingFrame: {}
+            releasePendingFrame: {},
+            processingSuccessStagingMode: false
         )
         releaseSourceFrame()
-        recordProcessingSuccess(isStaged: false)
     }
 
     private func stageAndEncode(
@@ -794,10 +794,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                         frame: frame,
                         slotIdentifier: slotIdentifier,
                         presentationTimeStamp: presentationTimeStamp,
-                        releasePendingFrame: {}
+                        releasePendingFrame: {},
+                        processingSuccessStagingMode: true
                     )
                     releaseSourceFrame()
-                    recordProcessingSuccess(isStaged: true)
                 } catch {
                     releaseSourceFrame()
                     let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
@@ -816,7 +816,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         frame: MDKCaptureFrame,
         slotIdentifier: Int?,
         presentationTimeStamp: CMTime? = nil,
-        releasePendingFrame: @escaping @Sendable () -> Void = {}
+        releasePendingFrame: @escaping @Sendable () -> Void = {},
+        processingSuccessStagingMode: Bool? = nil
     ) throws {
         guard let compressionSession else {
             throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: OSStatus(unimpErr))
@@ -864,9 +865,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 frame: frame
             )
         }
-        outputQueue.sync {
-            submittedFrameCount += 1
-        }
+        recordSuccessfulSubmission(processingSuccessStagingMode: processingSuccessStagingMode)
     }
 
     private func replayLastSubmittedFrameAsKeyFrameIfPossible() {
@@ -1577,13 +1576,16 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         recommendedParallelizationLimit = nil
     }
 
-    private func recordProcessingSuccess(isStaged: Bool) {
+    private func recordSuccessfulSubmission(processingSuccessStagingMode: Bool?) {
         outputQueue.sync {
-            processedFrameCount += 1
-            if isStaged {
-                stagedSubmissionFrameCount += 1
-            } else {
-                directSubmissionFrameCount += 1
+            submittedFrameCount += 1
+            if let isStaged = processingSuccessStagingMode {
+                processedFrameCount += 1
+                if isStaged {
+                    stagedSubmissionFrameCount += 1
+                } else {
+                    directSubmissionFrameCount += 1
+                }
             }
         }
     }
