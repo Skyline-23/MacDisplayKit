@@ -80,8 +80,6 @@ public final class MDKEncodedFrame: @unchecked Sendable {
     public let sourceDisplayTime: UInt64
     public let outputCallbackLatencyMilliseconds: Double?
     public let tileMetadata: MDKEncodedFrameTileMetadata
-    private let cachedIsKeyFrame: Bool?
-    private let cachedHDRValidationReport: MDKEncodedFrameHDRValidationReport?
 
     public init(
         sampleBuffer: CMSampleBuffer,
@@ -89,9 +87,7 @@ public final class MDKEncodedFrame: @unchecked Sendable {
         sourceSequenceNumber: UInt64,
         sourceDisplayTime: UInt64,
         outputCallbackLatencyMilliseconds: Double?,
-        tileMetadata: MDKEncodedFrameTileMetadata = .singleFrame,
-        isKeyFrame: Bool? = nil,
-        hdrValidationReport: MDKEncodedFrameHDRValidationReport? = nil
+        tileMetadata: MDKEncodedFrameTileMetadata = .singleFrame
     ) {
         self.sampleBuffer = sampleBuffer
         self.codec = codec
@@ -99,8 +95,6 @@ public final class MDKEncodedFrame: @unchecked Sendable {
         self.sourceDisplayTime = sourceDisplayTime
         self.outputCallbackLatencyMilliseconds = outputCallbackLatencyMilliseconds
         self.tileMetadata = tileMetadata
-        self.cachedIsKeyFrame = isKeyFrame
-        self.cachedHDRValidationReport = hdrValidationReport
     }
 
     public var presentationTimeStamp: CMTime {
@@ -112,13 +106,6 @@ public final class MDKEncodedFrame: @unchecked Sendable {
     }
 
     public var isKeyFrame: Bool {
-        if let cachedIsKeyFrame {
-            return cachedIsKeyFrame
-        }
-        return Self.isKeyFrame(sampleBuffer: sampleBuffer)
-    }
-
-    public static func isKeyFrame(sampleBuffer: CMSampleBuffer) -> Bool {
         guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
             as? [[CFString: Any]],
             let firstAttachment = attachments.first else {
@@ -142,32 +129,11 @@ public final class MDKEncodedFrame: @unchecked Sendable {
     }
 
     public var isHDRSignaled: Bool {
-        if let cachedHDRValidationReport {
-            return cachedHDRValidationReport.isHDRSignaled
-        }
-        if Self.formatDescriptionSignalsHDR(sampleBuffer: sampleBuffer) {
-            return true
-        }
-        guard codec == .hevc else {
-            return false
-        }
-        let staticMetadataPresence = MDKHEVCHDRStaticMetadataTransport.presence(in: sampleBuffer)
-        return staticMetadataPresence.hasMasteringDisplayColorVolume ||
-            staticMetadataPresence.hasContentLightLevelInfo
+        hdrValidationReport.isHDRSignaled
     }
 
     public var hdrValidationReport: MDKEncodedFrameHDRValidationReport {
-        if let cachedHDRValidationReport {
-            return cachedHDRValidationReport
-        }
-        return Self.hdrValidationReport(sampleBuffer: sampleBuffer, codec: codec)
-    }
-
-    public static func hdrValidationReport(
-        sampleBuffer: CMSampleBuffer,
-        codec: MDKVideoEncoderCodec
-    ) -> MDKEncodedFrameHDRValidationReport {
-        let extensions = Self.formatDescriptionExtensions(sampleBuffer: sampleBuffer)
+        let extensions = formatDescriptionExtensions
         let colorPrimaries = extensions[kCMFormatDescriptionExtension_ColorPrimaries as String] as? String
         let transferFunction = extensions[kCMFormatDescriptionExtension_TransferFunction as String] as? String
         let yCbCrMatrix = extensions[kCMFormatDescriptionExtension_YCbCrMatrix as String] as? String
@@ -194,36 +160,6 @@ public final class MDKEncodedFrame: @unchecked Sendable {
             isPQ: isPQ,
             isHLG: isHLG
         )
-    }
-
-    private static func formatDescriptionExtensions(sampleBuffer: CMSampleBuffer) -> [String: Any] {
-        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
-              let extensions = CMFormatDescriptionGetExtensions(formatDescription) as? [CFString: Any] else {
-            return [:]
-        }
-
-        var mapped: [String: Any] = [:]
-        for (key, value) in extensions {
-            mapped[key as String] = value
-        }
-        return mapped
-    }
-
-    private static func formatDescriptionSignalsHDR(sampleBuffer: CMSampleBuffer) -> Bool {
-        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
-              let extensions = CMFormatDescriptionGetExtensions(formatDescription) as? [CFString: Any] else {
-            return false
-        }
-
-        let colorPrimaries = extensions[kCMFormatDescriptionExtension_ColorPrimaries] as? String
-        let transferFunction = extensions[kCMFormatDescriptionExtension_TransferFunction] as? String
-        let isWideGamut = colorPrimaries == (kCMFormatDescriptionColorPrimaries_ITU_R_2020 as String) ||
-            colorPrimaries == (kCMFormatDescriptionColorPrimaries_P3_D65 as String)
-        let isPQ = transferFunction == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String)
-        let isHLG = transferFunction == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String)
-        return (isWideGamut && (isPQ || isHLG)) ||
-            extensions[kCMFormatDescriptionExtension_MasteringDisplayColorVolume] != nil ||
-            extensions[kCMFormatDescriptionExtension_ContentLightLevelInfo] != nil
     }
 
     public func contiguousData() throws -> Data {
