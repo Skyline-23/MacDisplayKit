@@ -1147,6 +1147,20 @@ public actor MDKEncodedCaptureSession {
                             runtimeGeneration: currentRuntimeGeneration
                         )
                     }
+                    guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
+                        return
+                    }
+                    guard let pendingMailboxFrame = await latestFrameMailbox.take() else {
+                        pendingFrameTracker.releaseOne()
+                        return
+                    }
+                    MDKProcessMailboxAwareSourceFrame(
+                        pendingMailboxFrame,
+                        processor: processor,
+                        pendingFrameTracker: pendingFrameTracker,
+                        latestFrameMailbox: latestFrameMailbox,
+                        failureHandler: failureHandler
+                    )
                 }
                 return
             }
