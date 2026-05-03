@@ -133,9 +133,6 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
                     return kCVPixelFormatType_32BGRA
                 }
             }
-            if sourcePixelFormat == kCVPixelFormatType_32BGRA {
-                return sourcePixelFormat
-            }
             return preferred420InputPixelFormat(
                 for: sourcePixelFormat,
                 preferredBitDepth: 10
