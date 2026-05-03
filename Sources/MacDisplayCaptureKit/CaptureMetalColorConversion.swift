@@ -104,9 +104,9 @@ final class MDKMetalBGRAToYCbCrConverter {
         }
 
         do {
-            lumaPipeline = try device.makeComputePipelineState(function: lumaFunction)
-            chromaPipeline = try device.makeComputePipelineState(function: chromaFunction)
-            bgraCursorOverlayPipeline = try device.makeComputePipelineState(function: bgraCursorOverlayFunction)
+            lumaPipeline = try Self.makePipelineState(for: lumaFunction, device: device)
+            chromaPipeline = try Self.makePipelineState(for: chromaFunction, device: device)
+            bgraCursorOverlayPipeline = try Self.makePipelineState(for: bgraCursorOverlayFunction, device: device)
         } catch {
             throw MDKMetalColorConversionError.pipelineCreationFailed(String(describing: error))
         }
@@ -130,6 +130,16 @@ final class MDKMetalBGRAToYCbCrConverter {
             bytesPerRow: MemoryLayout<UInt32>.size
         )
         self.transparentCursorTexture = transparentCursorTexture
+    }
+
+    private static func makePipelineState(
+        for function: any MTLFunction,
+        device: any MTLDevice
+    ) throws -> any MTLComputePipelineState {
+        let descriptor = MTLComputePipelineDescriptor()
+        descriptor.computeFunction = function
+        descriptor.threadGroupSizeIsMultipleOfThreadExecutionWidth = true
+        return try device.makeComputePipelineState(descriptor: descriptor, options: [], reflection: nil)
     }
 
     func encode(
