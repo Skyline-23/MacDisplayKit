@@ -466,6 +466,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxCodec=\(codec.rawValue)",
             "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
             "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "hybrid-direct-or-metal-staging")",
+            "videoToolboxStagedSubmitMode=metal-completion-inline-detached-frame",
             "videoToolboxStagedSourceReleaseMode=post-submit",
             "videoToolboxDirectSubmissionFrameCount=\(directSubmissionFrameCount)",
             "videoToolboxStagedSubmissionFrameCount=\(stagedSubmissionFrameCount)",
@@ -787,28 +788,45 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 return
             }
             self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
-            self.submissionQueue.async { [self] in
-                do {
-                    try submitToEncoder(
-                        imageBuffer: stagedPixelBuffer.pixelBuffer,
-                        frame: frame,
-                        slotIdentifier: slotIdentifier,
-                        presentationTimeStamp: presentationTimeStamp,
-                        releasePendingFrame: {}
-                    )
-                    releaseSourceFrame()
-                    recordProcessingSuccess(isStaged: true)
-                } catch {
-                    releaseSourceFrame()
-                    let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-                    recordProcessingFailure(errorDescription)
-                    releaseStagingSlot(identifier: slotIdentifier)
-                    failureHandler?(errorDescription)
-                }
-                stagingSubmissionGroup.leave()
+            let submissionFrame = self.detachedSubmissionFrame(from: frame)
+            do {
+                try self.submitToEncoder(
+                    imageBuffer: stagedPixelBuffer.pixelBuffer,
+                    frame: submissionFrame,
+                    slotIdentifier: slotIdentifier,
+                    presentationTimeStamp: presentationTimeStamp,
+                    releasePendingFrame: {}
+                )
+                releaseSourceFrame()
+                self.recordProcessingSuccess(isStaged: true)
+            } catch {
+                releaseSourceFrame()
+                let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                self.recordProcessingFailure(errorDescription)
+                self.releaseStagingSlot(identifier: slotIdentifier)
+                self.failureHandler?(errorDescription)
             }
+            self.stagingSubmissionGroup.leave()
         }
         commandBuffer.commit()
+    }
+
+    private func detachedSubmissionFrame(from frame: MDKCaptureFrame) -> MDKCaptureFrame {
+        MDKCaptureFrame(
+            sequenceNumber: frame.sequenceNumber,
+            displayTime: frame.displayTime,
+            surfaceID: frame.surfaceID,
+            width: frame.width,
+            height: frame.height,
+            pixelFormat: frame.pixelFormat,
+            surface: nil,
+            origin: frame.origin,
+            dirtyRects: frame.dirtyRects,
+            sourceUpdateDropCount: frame.sourceUpdateDropCount,
+            cursorOverlaySample: frame.cursorOverlaySample,
+            sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
+            sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
+        )
     }
 
     private func submitToEncoder(
