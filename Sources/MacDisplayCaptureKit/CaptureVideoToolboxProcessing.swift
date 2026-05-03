@@ -222,7 +222,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let tileMetadata: MDKEncodedFrameTileMetadata
 
     private var compressionSession: VTCompressionSession?
-    private var alternateCompressionSession: VTCompressionSession?
     private var activeDimensions: SIMD2<Int>?
     private var activePixelFormat: UInt32?
     private var pixelBufferAttributes: CFDictionary?
@@ -234,7 +233,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var availableStagingSlotIdentifiers: [Int] = []
     private var nextStagingSlotIdentifier: Int = 0
     private var frameIndex: Int64 = 0
-    private var nextCompressionSessionIndex: Int = 0
     private var processedFrameCount: UInt64 = 0
     private var processingFailureCount: UInt64 = 0
     private var processingErrorHistogram: [String: Int] = [:]
@@ -387,7 +385,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let stagingSubmissionWaitStatus = stagingSubmissionGroup.wait(timeout: .now() + 1.5)
         return encodeQueue.sync { [self] in
             submissionQueue.sync {}
-            completeCompressionSessions()
+            if let compressionSession {
+                VTCompressionSessionCompleteFrames(compressionSession, untilPresentationTimeStamp: .invalid)
+            }
             let outputDrainWaitStatus = outputDrainGroup.wait(timeout: .now() + 1.5)
             let outputSummary = outputQueue.sync {
                 (
@@ -818,7 +818,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         presentationTimeStamp: CMTime? = nil,
         releasePendingFrame: @escaping @Sendable () -> Void = {}
     ) throws {
-        guard let compressionSession = nextCompressionSession() else {
+        guard let compressionSession else {
             throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: OSStatus(unimpErr))
         }
 
@@ -963,8 +963,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         if let activeDimensions,
            activePixelFormat == pixelFormat,
            activeDimensions == SIMD2(width, height),
-           compressionSession != nil,
-           !usesRoundRobinCompressionSessions || alternateCompressionSession != nil {
+           compressionSession != nil {
             return
         }
 
@@ -1022,115 +1021,109 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             targetFrameRate: targetFrameRate
         )
 
-        func configure(_ configuredSession: VTCompressionSession) {
-            setSessionProperty(configuredSession, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue, label: "RealTime")
-            setSessionProperty(configuredSession, key: kVTCompressionPropertyKey_ProgressiveScan, value: kCFBooleanTrue, label: "ProgressiveScan")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue, label: "RealTime")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_ProgressiveScan, value: kCFBooleanTrue, label: "ProgressiveScan")
+        setSessionProperty(
+            session,
+            key: kVTCompressionPropertyKey_AllowTemporalCompression,
+            value: allowsTemporalCompression ? kCFBooleanTrue : kCFBooleanFalse,
+            label: "AllowTemporalCompression"
+        )
+        setSessionProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse, label: "AllowFrameReordering")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_AllowOpenGOP, value: kCFBooleanFalse, label: "AllowOpenGOP")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue, label: "PrioritizeEncodingSpeedOverQuality")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_MaximizePowerEfficiency, value: kCFBooleanFalse, label: "MaximizePowerEfficiency")
+        setSessionProperty(
+            session,
+            key: kVTCompressionPropertyKey_MaxFrameDelayCount,
+            value: NSNumber(value: maxFrameDelayCount),
+            label: "MaxFrameDelayCount"
+        )
+        setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedDuration, value: NSNumber(value: expectedDurationHint), label: "ExpectedDuration")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: expectedFrameRateHint), label: "ExpectedFrameRate")
+        if #available(macOS 15.0, *),
+            let maximumRealTimeFrameRateHint {
             setSessionProperty(
-                configuredSession,
-                key: kVTCompressionPropertyKey_AllowTemporalCompression,
-                value: allowsTemporalCompression ? kCFBooleanTrue : kCFBooleanFalse,
-                label: "AllowTemporalCompression"
+                session,
+                key: kVTCompressionPropertyKey_MaximumRealTimeFrameRate,
+                value: NSNumber(value: maximumRealTimeFrameRateHint),
+                label: "MaximumRealTimeFrameRate"
             )
-            setSessionProperty(configuredSession, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse, label: "AllowFrameReordering")
-            setSessionProperty(configuredSession, key: kVTCompressionPropertyKey_AllowOpenGOP, value: kCFBooleanFalse, label: "AllowOpenGOP")
-            setSessionProperty(configuredSession, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue, label: "PrioritizeEncodingSpeedOverQuality")
-            setSessionProperty(configuredSession, key: kVTCompressionPropertyKey_MaximizePowerEfficiency, value: kCFBooleanFalse, label: "MaximizePowerEfficiency")
-            setSessionProperty(
-                configuredSession,
-                key: kVTCompressionPropertyKey_MaxFrameDelayCount,
-                value: NSNumber(value: maxFrameDelayCount),
-                label: "MaxFrameDelayCount"
-            )
-            setSessionProperty(configuredSession, key: kVTCompressionPropertyKey_ExpectedDuration, value: NSNumber(value: expectedDurationHint), label: "ExpectedDuration")
-            setSessionProperty(configuredSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: expectedFrameRateHint), label: "ExpectedFrameRate")
-            if #available(macOS 15.0, *),
-                let maximumRealTimeFrameRateHint {
-                setSessionProperty(
-                    configuredSession,
-                    key: kVTCompressionPropertyKey_MaximumRealTimeFrameRate,
-                    value: NSNumber(value: maximumRealTimeFrameRateHint),
-                    label: "MaximumRealTimeFrameRate"
-                )
-            }
-            if #available(macOS 26.0, *),
-                let vbvBufferDurationSeconds {
-                setSessionProperty(
-                    configuredSession,
-                    key: kVTCompressionPropertyKey_VBVBufferDuration,
-                    value: NSNumber(value: vbvBufferDurationSeconds),
-                    label: "VBVBufferDuration"
-                )
-            }
-            if #available(macOS 26.0, *),
-                let vbvInitialDelayPercentage {
-                setSessionProperty(
-                    configuredSession,
-                    key: kVTCompressionPropertyKey_VBVInitialDelayPercentage,
-                    value: NSNumber(value: vbvInitialDelayPercentage),
-                    label: "VBVInitialDelayPercentage"
-                )
-            }
-            setSessionProperty(configuredSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: targetFrameRate), label: "MaxKeyFrameInterval")
-            setSessionProperty(configuredSession, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: NSNumber(value: 1.0), label: "MaxKeyFrameIntervalDuration")
-            if pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
-                pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange {
-                setSessionProperty(
-                    configuredSession,
-                    key: kVTCompressionPropertyKey_OutputBitDepth,
-                    value: NSNumber(value: 10),
-                    label: "OutputBitDepth"
-                )
-            }
-            if codec.supportsAverageBitRate {
-                let averageBitRate = resolvedAverageBitRate(
-                    width: width,
-                    height: height,
-                    isHighRefreshLowLatency: isHighRefreshLowLatency
-                )
-                setSessionProperty(
-                    configuredSession,
-                    key: kVTCompressionPropertyKey_AverageBitRate,
-                    value: NSNumber(value: averageBitRate),
-                    label: "AverageBitRate"
-                )
-            }
-            if codec.supportsDataRateLimits {
-                let dataRateLimits = resolvedDataRateLimits(
-                    width: width,
-                    height: height,
-                    isHighRefreshLowLatency: isHighRefreshLowLatency
-                )
-                setSessionProperty(
-                    configuredSession,
-                    key: kVTCompressionPropertyKey_DataRateLimits,
-                    value: dataRateLimits as CFArray,
-                    label: "DataRateLimits"
-                )
-            }
-            if codec.supportsQualityProperty && !isHighRefreshLowLatency {
-                setSessionProperty(configuredSession, key: kVTCompressionPropertyKey_Quality, value: NSNumber(value: codec.targetQuality), label: "Quality")
-            }
-            if codec.supportsReferenceBufferCount {
-                setSessionProperty(configuredSession, key: kVTCompressionPropertyKey_ReferenceBufferCount, value: NSNumber(value: codec.referenceBufferCount), label: "ReferenceBufferCount")
-            }
-            if let profileLevel = codec.defaultProfileLevel(for: pixelFormat) {
-                setSessionProperty(configuredSession, key: kVTCompressionPropertyKey_ProfileLevel, value: profileLevel, label: "ProfileLevel")
-            }
-            if let hdrConfiguration {
-                for property in hdrConfiguration.sessionProperties {
-                    setSessionProperty(
-                        configuredSession,
-                        key: property.0,
-                        value: property.1,
-                        label: property.2
-                    )
-                }
-            }
         }
-
-        configure(session)
+        if #available(macOS 26.0, *),
+            let vbvBufferDurationSeconds {
+            setSessionProperty(
+                session,
+                key: kVTCompressionPropertyKey_VBVBufferDuration,
+                value: NSNumber(value: vbvBufferDurationSeconds),
+                label: "VBVBufferDuration"
+            )
+        }
+        if #available(macOS 26.0, *),
+            let vbvInitialDelayPercentage {
+            setSessionProperty(
+                session,
+                key: kVTCompressionPropertyKey_VBVInitialDelayPercentage,
+                value: NSNumber(value: vbvInitialDelayPercentage),
+                label: "VBVInitialDelayPercentage"
+            )
+        }
+        setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: targetFrameRate), label: "MaxKeyFrameInterval")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: NSNumber(value: 1.0), label: "MaxKeyFrameIntervalDuration")
+        if pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
+            pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange {
+            setSessionProperty(
+                session,
+                key: kVTCompressionPropertyKey_OutputBitDepth,
+                value: NSNumber(value: 10),
+                label: "OutputBitDepth"
+            )
+        }
+        if codec.supportsAverageBitRate {
+            let averageBitRate = resolvedAverageBitRate(
+                width: width,
+                height: height,
+                isHighRefreshLowLatency: isHighRefreshLowLatency
+            )
+            setSessionProperty(
+                session,
+                key: kVTCompressionPropertyKey_AverageBitRate,
+                value: NSNumber(value: averageBitRate),
+                label: "AverageBitRate"
+            )
+        }
+        if codec.supportsDataRateLimits {
+            let dataRateLimits = resolvedDataRateLimits(
+                width: width,
+                height: height,
+                isHighRefreshLowLatency: isHighRefreshLowLatency
+            )
+            setSessionProperty(
+                session,
+                key: kVTCompressionPropertyKey_DataRateLimits,
+                value: dataRateLimits as CFArray,
+                label: "DataRateLimits"
+            )
+        }
+        if codec.supportsQualityProperty && !isHighRefreshLowLatency {
+            setSessionProperty(session, key: kVTCompressionPropertyKey_Quality, value: NSNumber(value: codec.targetQuality), label: "Quality")
+        }
+        if codec.supportsReferenceBufferCount {
+            setSessionProperty(session, key: kVTCompressionPropertyKey_ReferenceBufferCount, value: NSNumber(value: codec.referenceBufferCount), label: "ReferenceBufferCount")
+        }
         if let profileLevel = codec.defaultProfileLevel(for: pixelFormat) {
+            setSessionProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: profileLevel, label: "ProfileLevel")
             sessionConfigurationNotes.append("videoToolboxConfiguredProfileLevel=\(profileLevel)")
+        }
+        if let hdrConfiguration {
+            for property in hdrConfiguration.sessionProperties {
+                setSessionProperty(
+                    session,
+                    key: property.0,
+                    value: property.1,
+                    label: property.2
+                )
+            }
         }
         let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(session)
         guard prepareStatus == noErr else {
@@ -1138,43 +1131,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: prepareStatus)
         }
 
-        var alternateSession: VTCompressionSession?
-        if usesRoundRobinCompressionSessions {
-            let alternateStatus = VTCompressionSessionCreate(
-                allocator: kCFAllocatorDefault,
-                width: Int32(width),
-                height: Int32(height),
-                codecType: codec.codecType,
-                encoderSpecification: makeEncoderSpecification(),
-                imageBufferAttributes: sourceImageAttributes as CFDictionary,
-                compressedDataAllocator: nil,
-                outputCallback: MDKVideoToolboxOutputCallback,
-                refcon: Unmanaged.passUnretained(self).toOpaque(),
-                compressionSessionOut: &alternateSession
-            )
-            if alternateStatus == noErr, let alternateSession {
-                configure(alternateSession)
-                let alternatePrepareStatus = VTCompressionSessionPrepareToEncodeFrames(alternateSession)
-                if alternatePrepareStatus == noErr {
-                    self.alternateCompressionSession = alternateSession
-                } else {
-                    VTCompressionSessionInvalidate(alternateSession)
-                    sessionConfigurationNotes.append("videoToolboxRoundRobinSessionStatus=prepareFailed(\(alternatePrepareStatus))")
-                }
-            } else {
-                sessionConfigurationNotes.append("videoToolboxRoundRobinSessionStatus=createFailed(\(alternateStatus))")
-            }
-        } else {
-            alternateCompressionSession = nil
-        }
-
         compressionSession = session
         activeDimensions = SIMD2(width, height)
         activePixelFormat = pixelFormat
-        nextCompressionSessionIndex = 0
         sessionConfigurationNotes.append(String(format: "videoToolboxEncoderInputPixelFormat=0x%08X", pixelFormat))
         sessionConfigurationNotes.append("videoToolboxEncoderInputStrategy=\(encoderInputStrategy.rawValue)")
-        sessionConfigurationNotes.append("videoToolboxCompressionSessionCount=\(alternateCompressionSession == nil ? 1 : 2)")
         sessionConfigurationNotes.append("videoToolboxEncodedWidth=\(width)")
         sessionConfigurationNotes.append("videoToolboxEncodedHeight=\(height)")
         sessionConfigurationNotes.append("videoToolboxTargetFrameRateHint=\(expectedFrameRateHint)")
@@ -1257,26 +1218,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             encoderSpecification[kVTVideoEncoderSpecification_EnableLowLatencyRateControl] = true as CFBoolean
         }
         return encoderSpecification as CFDictionary
-    }
-
-    private var usesRoundRobinCompressionSessions: Bool {
-        codec == .hevc &&
-            hdrConfiguration?.transferFunction == .smpteSt2084PQ
-    }
-
-    private func nextCompressionSession() -> VTCompressionSession? {
-        guard let compressionSession else {
-            return nil
-        }
-        guard let alternateCompressionSession else {
-            return compressionSession
-        }
-
-        let session = nextCompressionSessionIndex.isMultiple(of: 2)
-            ? compressionSession
-            : alternateCompressionSession
-        nextCompressionSessionIndex &+= 1
-        return session
     }
 
     private var shouldEnableLowLatencyRateControl: Bool {
@@ -1595,15 +1536,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     }
 
     private func invalidateSession() {
-        completeCompressionSessions()
         if let compressionSession {
+            VTCompressionSessionCompleteFrames(compressionSession, untilPresentationTimeStamp: .invalid)
             VTCompressionSessionInvalidate(compressionSession)
+            self.compressionSession = nil
         }
-        if let alternateCompressionSession {
-            VTCompressionSessionInvalidate(alternateCompressionSession)
-        }
-        compressionSession = nil
-        alternateCompressionSession = nil
         activeDimensions = nil
         activePixelFormat = nil
         pixelBufferAttributes = nil
@@ -1615,7 +1552,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         availableStagingSlotIdentifiers.removeAll(keepingCapacity: true)
         nextStagingSlotIdentifier = 0
         frameIndex = 0
-        nextCompressionSessionIndex = 0
         sessionConfigurationNotes.removeAll(keepingCapacity: true)
         directSubmissionFrameCount = 0
         stagedSubmissionFrameCount = 0
@@ -1639,15 +1575,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         usingHardwareAcceleratedEncoder = nil
         encoderPixelBufferPoolIsShared = nil
         recommendedParallelizationLimit = nil
-    }
-
-    private func completeCompressionSessions() {
-        if let compressionSession {
-            VTCompressionSessionCompleteFrames(compressionSession, untilPresentationTimeStamp: .invalid)
-        }
-        if let alternateCompressionSession {
-            VTCompressionSessionCompleteFrames(alternateCompressionSession, untilPresentationTimeStamp: .invalid)
-        }
     }
 
     private func recordProcessingSuccess(isStaged: Bool) {
