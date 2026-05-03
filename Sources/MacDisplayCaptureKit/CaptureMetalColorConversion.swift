@@ -82,7 +82,6 @@ final class MDKMetalBGRAToYCbCrConverter {
     private let device: any MTLDevice
     private let lumaPipeline: any MTLComputePipelineState
     private let chromaPipeline: any MTLComputePipelineState
-    private let block420Pipeline: any MTLComputePipelineState
     private let bgraCursorOverlayPipeline: any MTLComputePipelineState
     private let transparentCursorTexture: any MTLTexture
 
@@ -98,17 +97,15 @@ final class MDKMetalBGRAToYCbCrConverter {
 
         guard let lumaFunction = library.makeFunction(name: "bgraToYCbCrLuma"),
               let chromaFunction = library.makeFunction(name: "bgraToYCbCrChroma"),
-              let block420Function = library.makeFunction(name: "bgraToYCbCr420Block"),
               let bgraCursorOverlayFunction = library.makeFunction(name: "overlayCursorOnBGRA") else {
             throw MDKMetalColorConversionError.functionMissing(
-                "bgraToYCbCrLuma/bgraToYCbCrChroma/bgraToYCbCr420Block/overlayCursorOnBGRA"
+                "bgraToYCbCrLuma/bgraToYCbCrChroma/overlayCursorOnBGRA"
             )
         }
 
         do {
             lumaPipeline = try device.makeComputePipelineState(function: lumaFunction)
             chromaPipeline = try device.makeComputePipelineState(function: chromaFunction)
-            block420Pipeline = try device.makeComputePipelineState(function: block420Function)
             bgraCursorOverlayPipeline = try device.makeComputePipelineState(function: bgraCursorOverlayFunction)
         } catch {
             throw MDKMetalColorConversionError.pipelineCreationFailed(String(describing: error))
@@ -192,30 +189,6 @@ final class MDKMetalBGRAToYCbCrConverter {
             length: MemoryLayout<MDKMetalYCbCrConversionParameters>.stride,
             index: 0
         )
-
-        let useBlock420Path =
-            cursorOverlaySample == nil &&
-            sourceTextures[0].width == destinationTextures[0].width &&
-            sourceTextures[0].height == destinationTextures[0].height &&
-            destinationTextures[1].width * 2 == destinationTextures[0].width &&
-            destinationTextures[1].height * 2 == destinationTextures[0].height &&
-            target.chromaSubsampling == SIMD2<UInt32>(2, 2)
-
-        if useBlock420Path {
-            computeEncoder.setTexture(sourceTextures[0], index: 0)
-            computeEncoder.setTexture(destinationTextures[0], index: 1)
-            computeEncoder.setTexture(destinationTextures[1], index: 2)
-            computeEncoder.setTexture(transparentCursorTexture, index: 3)
-            computeEncoder.setComputePipelineState(block420Pipeline)
-            dispatch(
-                encoder: computeEncoder,
-                pipeline: block420Pipeline,
-                width: destinationTextures[1].width,
-                height: destinationTextures[1].height
-            )
-            computeEncoder.endEncoding()
-            return
-        }
 
         computeEncoder.setTexture(sourceTextures[0], index: 0)
         computeEncoder.setTexture(destinationTextures[0], index: 1)
@@ -662,50 +635,6 @@ final class MDKMetalBGRAToYCbCrConverter {
             float2(1.0)
         );
         destinationTexture.write(float4(limitedUV.x, limitedUV.y, 0.0, 1.0), gid);
-    }
-
-    kernel void bgraToYCbCr420Block(
-        texture2d<float, access::read> sourceTexture [[texture(0)]],
-        texture2d<float, access::write> lumaTexture [[texture(1)]],
-        texture2d<float, access::write> chromaTexture [[texture(2)]],
-        texture2d<float, access::sample> cursorTexture [[texture(3)]],
-        constant ConversionParameters &parameters [[buffer(0)]],
-        uint2 gid [[thread_position_in_grid]]
-    ) {
-        if (gid.x >= chromaTexture.get_width() || gid.y >= chromaTexture.get_height()) {
-            return;
-        }
-
-        uint2 basePixel = gid * uint2(2, 2);
-        uint2 lumaPositions[4] = {
-            basePixel,
-            basePixel + uint2(1, 0),
-            basePixel + uint2(0, 1),
-            basePixel + uint2(1, 1)
-        };
-
-        float3 rgbSum = float3(0.0);
-        for (uint index = 0; index < 4; ++index) {
-            uint2 sourcePixel = min(
-                lumaPositions[index],
-                uint2(sourceTexture.get_width() - 1, sourceTexture.get_height() - 1)
-            );
-            float3 rgb = transformRGB(sourceTexture.read(sourcePixel).rgb, parameters);
-            float y = dot(float4(rgb, 1.0), parameters.yCoefficients);
-            float limitedY = clamp((y * parameters.lumaScale) + parameters.lumaOffset, 0.0, 1.0);
-            lumaTexture.write(limitedY, lumaPositions[index]);
-            rgbSum += rgb;
-        }
-
-        float3 rgb = rgbSum * 0.25;
-        float cb = dot(float4(rgb, 1.0), parameters.cbCoefficients);
-        float cr = dot(float4(rgb, 1.0), parameters.crCoefficients);
-        float2 limitedUV = clamp(
-            (float2(cb, cr) * parameters.chromaScale) + parameters.chromaOffset,
-            float2(0.0),
-            float2(1.0)
-        );
-        chromaTexture.write(float4(limitedUV.x, limitedUV.y, 0.0, 1.0), gid);
     }
 
     kernel void overlayCursorOnBGRA(
