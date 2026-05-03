@@ -440,10 +440,10 @@ private final class MDKEncodedCapturePendingFrameTracker: @unchecked Sendable {
 private actor MDKEncodedCaptureLatestFrameMailbox {
     private var latestFrame: MDKCaptureFrame?
 
-    func store(_ frame: MDKCaptureFrame) -> UInt64? {
-        let replacedDisplayTime = latestFrame?.displayTime
+    func store(_ frame: MDKCaptureFrame) -> MDKCaptureFrame? {
+        let replacedFrame = latestFrame
         latestFrame = frame
-        return replacedDisplayTime
+        return replacedFrame
     }
 
     func take() -> MDKCaptureFrame? {
@@ -1140,10 +1140,10 @@ public actor MDKEncodedCaptureSession {
             sourceTimingTracker?.record(frame: frame)
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
-                    let replacedDisplayTime = await latestFrameMailbox.store(frame)
-                    if let replacedDisplayTime {
+                    let replacedFrame = await latestFrameMailbox.store(frame)
+                    if let replacedFrame, replacedFrame.origin != .timerReplay {
                         await self.handleSourceFrameDropped(
-                            sourceDisplayTime: replacedDisplayTime,
+                            sourceDisplayTime: replacedFrame.displayTime,
                             runtimeGeneration: currentRuntimeGeneration
                         )
                     }
