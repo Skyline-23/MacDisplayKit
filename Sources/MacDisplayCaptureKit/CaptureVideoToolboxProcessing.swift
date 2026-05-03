@@ -1605,23 +1605,15 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let latencyMilliseconds = submissionToken.map {
             max((callbackReceivedAt - $0.submittedAt) * 1000.0, 0)
         }
+        let outputIsKeyFrame = sampleBuffer.map(Self.isKeyFrame(sampleBuffer:))
         let resolvedSampleBuffer = sampleBuffer.map { sampleBuffer in
             guard let hdrConfiguration else {
                 return sampleBuffer
             }
-            let isKeyFrame: Bool
-            if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
-                as? [[CFString: Any]],
-               let firstAttachment = attachments.first {
-                let notSync = firstAttachment[kCMSampleAttachmentKey_NotSync] as? Bool ?? false
-                isKeyFrame = !notSync
-            } else {
-                isKeyFrame = true
-            }
             return MDKHEVCHDRStaticMetadataTransport.makeAugmentedSampleBufferIfNeeded(
                 sampleBuffer: sampleBuffer,
                 hdrConfiguration: hdrConfiguration,
-                isKeyFrame: isKeyFrame
+                isKeyFrame: outputIsKeyFrame ?? true
             ) ?? sampleBuffer
         }
         let sourceSequenceNumber = submissionToken?.sourceSequenceNumber ?? 0
@@ -1640,6 +1632,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 sourceSequenceNumber: sourceSequenceNumber,
                 sourceDisplayTime: submissionToken?.sourceDisplayTime ?? 0,
                 outputCallbackLatencyMilliseconds: latencyMilliseconds,
+                isKeyFrame: outputIsKeyFrame,
                 tileMetadata: resolvedTileMetadata
             )
         }
@@ -1675,6 +1668,16 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
             outputDrainGroup.leave()
         }
+    }
+
+    private static func isKeyFrame(sampleBuffer: CMSampleBuffer) -> Bool {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
+            as? [[CFString: Any]],
+           let firstAttachment = attachments.first else {
+            return true
+        }
+        let notSync = firstAttachment[kCMSampleAttachmentKey_NotSync] as? Bool ?? false
+        return !notSync
     }
 
     private func describe(status: OSStatus) -> String {
