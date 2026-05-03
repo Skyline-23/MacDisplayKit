@@ -22,11 +22,6 @@ struct MDKEncodedCaptureSourcePreparation: Sendable {
 }
 
 protocol MDKEncodedCaptureProcessorRuntime: AnyObject, Sendable {
-    func prepareForFrames(
-        width: Int,
-        height: Int,
-        sourcePixelFormat: UInt32
-    ) throws
     func process(
         frame: MDKCaptureFrame,
         releaseSourceFrame: @escaping @Sendable () -> Void
@@ -37,12 +32,6 @@ protocol MDKEncodedCaptureProcessorRuntime: AnyObject, Sendable {
 }
 
 extension MDKEncodedCaptureProcessorRuntime {
-    func prepareForFrames(
-        width: Int,
-        height: Int,
-        sourcePixelFormat: UInt32
-    ) throws {}
-
     func requestImmediateKeyFrame() {}
 }
 
@@ -1178,13 +1167,6 @@ public actor MDKEncodedCaptureSession {
         }
 
         do {
-            if configuration.codec == .hevc {
-                try processor.prepareForFrames(
-                    width: configuration.streamConfiguration.resolvedOutputWidth,
-                    height: configuration.streamConfiguration.resolvedOutputHeight,
-                    sourcePixelFormat: configuration.resolvedCapturePixelFormat
-                )
-            }
             try source.start()
         } catch {
             self.sourceCadenceTracker = nil
