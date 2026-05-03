@@ -228,7 +228,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var encoderPixelBufferAttributes: CFDictionary?
     private var pixelBufferCache: [UInt32: CVPixelBuffer] = [:]
     private var sourceTextureCache: [UInt32: MDKVideoToolboxSourceTextureCacheEntry] = [:]
-    private var sourceTextureCacheOrder: [UInt32] = []
     private var stagingPixelBufferPool: CVPixelBufferPool?
     private var stagingSlots: [Int: MDKVideoToolboxStagingSlot] = [:]
     private var availableStagingSlotIdentifiers: [Int] = []
@@ -1444,32 +1443,18 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             device: device,
             usage: [.shaderRead]
         )
-        let isNewCacheEntry = sourceTextureCache[surfaceID] == nil
         sourceTextureCache[surfaceID] = MDKVideoToolboxSourceTextureCacheEntry(
             descriptors: descriptors,
             textures: textures
         )
-        if isNewCacheEntry {
-            sourceTextureCacheOrder.append(surfaceID)
+        if sourceTextureCache.count > maxInflightStagingSlots {
+            sourceTextureCache.removeAll(keepingCapacity: true)
+            sourceTextureCache[surfaceID] = MDKVideoToolboxSourceTextureCacheEntry(
+                descriptors: descriptors,
+                textures: textures
+            )
         }
-        trimSourceTextureCache(protecting: surfaceID)
         return textures
-    }
-
-    private func trimSourceTextureCache(protecting protectedSurfaceID: UInt32) {
-        let maximumEntryCount = max(maxInflightStagingSlots, 1)
-        guard sourceTextureCache.count > maximumEntryCount else {
-            return
-        }
-
-        sourceTextureCacheOrder.removeAll { sourceTextureCache[$0] == nil }
-        while sourceTextureCache.count > maximumEntryCount {
-            guard let evictionIndex = sourceTextureCacheOrder.firstIndex(where: { $0 != protectedSurfaceID }) else {
-                break
-            }
-            let evictedSurfaceID = sourceTextureCacheOrder.remove(at: evictionIndex)
-            sourceTextureCache[evictedSurfaceID] = nil
-        }
     }
 
     private func scaledCursorOverlaySample(
@@ -1562,7 +1547,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         encoderPixelBufferAttributes = nil
         pixelBufferCache.removeAll(keepingCapacity: true)
         sourceTextureCache.removeAll(keepingCapacity: true)
-        sourceTextureCacheOrder.removeAll(keepingCapacity: true)
         stagingPixelBufferPool = nil
         stagingSlots.removeAll(keepingCapacity: true)
         availableStagingSlotIdentifiers.removeAll(keepingCapacity: true)
