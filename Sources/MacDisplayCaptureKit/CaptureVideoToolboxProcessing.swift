@@ -1609,20 +1609,18 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             guard let hdrConfiguration else {
                 return sampleBuffer
             }
-            let isKeyFrame: Bool
-            if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
-                as? [[CFString: Any]],
-               let firstAttachment = attachments.first {
-                let notSync = firstAttachment[kCMSampleAttachmentKey_NotSync] as? Bool ?? false
-                isKeyFrame = !notSync
-            } else {
-                isKeyFrame = true
-            }
+            let isKeyFrame = MDKEncodedFrame.isKeyFrame(sampleBuffer: sampleBuffer)
             return MDKHEVCHDRStaticMetadataTransport.makeAugmentedSampleBufferIfNeeded(
                 sampleBuffer: sampleBuffer,
                 hdrConfiguration: hdrConfiguration,
                 isKeyFrame: isKeyFrame
             ) ?? sampleBuffer
+        }
+        let cachedIsKeyFrame = resolvedSampleBuffer.map {
+            MDKEncodedFrame.isKeyFrame(sampleBuffer: $0)
+        }
+        let cachedHDRValidationReport = resolvedSampleBuffer.map {
+            MDKEncodedFrame.hdrValidationReport(sampleBuffer: $0, codec: codec)
         }
         let sourceSequenceNumber = submissionToken?.sourceSequenceNumber ?? 0
         let resolvedTileMetadata = MDKEncodedFrameTileMetadata(
@@ -1640,7 +1638,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 sourceSequenceNumber: sourceSequenceNumber,
                 sourceDisplayTime: submissionToken?.sourceDisplayTime ?? 0,
                 outputCallbackLatencyMilliseconds: latencyMilliseconds,
-                tileMetadata: resolvedTileMetadata
+                tileMetadata: resolvedTileMetadata,
+                isKeyFrame: cachedIsKeyFrame,
+                hdrValidationReport: cachedHDRValidationReport
             )
         }
         if let slotIdentifier = submissionToken?.slotIdentifier {
