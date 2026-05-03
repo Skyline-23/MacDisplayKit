@@ -322,6 +322,48 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         try process(frame: frame, releaseSourceFrame: {})
     }
 
+    func enqueueFromCaptureCallback(
+        frame: MDKCaptureFrame,
+        releaseSourceFrame: @escaping @Sendable () -> Void
+    ) throws {
+        let processRequestedAt = ProcessInfo.processInfo.systemUptime
+        guard let surface = frame.surface else {
+            throw MDKVideoToolboxProcessingError.surfaceUnavailable
+        }
+
+        let retainedFrame = MDKCaptureFrame(
+            sequenceNumber: frame.sequenceNumber,
+            displayTime: frame.displayTime,
+            surfaceID: frame.surfaceID,
+            width: frame.width,
+            height: frame.height,
+            pixelFormat: frame.pixelFormat,
+            surface: surface,
+            origin: frame.origin,
+            cursorOverlaySample: frame.cursorOverlaySample,
+            sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
+            sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
+        )
+
+        encodeQueue.async { [self, retainedFrame] in
+            let encodeStartedAt = ProcessInfo.processInfo.systemUptime
+            recordTiming(.encodeQueueWait, startedAt: processRequestedAt, endedAt: encodeStartedAt)
+            do {
+                try encode(
+                    frame: retainedFrame,
+                    releaseSourceFrame: releaseSourceFrame
+                )
+            } catch {
+                releaseSourceFrame()
+                let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                processingFailureCount += 1
+                processingErrorHistogram[errorDescription, default: 0] += 1
+                failureHandler?(errorDescription)
+            }
+            recordTiming(.encodeInvocation, startedAt: encodeStartedAt)
+        }
+    }
+
     public func requestImmediateKeyFrame() {
         if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) == encodeQueueSpecificValue {
             forceNextKeyFrame = true
