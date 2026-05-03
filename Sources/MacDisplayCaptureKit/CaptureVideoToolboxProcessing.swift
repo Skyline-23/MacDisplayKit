@@ -118,13 +118,6 @@ private struct MDKVideoToolboxTimingAccumulator {
     }
 }
 
-private struct MDKVideoToolboxTimingSummary {
-    let encodeQueueWait: MDKVideoToolboxTimingAccumulator
-    let encodeInvocation: MDKVideoToolboxTimingAccumulator
-    let metalStage: MDKVideoToolboxTimingAccumulator
-    let vtEncodeCall: MDKVideoToolboxTimingAccumulator
-}
-
 private enum MDKVideoToolboxTimingMetric {
     case encodeQueueWait
     case encodeInvocation
@@ -244,7 +237,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var processingFailureCount: UInt64 = 0
     private var processingErrorHistogram: [String: Int] = [:]
     private let outputQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.output")
-    private let timingQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.timing")
     private var outputCallbackCount: UInt64 = 0
     private var completedOutputFrameCount: UInt64 = 0
     private var outputCallbackStatusHistogram: [String: Int] = [:]
@@ -397,7 +389,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 VTCompressionSessionCompleteFrames(compressionSession, untilPresentationTimeStamp: .invalid)
             }
             let outputDrainWaitStatus = outputDrainGroup.wait(timeout: .now() + 1.5)
-            let timingSummary = timingSummary()
             let outputSummary = outputQueue.sync {
                 (
                     processedFrameCount,
@@ -428,7 +419,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     submittedFrameCount: outputSummary.3,
                     directSubmissionFrameCount: outputSummary.10,
                     stagedSubmissionFrameCount: outputSummary.11,
-                    timingSummary: timingSummary,
                     includeDrainWaitStatus: true,
                     stagingSubmissionWaitStatus: stagingSubmissionWaitStatus,
                     outputDrainWaitStatus: outputDrainWaitStatus
@@ -439,7 +429,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
     func liveSummary() -> MDKCaptureFrameProcessingSummary? {
         encodeQueue.sync {}
-        let timingSummary = timingSummary()
         return outputQueue.sync {
             MDKCaptureFrameProcessingSummary(
                 processedFrameCount: processedFrameCount,
@@ -455,7 +444,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     submittedFrameCount: submittedFrameCount,
                     directSubmissionFrameCount: directSubmissionFrameCount,
                     stagedSubmissionFrameCount: stagedSubmissionFrameCount,
-                    timingSummary: timingSummary,
                     includeDrainWaitStatus: false,
                     stagingSubmissionWaitStatus: nil,
                     outputDrainWaitStatus: nil
@@ -468,7 +456,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         submittedFrameCount: UInt64,
         directSubmissionFrameCount: UInt64,
         stagedSubmissionFrameCount: UInt64,
-        timingSummary: MDKVideoToolboxTimingSummary,
         includeDrainWaitStatus: Bool,
         stagingSubmissionWaitStatus: DispatchTimeoutResult?,
         outputDrainWaitStatus: DispatchTimeoutResult?
@@ -491,18 +478,18 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxPixelBufferPoolIsShared=\(describeHardwareAcceleration(encoderPixelBufferPoolIsShared))",
             "videoToolboxRecommendedParallelizationLimit=\(recommendedParallelizationLimit.map(String.init) ?? "unknown")",
             "videoToolboxPixelBufferCacheSize=\(pixelBufferCache.count)",
-            "videoToolboxEncodeQueueWaitSampleCount=\(timingSummary.encodeQueueWait.sampleCount)",
-            "videoToolboxEncodeQueueWaitAverageMilliseconds=\(formatMilliseconds(timingSummary.encodeQueueWait.averageMilliseconds))",
-            "videoToolboxEncodeQueueWaitMaxMilliseconds=\(formatMilliseconds(timingSummary.encodeQueueWait.maxMilliseconds))",
-            "videoToolboxEncodeInvocationSampleCount=\(timingSummary.encodeInvocation.sampleCount)",
-            "videoToolboxEncodeInvocationAverageMilliseconds=\(formatMilliseconds(timingSummary.encodeInvocation.averageMilliseconds))",
-            "videoToolboxEncodeInvocationMaxMilliseconds=\(formatMilliseconds(timingSummary.encodeInvocation.maxMilliseconds))",
-            "videoToolboxMetalStageSampleCount=\(timingSummary.metalStage.sampleCount)",
-            "videoToolboxMetalStageAverageMilliseconds=\(formatMilliseconds(timingSummary.metalStage.averageMilliseconds))",
-            "videoToolboxMetalStageMaxMilliseconds=\(formatMilliseconds(timingSummary.metalStage.maxMilliseconds))",
-            "videoToolboxVTEncodeCallSampleCount=\(timingSummary.vtEncodeCall.sampleCount)",
-            "videoToolboxVTEncodeCallAverageMilliseconds=\(formatMilliseconds(timingSummary.vtEncodeCall.averageMilliseconds))",
-            "videoToolboxVTEncodeCallMaxMilliseconds=\(formatMilliseconds(timingSummary.vtEncodeCall.maxMilliseconds))"
+            "videoToolboxEncodeQueueWaitSampleCount=\(encodeQueueWaitTiming.sampleCount)",
+            "videoToolboxEncodeQueueWaitAverageMilliseconds=\(formatMilliseconds(encodeQueueWaitTiming.averageMilliseconds))",
+            "videoToolboxEncodeQueueWaitMaxMilliseconds=\(formatMilliseconds(encodeQueueWaitTiming.maxMilliseconds))",
+            "videoToolboxEncodeInvocationSampleCount=\(encodeInvocationTiming.sampleCount)",
+            "videoToolboxEncodeInvocationAverageMilliseconds=\(formatMilliseconds(encodeInvocationTiming.averageMilliseconds))",
+            "videoToolboxEncodeInvocationMaxMilliseconds=\(formatMilliseconds(encodeInvocationTiming.maxMilliseconds))",
+            "videoToolboxMetalStageSampleCount=\(metalStageTiming.sampleCount)",
+            "videoToolboxMetalStageAverageMilliseconds=\(formatMilliseconds(metalStageTiming.averageMilliseconds))",
+            "videoToolboxMetalStageMaxMilliseconds=\(formatMilliseconds(metalStageTiming.maxMilliseconds))",
+            "videoToolboxVTEncodeCallSampleCount=\(vtEncodeCallTiming.sampleCount)",
+            "videoToolboxVTEncodeCallAverageMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.averageMilliseconds))",
+            "videoToolboxVTEncodeCallMaxMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.maxMilliseconds))"
         ]
         if includeDrainWaitStatus {
             notes.append("videoToolboxStagingSubmissionWait=\(stagingSubmissionWaitStatus == .success ? "success" : "timeout")")
@@ -1576,8 +1563,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             outputCallbackLatencyHistogram = [:]
             minOutputCallbackLatencyMilliseconds = nil
             maxOutputCallbackLatencyMilliseconds = nil
-        }
-        timingQueue.sync {
             encodeQueueWaitTiming = MDKVideoToolboxTimingAccumulator()
             encodeInvocationTiming = MDKVideoToolboxTimingAccumulator()
             metalStageTiming = MDKVideoToolboxTimingAccumulator()
@@ -1711,7 +1696,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         endedAt: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) {
         let elapsedMilliseconds = (endedAt - startedAt) * 1000.0
-        timingQueue.async { [self] in
+        outputQueue.sync {
             switch metric {
             case .encodeQueueWait:
                 encodeQueueWaitTiming.record(elapsedMilliseconds)
@@ -1722,17 +1707,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             case .vtEncodeCall:
                 vtEncodeCallTiming.record(elapsedMilliseconds)
             }
-        }
-    }
-
-    private func timingSummary() -> MDKVideoToolboxTimingSummary {
-        timingQueue.sync {
-            MDKVideoToolboxTimingSummary(
-                encodeQueueWait: encodeQueueWaitTiming,
-                encodeInvocation: encodeInvocationTiming,
-                metalStage: metalStageTiming,
-                vtEncodeCall: vtEncodeCallTiming
-            )
         }
     }
 
