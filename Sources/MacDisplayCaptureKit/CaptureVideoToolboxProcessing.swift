@@ -797,7 +797,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                         releasePendingFrame: {}
                     )
                     releaseSourceFrame()
-                    recordProcessingSuccessAsync(isStaged: true)
+                    recordProcessingSuccess(isStaged: true)
                 } catch {
                     releaseSourceFrame()
                     let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
@@ -1588,17 +1588,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
     }
 
-    private func recordProcessingSuccessAsync(isStaged: Bool) {
-        outputQueue.async { [self] in
-            processedFrameCount += 1
-            if isStaged {
-                stagedSubmissionFrameCount += 1
-            } else {
-                directSubmissionFrameCount += 1
-            }
-        }
-    }
-
     private func recordProcessingFailure(_ description: String) {
         outputQueue.sync {
             processingFailureCount += 1
@@ -1660,12 +1649,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         submissionToken?.markCompleted()
-        if let encodedFrame, outputCompleted {
-            outputHandler?(encodedFrame)
-        }
-        let failureDescription = status != noErr
-            ? "VT output callback failed (\(describe(status: status)))."
-            : nil
         outputQueue.async { [self] in
             outputCallbackCount += 1
             outputCallbackStatusHistogram[describe(status: status), default: 0] += 1
@@ -1685,8 +1668,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             if outputCompleted {
                 completedOutputFrameCount += 1
             }
-            if let failureDescription {
-                failureHandler?(failureDescription)
+            if let encodedFrame, outputCompleted {
+                outputHandler?(encodedFrame)
+            } else if status != noErr {
+                failureHandler?("VT output callback failed (\(describe(status: status))).")
             }
             outputDrainGroup.leave()
         }
