@@ -441,10 +441,6 @@ private actor MDKEncodedCaptureLatestFrameMailbox {
     private var latestFrame: MDKCaptureFrame?
 
     func store(_ frame: MDKCaptureFrame) -> UInt64? {
-        if frame.origin == .timerReplay && latestFrame != nil {
-            return nil
-        }
-
         let replacedDisplayTime = latestFrame?.displayTime
         latestFrame = frame
         return replacedDisplayTime
