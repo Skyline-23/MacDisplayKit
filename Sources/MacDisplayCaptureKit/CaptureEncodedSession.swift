@@ -440,10 +440,10 @@ private final class MDKEncodedCapturePendingFrameTracker: @unchecked Sendable {
 private actor MDKEncodedCaptureLatestFrameMailbox {
     private var latestFrame: MDKCaptureFrame?
 
-    func store(_ frame: MDKCaptureFrame) -> UInt64? {
-        let replacedDisplayTime = latestFrame?.displayTime
+    func store(_ frame: MDKCaptureFrame) -> MDKCaptureFrame? {
+        let replacedFrame = latestFrame
         latestFrame = frame
-        return replacedDisplayTime
+        return replacedFrame
     }
 
     func take() -> MDKCaptureFrame? {
@@ -998,6 +998,30 @@ public actor MDKEncodedCaptureSession {
         return min(max(effectiveQueueDepth * 3, 10), 16)
     }
 
+    private static func shouldReportMailboxReplacementDrop(
+        replacedFrame: MDKCaptureFrame,
+        replacementFrame: MDKCaptureFrame,
+        targetFrameRate: Int,
+        coalesceSyntheticReplayDrops: Bool
+    ) -> Bool {
+        guard coalesceSyntheticReplayDrops else {
+            return true
+        }
+
+        if replacedFrame.origin == .fresh {
+            return true
+        }
+
+        guard targetFrameRate > 0,
+              replacementFrame.displayTime >= replacedFrame.displayTime else {
+            return true
+        }
+
+        let targetFrameIntervalNanoseconds = UInt64(1_000_000_000 / max(targetFrameRate, 1))
+        let targetFrameIntervalTicks = MDKMachAbsoluteTicksForNanoseconds(targetFrameIntervalNanoseconds)
+        return replacementFrame.displayTime - replacedFrame.displayTime >= targetFrameIntervalTicks
+    }
+
     public func frames() -> AsyncThrowingStream<MDKEncodedFrame, Error> {
         makeFrameStream()
     }
@@ -1140,10 +1164,16 @@ public actor MDKEncodedCaptureSession {
             sourceTimingTracker?.record(frame: frame)
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
-                    let replacedDisplayTime = await latestFrameMailbox.store(frame)
-                    if let replacedDisplayTime {
+                    if let replacedFrame = await latestFrameMailbox.store(frame),
+                       Self.shouldReportMailboxReplacementDrop(
+                           replacedFrame: replacedFrame,
+                           replacementFrame: frame,
+                           targetFrameRate: configuration.targetFrameRate,
+                           coalesceSyntheticReplayDrops: configuration.resolvedSourceBackend == .skyLightDisplayStream &&
+                               configuration.resolvedSkyLightProcessingMode != nil
+                       ) {
                         await self.handleSourceFrameDropped(
-                            sourceDisplayTime: replacedDisplayTime,
+                            sourceDisplayTime: replacedFrame.displayTime,
                             runtimeGeneration: currentRuntimeGeneration
                         )
                     }
