@@ -231,6 +231,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var stagingPixelBufferPool: CVPixelBufferPool?
     private var stagingSlots: [Int: MDKVideoToolboxStagingSlot] = [:]
     private var availableStagingSlotIdentifiers: [Int] = []
+    private var prewarmedStagingSlotCount: Int = 0
     private var nextStagingSlotIdentifier: Int = 0
     private var frameIndex: Int64 = 0
     private var processedFrameCount: UInt64 = 0
@@ -489,7 +490,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxMetalStageMaxMilliseconds=\(formatMilliseconds(metalStageTiming.maxMilliseconds))",
             "videoToolboxVTEncodeCallSampleCount=\(vtEncodeCallTiming.sampleCount)",
             "videoToolboxVTEncodeCallAverageMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.averageMilliseconds))",
-            "videoToolboxVTEncodeCallMaxMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.maxMilliseconds))"
+            "videoToolboxVTEncodeCallMaxMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.maxMilliseconds))",
+            "videoToolboxPrewarmedStagingSlotCount=\(prewarmedStagingSlotCount)"
         ]
         if includeDrainWaitStatus {
             notes.append("videoToolboxStagingSubmissionWait=\(stagingSubmissionWaitStatus == .success ? "success" : "timeout")")
@@ -1292,12 +1294,32 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             height: height,
             pixelFormat: pixelFormat
         )
+        try prewarmStagingSlotsIfNeeded(
+            width: width,
+            height: height,
+            pixelFormat: pixelFormat,
+            device: device
+        )
 
         if let reusableIdentifier = availableStagingSlotIdentifiers.popLast(),
            let reusableSlot = stagingSlots[reusableIdentifier] {
             return reusableSlot
         }
 
+        return try makeStagingSlot(
+            width: width,
+            height: height,
+            pixelFormat: pixelFormat,
+            device: device
+        )
+    }
+
+    private func makeStagingSlot(
+        width: Int,
+        height: Int,
+        pixelFormat: UInt32,
+        device: any MTLDevice
+    ) throws -> MDKVideoToolboxStagingSlot {
         guard stagingSlots.count < maxInflightStagingSlots else {
             throw MDKVideoToolboxProcessingError.stagingSlotUnavailable
         }
@@ -1337,6 +1359,47 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         return slot
     }
 
+    private func prewarmStagingSlotsIfNeeded(
+        width: Int,
+        height: Int,
+        pixelFormat: UInt32,
+        device: any MTLDevice
+    ) throws {
+        let targetPrewarmCount = preferredStagingSlotPrewarmCount
+        guard targetPrewarmCount > 0,
+              prewarmedStagingSlotCount == 0,
+              stagingSlots.isEmpty else {
+            return
+        }
+
+        while stagingSlots.count < targetPrewarmCount {
+            do {
+                let slot = try makeStagingSlot(
+                    width: width,
+                    height: height,
+                    pixelFormat: pixelFormat,
+                    device: device
+                )
+                availableStagingSlotIdentifiers.append(slot.identifier)
+                prewarmedStagingSlotCount += 1
+            } catch {
+                if stagingSlots.isEmpty {
+                    throw error
+                }
+                break
+            }
+        }
+    }
+
+    private var preferredStagingSlotPrewarmCount: Int {
+        guard codec == .hevc,
+              hdrConfiguration?.transferFunction == .smpteSt2084PQ else {
+            return 0
+        }
+
+        return min(maxInflightStagingSlots, 16)
+    }
+
     private func ensureStagingPool(
         width: Int,
         height: Int,
@@ -1373,6 +1436,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         stagingPixelBufferPool = pool
         stagingSlots.removeAll(keepingCapacity: true)
         availableStagingSlotIdentifiers.removeAll(keepingCapacity: true)
+        prewarmedStagingSlotCount = 0
         nextStagingSlotIdentifier = 0
     }
 
@@ -1550,6 +1614,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         stagingPixelBufferPool = nil
         stagingSlots.removeAll(keepingCapacity: true)
         availableStagingSlotIdentifiers.removeAll(keepingCapacity: true)
+        prewarmedStagingSlotCount = 0
         nextStagingSlotIdentifier = 0
         frameIndex = 0
         sessionConfigurationNotes.removeAll(keepingCapacity: true)
