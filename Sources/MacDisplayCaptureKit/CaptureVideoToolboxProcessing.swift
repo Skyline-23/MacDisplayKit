@@ -797,7 +797,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                         releasePendingFrame: {}
                     )
                     releaseSourceFrame()
-                    recordProcessingSuccess(isStaged: true)
+                    recordProcessingSuccessAsync(isStaged: true)
                 } catch {
                     releaseSourceFrame()
                     let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
@@ -858,7 +858,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             releasePendingFrame()
             throw MDKVideoToolboxProcessingError.encodeFailed(status: status)
         }
-        if frame.origin == .fresh {
+        if frame.origin == .fresh && codec.lowLatencyRateControlSupported {
             lastFreshReplayState = MDKVideoToolboxReplayState(
                 imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
                 frame: frame
@@ -1579,6 +1579,17 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
     private func recordProcessingSuccess(isStaged: Bool) {
         outputQueue.sync {
+            processedFrameCount += 1
+            if isStaged {
+                stagedSubmissionFrameCount += 1
+            } else {
+                directSubmissionFrameCount += 1
+            }
+        }
+    }
+
+    private func recordProcessingSuccessAsync(isStaged: Bool) {
+        outputQueue.async { [self] in
             processedFrameCount += 1
             if isStaged {
                 stagedSubmissionFrameCount += 1
