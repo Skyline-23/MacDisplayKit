@@ -591,19 +591,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             return false
         }
 
-        switch sourcePixelFormat {
-        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
-             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
-             kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
-             kCVPixelFormatType_422YpCbCr8BiPlanarVideoRange,
-             kCVPixelFormatType_422YpCbCr8BiPlanarFullRange,
-             kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
-             kCVPixelFormatType_422YpCbCr10BiPlanarFullRange:
-            return true
-        default:
-            return false
-        }
+        return false
     }
 
     private func encodeDirect(
