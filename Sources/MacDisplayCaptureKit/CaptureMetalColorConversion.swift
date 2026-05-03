@@ -82,6 +82,8 @@ final class MDKMetalBGRAToYCbCrConverter {
     private let device: any MTLDevice
     private let lumaPipeline: any MTLComputePipelineState
     private let chromaPipeline: any MTLComputePipelineState
+    private let noCursorLumaPipeline: any MTLComputePipelineState
+    private let noCursorChromaPipeline: any MTLComputePipelineState
     private let bgraCursorOverlayPipeline: any MTLComputePipelineState
     private let transparentCursorTexture: any MTLTexture
 
@@ -97,15 +99,19 @@ final class MDKMetalBGRAToYCbCrConverter {
 
         guard let lumaFunction = library.makeFunction(name: "bgraToYCbCrLuma"),
               let chromaFunction = library.makeFunction(name: "bgraToYCbCrChroma"),
+              let noCursorLumaFunction = library.makeFunction(name: "bgraToYCbCrLumaNoCursor"),
+              let noCursorChromaFunction = library.makeFunction(name: "bgraToYCbCrChromaNoCursor"),
               let bgraCursorOverlayFunction = library.makeFunction(name: "overlayCursorOnBGRA") else {
             throw MDKMetalColorConversionError.functionMissing(
-                "bgraToYCbCrLuma/bgraToYCbCrChroma/overlayCursorOnBGRA"
+                "bgraToYCbCrLuma/bgraToYCbCrChroma/bgraToYCbCrLumaNoCursor/bgraToYCbCrChromaNoCursor/overlayCursorOnBGRA"
             )
         }
 
         do {
             lumaPipeline = try device.makeComputePipelineState(function: lumaFunction)
             chromaPipeline = try device.makeComputePipelineState(function: chromaFunction)
+            noCursorLumaPipeline = try device.makeComputePipelineState(function: noCursorLumaFunction)
+            noCursorChromaPipeline = try device.makeComputePipelineState(function: noCursorChromaFunction)
             bgraCursorOverlayPipeline = try device.makeComputePipelineState(function: bgraCursorOverlayFunction)
         } catch {
             throw MDKMetalColorConversionError.pipelineCreationFailed(String(describing: error))
@@ -190,24 +196,31 @@ final class MDKMetalBGRAToYCbCrConverter {
             index: 0
         )
 
+        let lumaPipelineState = cursorOverlaySample == nil ? noCursorLumaPipeline : lumaPipeline
+        let chromaPipelineState = cursorOverlaySample == nil ? noCursorChromaPipeline : chromaPipeline
+
         computeEncoder.setTexture(sourceTextures[0], index: 0)
         computeEncoder.setTexture(destinationTextures[0], index: 1)
-        computeEncoder.setTexture(cursorTexture ?? transparentCursorTexture, index: 2)
-        computeEncoder.setComputePipelineState(lumaPipeline)
+        if cursorOverlaySample != nil {
+            computeEncoder.setTexture(cursorTexture ?? transparentCursorTexture, index: 2)
+        }
+        computeEncoder.setComputePipelineState(lumaPipelineState)
         dispatch(
             encoder: computeEncoder,
-            pipeline: lumaPipeline,
+            pipeline: lumaPipelineState,
             width: destinationTextures[0].width,
             height: destinationTextures[0].height
         )
 
         computeEncoder.setTexture(sourceTextures[0], index: 0)
         computeEncoder.setTexture(destinationTextures[1], index: 1)
-        computeEncoder.setTexture(cursorTexture ?? transparentCursorTexture, index: 2)
-        computeEncoder.setComputePipelineState(chromaPipeline)
+        if cursorOverlaySample != nil {
+            computeEncoder.setTexture(cursorTexture ?? transparentCursorTexture, index: 2)
+        }
+        computeEncoder.setComputePipelineState(chromaPipelineState)
         dispatch(
             encoder: computeEncoder,
-            pipeline: chromaPipeline,
+            pipeline: chromaPipelineState,
             width: destinationTextures[1].width,
             height: destinationTextures[1].height
         )
@@ -590,6 +603,28 @@ final class MDKMetalBGRAToYCbCrConverter {
         destinationTexture.write(limitedY, gid);
     }
 
+    kernel void bgraToYCbCrLumaNoCursor(
+        texture2d<float, access::sample> sourceTexture [[texture(0)]],
+        texture2d<float, access::write> destinationTexture [[texture(1)]],
+        constant ConversionParameters &parameters [[buffer(0)]],
+        uint2 gid [[thread_position_in_grid]]
+    ) {
+        if (gid.x >= destinationTexture.get_width() || gid.y >= destinationTexture.get_height()) {
+            return;
+        }
+
+        constexpr sampler linearSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+        float2 destinationSize = float2(parameters.destinationLumaSize);
+        float2 normalizedCoordinates = (float2(gid) + float2(0.5)) / destinationSize;
+        float3 rgb = transformRGB(
+            sampleRGB(sourceTexture, linearSampler, normalizedCoordinates),
+            parameters
+        );
+        float y = dot(float4(rgb, 1.0), parameters.yCoefficients);
+        float limitedY = clamp((y * parameters.lumaScale) + parameters.lumaOffset, 0.0, 1.0);
+        destinationTexture.write(limitedY, gid);
+    }
+
     kernel void bgraToYCbCrChroma(
         texture2d<float, access::sample> sourceTexture [[texture(0)]],
         texture2d<float, access::write> destinationTexture [[texture(1)]],
@@ -622,6 +657,47 @@ final class MDKMetalBGRAToYCbCrConverter {
                     parameters
                 );
                 rgb += transformRGB(sample, parameters);
+                sampleCount += 1;
+            }
+        }
+        rgb *= 1.0 / max(float(sampleCount), 1.0);
+
+        float cb = dot(float4(rgb, 1.0), parameters.cbCoefficients);
+        float cr = dot(float4(rgb, 1.0), parameters.crCoefficients);
+        float2 limitedUV = clamp(
+            (float2(cb, cr) * parameters.chromaScale) + parameters.chromaOffset,
+            float2(0.0),
+            float2(1.0)
+        );
+        destinationTexture.write(float4(limitedUV.x, limitedUV.y, 0.0, 1.0), gid);
+    }
+
+    kernel void bgraToYCbCrChromaNoCursor(
+        texture2d<float, access::sample> sourceTexture [[texture(0)]],
+        texture2d<float, access::write> destinationTexture [[texture(1)]],
+        constant ConversionParameters &parameters [[buffer(0)]],
+        uint2 gid [[thread_position_in_grid]]
+    ) {
+        if (gid.x >= destinationTexture.get_width() || gid.y >= destinationTexture.get_height()) {
+            return;
+        }
+
+        constexpr sampler linearSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+        float2 lumaSize = float2(parameters.destinationLumaSize);
+        float2 chromaSubsampling = float2(parameters.chromaSubsampling);
+        float2 basePixel = float2(gid) * chromaSubsampling;
+
+        float3 rgb = float3(0.0);
+        uint sampleCount = 0;
+        for (uint offsetY = 0; offsetY < parameters.chromaSubsampling.y; ++offsetY) {
+            for (uint offsetX = 0; offsetX < parameters.chromaSubsampling.x; ++offsetX) {
+                float2 sampleCoordinate = (
+                    basePixel + float2(float(offsetX) + 0.5, float(offsetY) + 0.5)
+                ) / lumaSize;
+                rgb += transformRGB(
+                    sampleRGB(sourceTexture, linearSampler, sampleCoordinate),
+                    parameters
+                );
                 sampleCount += 1;
             }
         }
