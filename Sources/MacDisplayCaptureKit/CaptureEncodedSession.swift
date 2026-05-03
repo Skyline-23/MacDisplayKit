@@ -1139,6 +1139,9 @@ public actor MDKEncodedCaptureSession {
             sourceCadenceTracker?.record(displayTime: frame.displayTime)
             sourceTimingTracker?.record(frame: frame)
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
+                if frame.origin == .idleReplay {
+                    return
+                }
                 Task {
                     let replacedDisplayTime = await latestFrameMailbox.store(frame)
                     if let replacedDisplayTime {
