@@ -158,19 +158,8 @@ private struct MDKVideoToolboxStagingSlot {
 }
 
 private struct MDKVideoToolboxSourceTextureCacheEntry {
-    let width: Int
-    let height: Int
-    let pixelFormat: UInt32
-    let planeCount: Int
     let descriptors: [MDKMetalPlaneDescriptor]
     let textures: [MTLTexture]
-
-    func matches(surface: MDKCaptureSurface) -> Bool {
-        width == surface.width &&
-        height == surface.height &&
-        pixelFormat == surface.pixelFormat &&
-        planeCount == surface.planeCount
-    }
 }
 
 private final class MDKMetalBilinearScaler {
@@ -1443,32 +1432,24 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         surface: MDKCaptureSurface,
         device: any MTLDevice
     ) throws -> [MTLTexture] {
+        let descriptors = try makePlaneDescriptors(for: surface)
         if let cachedEntry = sourceTextureCache[surfaceID],
-           cachedEntry.matches(surface: surface) {
+           cachedEntry.descriptors == descriptors {
             return cachedEntry.textures
         }
 
-        let descriptors = try makePlaneDescriptors(for: surface)
         let textures = try makeTextures(
             for: surface,
             device: device,
             usage: [.shaderRead]
         )
         sourceTextureCache[surfaceID] = MDKVideoToolboxSourceTextureCacheEntry(
-            width: surface.width,
-            height: surface.height,
-            pixelFormat: surface.pixelFormat,
-            planeCount: surface.planeCount,
             descriptors: descriptors,
             textures: textures
         )
         if sourceTextureCache.count > maxInflightStagingSlots {
             sourceTextureCache.removeAll(keepingCapacity: true)
             sourceTextureCache[surfaceID] = MDKVideoToolboxSourceTextureCacheEntry(
-                width: surface.width,
-                height: surface.height,
-                pixelFormat: surface.pixelFormat,
-                planeCount: surface.planeCount,
                 descriptors: descriptors,
                 textures: textures
             )
