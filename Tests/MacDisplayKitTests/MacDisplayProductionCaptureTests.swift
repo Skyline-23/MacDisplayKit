@@ -28,7 +28,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
                 hdrConfiguration: .hdr10(),
                 strategy: .auto
             ),
-            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            kCVPixelFormatType_32BGRA
         )
     }
 
