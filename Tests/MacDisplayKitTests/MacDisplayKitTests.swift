@@ -364,7 +364,7 @@ final class MacDisplayKitTests: XCTestCase {
         )
         XCTAssertEqual(
             hevcHDRConfiguration.resolvedEncoderInputStrategy(using: skyLightCapabilities),
-            MDKEncodedCaptureEncoderInputStrategy.auto
+            MDKEncodedCaptureEncoderInputStrategy.bgra
         )
         XCTAssertEqual(
             hevcHDRConfiguration.resolvedEncoderInputStrategy(using: privateCapabilities),

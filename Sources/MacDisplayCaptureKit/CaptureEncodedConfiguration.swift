@@ -309,6 +309,11 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
                 return .bgra
             }
         case .skyLightDisplayStream:
+            if codec == .hevc,
+               resolvedCapturePixelFormat == kCVPixelFormatType_32BGRA,
+               resolvedEncodedHDRConfiguration.map({ $0.transferFunction != .ituR709 }) ?? false {
+                return .bgra
+            }
             return .auto
         }
     }
