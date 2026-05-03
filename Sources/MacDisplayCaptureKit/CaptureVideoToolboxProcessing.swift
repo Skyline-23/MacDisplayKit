@@ -466,7 +466,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxCodec=\(codec.rawValue)",
             "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
             "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "hybrid-direct-or-metal-staging")",
-            "videoToolboxStagedSourceReleaseMode=\(shouldReleaseStagedSourceAfterOutput() ? "post-output" : "post-submit")",
+            "videoToolboxStagedSourceReleaseMode=post-submit",
             "videoToolboxDirectSubmissionFrameCount=\(directSubmissionFrameCount)",
             "videoToolboxStagedSubmissionFrameCount=\(stagedSubmissionFrameCount)",
             "videoToolboxColorConversionMode=\(sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) ? "custom" : "passthrough")",
@@ -789,24 +789,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
             self.submissionQueue.async { [self] in
                 do {
-                    if shouldReleaseStagedSourceAfterOutput() {
-                        try submitToEncoder(
-                            imageBuffer: stagedPixelBuffer.pixelBuffer,
-                            frame: frame,
-                            slotIdentifier: slotIdentifier,
-                            presentationTimeStamp: presentationTimeStamp,
-                            releasePendingFrame: releaseSourceFrame
-                        )
-                    } else {
-                        try submitToEncoder(
-                            imageBuffer: stagedPixelBuffer.pixelBuffer,
-                            frame: frame,
-                            slotIdentifier: slotIdentifier,
-                            presentationTimeStamp: presentationTimeStamp,
-                            releasePendingFrame: {}
-                        )
-                        releaseSourceFrame()
-                    }
+                    try submitToEncoder(
+                        imageBuffer: stagedPixelBuffer.pixelBuffer,
+                        frame: frame,
+                        slotIdentifier: slotIdentifier,
+                        presentationTimeStamp: presentationTimeStamp,
+                        releasePendingFrame: {}
+                    )
+                    releaseSourceFrame()
                     recordProcessingSuccess(isStaged: true)
                 } catch {
                     releaseSourceFrame()
@@ -941,10 +931,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         return pendingFrames > 0
-    }
-
-    private func shouldReleaseStagedSourceAfterOutput() -> Bool {
-        codec == .hevc && hdrConfiguration?.transferFunction == .smpteSt2084PQ
     }
 
     private func consumeImmediateKeyFrameRequest() -> Bool {
