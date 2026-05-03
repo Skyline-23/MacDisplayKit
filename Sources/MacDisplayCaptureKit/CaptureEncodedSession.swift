@@ -130,13 +130,16 @@ private actor MDKSkyLightEncodedCaptureReplayState {
     private var lastCaptureSurface: MDKCaptureSurface?
     private var lastDisplayTime: UInt64?
     private var lastEmissionMachTime: UInt64?
+    private var consecutiveFreshOvercadenceCount = 0
 
     func captureFrame(
         status: CGDisplayStreamFrameStatus,
         displayTime: UInt64,
         frameSurface: MDKCaptureSurface?,
         dirtyRects: [CGRect]?,
-        sourceUpdateDropCount: UInt64?
+        sourceUpdateDropCount: UInt64?,
+        coalesceFreshOvercadence: Bool,
+        minimumEmissionDeltaMachTicks: UInt64
     ) -> MDKCaptureFrame? {
         let action = MDKResolveSkyLightEncodedCaptureFrameAction(
             status: status,
@@ -151,9 +154,23 @@ private actor MDKSkyLightEncodedCaptureReplayState {
             guard let captureSurface = frameSurface else {
                 return nil
             }
+            let currentMachTime = mach_absolute_time()
+            if coalesceFreshOvercadence,
+               let lastEmissionMachTime,
+               currentMachTime > lastEmissionMachTime,
+               currentMachTime - lastEmissionMachTime < minimumEmissionDeltaMachTicks {
+                consecutiveFreshOvercadenceCount += 1
+                if consecutiveFreshOvercadenceCount >= 2 {
+                    lastCaptureSurface = captureSurface
+                    lastDisplayTime = displayTime
+                    return nil
+                }
+            } else {
+                consecutiveFreshOvercadenceCount = 0
+            }
             lastCaptureSurface = captureSurface
             lastDisplayTime = displayTime
-            lastEmissionMachTime = mach_absolute_time()
+            lastEmissionMachTime = currentMachTime
             return MDKCaptureFrame(
                 sequenceNumber: displayTime,
                 displayTime: displayTime,
@@ -171,6 +188,7 @@ private actor MDKSkyLightEncodedCaptureReplayState {
                 return nil
             }
             lastDisplayTime = displayTime
+            consecutiveFreshOvercadenceCount = 0
             lastEmissionMachTime = mach_absolute_time()
             return MDKCaptureFrame(
                 sequenceNumber: displayTime,
@@ -208,6 +226,7 @@ private actor MDKSkyLightEncodedCaptureReplayState {
         }
 
         lastDisplayTime = displayTime
+        consecutiveFreshOvercadenceCount = 0
         lastEmissionMachTime = currentMachTime
         return MDKCaptureFrame(
             sequenceNumber: displayTime,
@@ -250,12 +269,14 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         let replayIntervalNanoseconds = UInt64(
             max((1.0 / Double(max(configuration.targetFrameRate, 1))) * 1_000_000_000.0, 1_000_000.0)
         )
+        let replayIntervalMachTicks = max(MDKMachAbsoluteTicksForNanoseconds(replayIntervalNanoseconds), 1)
+        let coalesceFreshOvercadence = configuration.codec == .hevc
         self.tuningSelection = tuningSelection
         self.replayState = replayState
         self.deliveryQueue = deliveryQueue
         self.frameHandler = frameHandler
         self.replayIntervalNanoseconds = replayIntervalNanoseconds
-        self.replayIntervalMachTicks = max(MDKMachAbsoluteTicksForNanoseconds(replayIntervalNanoseconds), 1)
+        self.replayIntervalMachTicks = replayIntervalMachTicks
         let tunedQueueDepth = tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth
         let tunedMinimumFrameTime = tuningSelection?.candidate.minimumFrameTime ?? 0
         let tunedShowCursor = MDKResolvedSkyLightDisplayStreamShowCursor(
@@ -282,7 +303,9 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
                         displayTime: displayTime,
                         frameSurface: captureSurface,
                         dirtyRects: dirtyRects,
-                        sourceUpdateDropCount: sourceUpdateDropCount
+                        sourceUpdateDropCount: sourceUpdateDropCount,
+                        coalesceFreshOvercadence: coalesceFreshOvercadence,
+                        minimumEmissionDeltaMachTicks: replayIntervalMachTicks
                     ) else {
                         return
                     }
