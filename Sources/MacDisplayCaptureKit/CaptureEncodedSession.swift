@@ -273,9 +273,9 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             yCbCrMatrix: configuration.resolvedSkyLightDisplayStreamYCbCrMatrix.map { $0.imageBufferValue as String }
         ) { status, displayTime, frameSurface, reducedDirtyRectData, updateDropCount in
             let captureSurface = frameSurface.map(MDKCaptureSurface.init(ioSurface:))
+            let dirtyRects = MDKDecodeCGRectData(reducedDirtyRectData)
             let sourceUpdateDropCount = UInt64(updateDropCount)
             deliveryQueue.async {
-                let dirtyRects = MDKDecodeCGRectData(reducedDirtyRectData)
                 Task {
                     guard let deliveredFrame = await replayState.captureFrame(
                         status: status,
@@ -440,10 +440,10 @@ private final class MDKEncodedCapturePendingFrameTracker: @unchecked Sendable {
 private actor MDKEncodedCaptureLatestFrameMailbox {
     private var latestFrame: MDKCaptureFrame?
 
-    func store(_ frame: MDKCaptureFrame) -> MDKCaptureFrame? {
-        let replacedFrame = latestFrame
+    func store(_ frame: MDKCaptureFrame) -> UInt64? {
+        let replacedDisplayTime = latestFrame?.displayTime
         latestFrame = frame
-        return replacedFrame
+        return replacedDisplayTime
     }
 
     func take() -> MDKCaptureFrame? {
@@ -1140,10 +1140,10 @@ public actor MDKEncodedCaptureSession {
             sourceTimingTracker?.record(frame: frame)
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
-                    let replacedFrame = await latestFrameMailbox.store(frame)
-                    if let replacedFrame, replacedFrame.origin == .fresh {
+                    let replacedDisplayTime = await latestFrameMailbox.store(frame)
+                    if let replacedDisplayTime {
                         await self.handleSourceFrameDropped(
-                            sourceDisplayTime: replacedFrame.displayTime,
+                            sourceDisplayTime: replacedDisplayTime,
                             runtimeGeneration: currentRuntimeGeneration
                         )
                     }
