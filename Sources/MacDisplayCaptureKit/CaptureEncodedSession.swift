@@ -273,9 +273,9 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             yCbCrMatrix: configuration.resolvedSkyLightDisplayStreamYCbCrMatrix.map { $0.imageBufferValue as String }
         ) { status, displayTime, frameSurface, reducedDirtyRectData, updateDropCount in
             let captureSurface = frameSurface.map(MDKCaptureSurface.init(ioSurface:))
-            let dirtyRects = MDKDecodeCGRectData(reducedDirtyRectData)
             let sourceUpdateDropCount = UInt64(updateDropCount)
             deliveryQueue.async {
+                let dirtyRects = MDKDecodeCGRectData(reducedDirtyRectData)
                 Task {
                     guard let deliveredFrame = await replayState.captureFrame(
                         status: status,
