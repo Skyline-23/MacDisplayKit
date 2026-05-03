@@ -198,7 +198,7 @@ final class MacDisplayKitTests: XCTestCase {
                 hdrConfiguration: .hdr10(),
                 strategy: .auto
             ),
-            kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            kCVPixelFormatType_32BGRA
         )
         XCTAssertEqual(
             MDKVideoEncoderCodec.hevc.preferredInputPixelFormat(
