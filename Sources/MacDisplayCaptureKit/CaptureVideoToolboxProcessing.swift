@@ -787,7 +787,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 return
             }
             self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
-            self.submissionQueue.sync { [self] in
+            self.submissionQueue.async { [self] in
                 do {
                     try submitToEncoder(
                         imageBuffer: stagedPixelBuffer.pixelBuffer,
