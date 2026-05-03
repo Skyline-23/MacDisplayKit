@@ -220,7 +220,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let hdrConfiguration: MDKVideoHDRConfiguration?
     private let targetAverageBitRateBitsPerSecond: Int?
     private let tileMetadata: MDKEncodedFrameTileMetadata
-    private let forceKeyFrameProperties: CFDictionary
 
     private var compressionSession: VTCompressionSession?
     private var activeDimensions: SIMD2<Int>?
@@ -306,9 +305,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.hdrConfiguration = hdrConfiguration?.negotiatedForEncodedDelivery(codec: codec)
         self.targetAverageBitRateBitsPerSecond = targetAverageBitRateBitsPerSecond.flatMap { $0 > 0 ? $0 : nil }
         self.tileMetadata = tileMetadata
-        self.forceKeyFrameProperties = [
-            kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue as Any
-        ] as CFDictionary
         self.encodeQueue.setSpecific(key: encodeQueueSpecificKey, value: encodeQueueSpecificValue)
     }
 
@@ -954,7 +950,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             return nil
         }
 
-        return forceKeyFrameProperties
+        return [
+            kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue as Any
+        ] as CFDictionary
     }
 
     private func ensureCompressionSession(
