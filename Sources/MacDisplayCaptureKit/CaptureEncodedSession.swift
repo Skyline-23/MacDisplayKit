@@ -287,9 +287,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
                         return
                     }
 
-                    deliveryQueue.async {
-                        frameHandler(deliveredFrame)
-                    }
+                    frameHandler(deliveredFrame)
                 }
             }
         }
@@ -307,7 +305,6 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         )
         let replayState = self.replayState
         let frameHandler = self.frameHandler
-        let deliveryQueue = self.deliveryQueue
         let replayIntervalMachTicks = self.replayIntervalMachTicks
         timer.setEventHandler {
             let displayTime = mach_absolute_time()
@@ -319,9 +316,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
                     return
                 }
 
-                deliveryQueue.async {
-                    frameHandler(replayedFrame)
-                }
+                frameHandler(replayedFrame)
             }
         }
         replayTimer = timer
