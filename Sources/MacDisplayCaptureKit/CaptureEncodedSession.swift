@@ -438,18 +438,26 @@ private final class MDKEncodedCapturePendingFrameTracker: @unchecked Sendable {
 }
 
 private actor MDKEncodedCaptureLatestFrameMailbox {
-    private var latestFrame: MDKCaptureFrame?
+    private static let capacity = 2
+    private var frames: [MDKCaptureFrame] = []
 
     func store(_ frame: MDKCaptureFrame) -> UInt64? {
-        let replacedDisplayTime = latestFrame?.displayTime
-        latestFrame = frame
+        if frames.count < Self.capacity {
+            frames.append(frame)
+            return nil
+        }
+
+        let replacedDisplayTime = frames.removeFirst().displayTime
+        frames.append(frame)
         return replacedDisplayTime
     }
 
     func take() -> MDKCaptureFrame? {
-        let frame = latestFrame
-        latestFrame = nil
-        return frame
+        guard !frames.isEmpty else {
+            return nil
+        }
+
+        return frames.removeFirst()
     }
 }
 
