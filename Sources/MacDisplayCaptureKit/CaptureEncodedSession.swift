@@ -308,7 +308,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         let replayIntervalMachTicks = self.replayIntervalMachTicks
         timer.setEventHandler {
             let displayTime = mach_absolute_time()
-            Task.detached(priority: .userInitiated) {
+            Task {
                 guard let replayedFrame = await replayState.captureTimerReplay(
                     displayTime: displayTime,
                     minimumEmissionDeltaMachTicks: replayIntervalMachTicks
