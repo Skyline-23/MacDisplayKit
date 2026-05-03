@@ -80,8 +80,6 @@ public final class MDKEncodedFrame: @unchecked Sendable {
     public let sourceDisplayTime: UInt64
     public let outputCallbackLatencyMilliseconds: Double?
     public let tileMetadata: MDKEncodedFrameTileMetadata
-    private let cachedIsKeyFrame: Bool
-    private let cachedHDRValidationReport: MDKEncodedFrameHDRValidationReport
 
     public init(
         sampleBuffer: CMSampleBuffer,
@@ -97,8 +95,6 @@ public final class MDKEncodedFrame: @unchecked Sendable {
         self.sourceDisplayTime = sourceDisplayTime
         self.outputCallbackLatencyMilliseconds = outputCallbackLatencyMilliseconds
         self.tileMetadata = tileMetadata
-        self.cachedIsKeyFrame = Self.computeIsKeyFrame(sampleBuffer: sampleBuffer)
-        self.cachedHDRValidationReport = Self.computeHDRValidationReport(sampleBuffer: sampleBuffer, codec: codec)
     }
 
     public var presentationTimeStamp: CMTime {
@@ -110,10 +106,6 @@ public final class MDKEncodedFrame: @unchecked Sendable {
     }
 
     public var isKeyFrame: Bool {
-        cachedIsKeyFrame
-    }
-
-    private static func computeIsKeyFrame(sampleBuffer: CMSampleBuffer) -> Bool {
         guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
             as? [[CFString: Any]],
             let firstAttachment = attachments.first else {
@@ -124,10 +116,6 @@ public final class MDKEncodedFrame: @unchecked Sendable {
     }
 
     public var formatDescriptionExtensions: [String: Any] {
-        Self.formatDescriptionExtensions(in: sampleBuffer)
-    }
-
-    private static func formatDescriptionExtensions(in sampleBuffer: CMSampleBuffer) -> [String: Any] {
         guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
               let extensions = CMFormatDescriptionGetExtensions(formatDescription) as? [CFString: Any] else {
             return [:]
@@ -145,14 +133,7 @@ public final class MDKEncodedFrame: @unchecked Sendable {
     }
 
     public var hdrValidationReport: MDKEncodedFrameHDRValidationReport {
-        cachedHDRValidationReport
-    }
-
-    private static func computeHDRValidationReport(
-        sampleBuffer: CMSampleBuffer,
-        codec: MDKVideoEncoderCodec
-    ) -> MDKEncodedFrameHDRValidationReport {
-        let extensions = formatDescriptionExtensions(in: sampleBuffer)
+        let extensions = formatDescriptionExtensions
         let colorPrimaries = extensions[kCMFormatDescriptionExtension_ColorPrimaries as String] as? String
         let transferFunction = extensions[kCMFormatDescriptionExtension_TransferFunction as String] as? String
         let yCbCrMatrix = extensions[kCMFormatDescriptionExtension_YCbCrMatrix as String] as? String
