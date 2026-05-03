@@ -17,6 +17,7 @@ protocol MDKEncodedCaptureSourceRuntime: AnyObject, Sendable {
 
 struct MDKEncodedCaptureSourcePreparation: Sendable {
     let recommendedPendingFrameCount: Int
+    let recordsSourceFrameDiagnostics: Bool
     let diagnosticNotes: [String]
     let skyLightTuningSelection: MDKSkyLightDisplayStreamAutotuningSelection?
 }
@@ -228,6 +229,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
     private let replayState: MDKSkyLightEncodedCaptureReplayState
     private let deliveryQueue: DispatchQueue
     private let frameHandler: @Sendable (MDKCaptureFrame) -> Void
+    private let recordsSourceFrameDiagnostics: Bool
     private let replayIntervalNanoseconds: UInt64
     private let replayIntervalMachTicks: UInt64
     private var replayTimer: DispatchSourceTimer?
@@ -243,6 +245,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
     init(
         configuration: MDKEncodedCaptureConfiguration,
         tuningSelection: MDKSkyLightDisplayStreamAutotuningSelection?,
+        recordsSourceFrameDiagnostics: Bool,
         frameHandler: @escaping @Sendable (MDKCaptureFrame) -> Void
     ) {
         let replayState = MDKSkyLightEncodedCaptureReplayState()
@@ -254,6 +257,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         self.replayState = replayState
         self.deliveryQueue = deliveryQueue
         self.frameHandler = frameHandler
+        self.recordsSourceFrameDiagnostics = recordsSourceFrameDiagnostics
         self.replayIntervalNanoseconds = replayIntervalNanoseconds
         self.replayIntervalMachTicks = max(MDKMachAbsoluteTicksForNanoseconds(replayIntervalNanoseconds), 1)
         let tunedQueueDepth = tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth
@@ -273,8 +277,12 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             yCbCrMatrix: configuration.resolvedSkyLightDisplayStreamYCbCrMatrix.map { $0.imageBufferValue as String }
         ) { status, displayTime, frameSurface, reducedDirtyRectData, updateDropCount in
             let captureSurface = frameSurface.map(MDKCaptureSurface.init(ioSurface:))
-            let dirtyRects = MDKDecodeCGRectData(reducedDirtyRectData)
-            let sourceUpdateDropCount = UInt64(updateDropCount)
+            let dirtyRects: [CGRect]? = recordsSourceFrameDiagnostics
+                ? MDKDecodeCGRectData(reducedDirtyRectData)
+                : nil
+            let sourceUpdateDropCount: UInt64? = recordsSourceFrameDiagnostics
+                ? UInt64(updateDropCount)
+                : nil
             deliveryQueue.async {
                 Task {
                     guard let deliveredFrame = await replayState.captureFrame(
@@ -895,6 +903,7 @@ public actor MDKEncodedCaptureSession {
                 return MDKSkyLightEncodedCaptureSourceRuntime(
                     configuration: configuration,
                     tuningSelection: preparation.skyLightTuningSelection,
+                    recordsSourceFrameDiagnostics: preparation.recordsSourceFrameDiagnostics,
                     frameHandler: frameHandler
                 )
             }
@@ -940,6 +949,7 @@ public actor MDKEncodedCaptureSession {
                 requestsExtendedRange ? "negotiated-source-primaries-to-hdr-signal" : "negotiated-source-primaries"
             return MDKEncodedCaptureSourcePreparation(
                 recommendedPendingFrameCount: max(configuration.resolvedPrivateCaptureSurfaceCount - 1, 1),
+                recordsSourceFrameDiagnostics: true,
                 diagnosticNotes: [
                     "sourceBackend=\(MDKEncodedCaptureSourceBackend.privateDirectIOSurface.rawValue)",
                     String(format: "privateCaptureSourcePixelFormat=0x%08X", kCVPixelFormatType_32BGRA),
@@ -957,6 +967,11 @@ public actor MDKEncodedCaptureSession {
                 for: configuration,
                 queueDepth: queueDepth
             )
+            let recordsSourceFrameDiagnostics = !(
+                configuration.codec == .hevc &&
+                configuration.deliveryMode == .callbackOnly &&
+                configuration.resolvedSkyLightProcessingMode != nil
+            )
             let pendingPolicy =
                 configuration.deliveryMode == .callbackOnly &&
                 configuration.resolvedSkyLightProcessingMode != nil
@@ -964,6 +979,7 @@ public actor MDKEncodedCaptureSession {
                 : "default"
             return MDKEncodedCaptureSourcePreparation(
                 recommendedPendingFrameCount: recommendedPendingFrameCount,
+                recordsSourceFrameDiagnostics: recordsSourceFrameDiagnostics,
                 diagnosticNotes: (tuningSelection?.notes ?? []) + [
                     "sourceBackend=\(MDKEncodedCaptureSourceBackend.skyLightDisplayStream.rawValue)",
                     "rawPrivateDisplayStream=true",
