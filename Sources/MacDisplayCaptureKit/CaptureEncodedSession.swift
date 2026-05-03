@@ -304,6 +304,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             leeway: .nanoseconds(Int(leewayNanoseconds))
         )
         let replayState = self.replayState
+        let deliveryQueue = self.deliveryQueue
         let frameHandler = self.frameHandler
         let replayIntervalMachTicks = self.replayIntervalMachTicks
         timer.setEventHandler {
@@ -316,7 +317,9 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
                     return
                 }
 
-                frameHandler(replayedFrame)
+                deliveryQueue.async {
+                    frameHandler(replayedFrame)
+                }
             }
         }
         replayTimer = timer
