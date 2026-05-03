@@ -285,7 +285,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.targetFrameRate = max(targetFrameRate, 1)
         self.encoderInputStrategy = encoderInputStrategy
         self.device = device
-        self.commandQueue = device?.makeCommandQueue()
+        if codec == .hevc {
+            self.commandQueue = device?.makeCommandQueue(maxCommandBufferCount: 4)
+        } else {
+            self.commandQueue = device?.makeCommandQueue()
+        }
         self.scaler = device.map { MDKMetalBilinearScaler(device: $0) }
         if let device {
             do {
