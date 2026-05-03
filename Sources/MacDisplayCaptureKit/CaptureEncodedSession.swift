@@ -460,34 +460,22 @@ private func MDKProcessMailboxAwareSourceFrame(
     latestFrameMailbox: MDKEncodedCaptureLatestFrameMailbox,
     failureHandler: @escaping @Sendable (String) -> Void
 ) {
-    let releaseSourceFrame: @Sendable () -> Void = {
-        Task {
-            if let latestFrame = await latestFrameMailbox.take() {
-                MDKProcessMailboxAwareSourceFrame(
-                    latestFrame,
-                    processor: processor,
-                    pendingFrameTracker: pendingFrameTracker,
-                    latestFrameMailbox: latestFrameMailbox,
-                    failureHandler: failureHandler
-                )
-                return
-            }
-
-            pendingFrameTracker.releaseOne()
-        }
-    }
-
     do {
-        if let videoToolboxProcessor = processor as? MDKVideoToolboxEncodingProcessor {
-            try videoToolboxProcessor.enqueueFromCaptureCallback(
-                frame: frame,
-                releaseSourceFrame: releaseSourceFrame
-            )
-        } else {
-            try processor.process(
-                frame: frame,
-                releaseSourceFrame: releaseSourceFrame
-            )
+        try processor.process(frame: frame) {
+            Task {
+                if let latestFrame = await latestFrameMailbox.take() {
+                    MDKProcessMailboxAwareSourceFrame(
+                        latestFrame,
+                        processor: processor,
+                        pendingFrameTracker: pendingFrameTracker,
+                        latestFrameMailbox: latestFrameMailbox,
+                        failureHandler: failureHandler
+                    )
+                    return
+                }
+
+                pendingFrameTracker.releaseOne()
+            }
         }
     } catch {
         pendingFrameTracker.releaseOne()
