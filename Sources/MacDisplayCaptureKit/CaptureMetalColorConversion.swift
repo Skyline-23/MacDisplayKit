@@ -190,12 +190,9 @@ final class MDKMetalBGRAToYCbCrConverter {
             index: 0
         )
 
-        let sourceTexture = sourceTextures[0]
-        let resolvedCursorTexture = cursorTexture ?? transparentCursorTexture
-
-        computeEncoder.setTexture(sourceTexture, index: 0)
+        computeEncoder.setTexture(sourceTextures[0], index: 0)
         computeEncoder.setTexture(destinationTextures[0], index: 1)
-        computeEncoder.setTexture(resolvedCursorTexture, index: 2)
+        computeEncoder.setTexture(cursorTexture ?? transparentCursorTexture, index: 2)
         computeEncoder.setComputePipelineState(lumaPipeline)
         dispatch(
             encoder: computeEncoder,
@@ -204,7 +201,9 @@ final class MDKMetalBGRAToYCbCrConverter {
             height: destinationTextures[0].height
         )
 
+        computeEncoder.setTexture(sourceTextures[0], index: 0)
         computeEncoder.setTexture(destinationTextures[1], index: 1)
+        computeEncoder.setTexture(cursorTexture ?? transparentCursorTexture, index: 2)
         computeEncoder.setComputePipelineState(chromaPipeline)
         dispatch(
             encoder: computeEncoder,
