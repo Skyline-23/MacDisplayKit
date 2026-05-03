@@ -441,13 +441,9 @@ private actor MDKEncodedCaptureLatestFrameMailbox {
     private var latestFrame: MDKCaptureFrame?
 
     func store(_ frame: MDKCaptureFrame) -> UInt64? {
-        let replacedFrame = latestFrame
+        let replacedDisplayTime = latestFrame?.displayTime
         latestFrame = frame
-        guard let replacedFrame else {
-            return nil
-        }
-
-        return replacedFrame.surfaceID == frame.surfaceID ? nil : replacedFrame.displayTime
+        return replacedDisplayTime
     }
 
     func take() -> MDKCaptureFrame? {
