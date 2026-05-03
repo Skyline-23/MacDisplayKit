@@ -64,7 +64,7 @@ public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
     }
 }
 
-private final class MDKVideoToolboxSubmissionToken: @unchecked Sendable {
+private final class MDKVideoToolboxSubmissionToken {
     let slotIdentifier: Int?
     let submittedAt: TimeInterval
     let sourceSequenceNumber: UInt64
@@ -829,12 +829,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             frameIndex += 1
             return timestamp
         }()
-        let submissionToken = MDKVideoToolboxSubmissionToken(
-            slotIdentifier: slotIdentifier,
-            submittedAt: ProcessInfo.processInfo.systemUptime,
-            sourceSequenceNumber: frame.sequenceNumber,
-            sourceDisplayTime: frame.displayTime,
-            releasePendingFrame: releasePendingFrame
+        let submissionToken = Unmanaged.passRetained(
+            MDKVideoToolboxSubmissionToken(
+                slotIdentifier: slotIdentifier,
+                submittedAt: ProcessInfo.processInfo.systemUptime,
+                sourceSequenceNumber: frame.sequenceNumber,
+                sourceDisplayTime: frame.displayTime,
+                releasePendingFrame: releasePendingFrame
+            )
         )
 
         outputDrainGroup.enter()
@@ -846,18 +848,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             presentationTimeStamp: resolvedPresentationTimeStamp,
             duration: .invalid,
             frameProperties: makeFrameProperties(forceKeyFrame: consumeImmediateKeyFrameRequest()),
+            sourceFrameRefcon: submissionToken.toOpaque(),
             infoFlagsOut: nil
-        ) { [self, submissionToken] status, _, sampleBuffer in
-            recordOutputCallback(
-                status: status,
-                sampleBuffer: sampleBuffer,
-                submissionToken: submissionToken,
-                callbackReceivedAt: ProcessInfo.processInfo.systemUptime
-            )
-        }
+        )
         recordTiming(.vtEncodeCall, startedAt: vtEncodeCallStartedAt)
         guard status == noErr else {
             outputDrainGroup.leave()
+            submissionToken.release()
             releasePendingFrame()
             throw MDKVideoToolboxProcessingError.encodeFailed(status: status)
         }
@@ -991,8 +988,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             encoderSpecification: makeEncoderSpecification(),
             imageBufferAttributes: sourceImageAttributes as CFDictionary,
             compressedDataAllocator: nil,
-            outputCallback: nil,
-            refcon: nil,
+            outputCallback: MDKVideoToolboxOutputCallback,
+            refcon: Unmanaged.passUnretained(self).toOpaque(),
             compressionSessionOut: &session
         )
         guard status == noErr, let session else {
