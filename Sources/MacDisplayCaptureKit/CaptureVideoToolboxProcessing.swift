@@ -787,17 +787,18 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 return
             }
             self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
+            let metadataFrame = self.detachedSubmissionMetadataFrame(from: frame)
             self.submissionQueue.async { [self] in
                 do {
                     try submitToEncoder(
                         imageBuffer: stagedPixelBuffer.pixelBuffer,
-                        frame: frame,
+                        frame: metadataFrame,
                         slotIdentifier: slotIdentifier,
                         presentationTimeStamp: presentationTimeStamp,
                         releasePendingFrame: {}
                     )
                     releaseSourceFrame()
-                    recordProcessingSuccess(isStaged: true)
+                    recordProcessingSuccessAsync(isStaged: true)
                 } catch {
                     releaseSourceFrame()
                     let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
@@ -809,6 +810,21 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         commandBuffer.commit()
+    }
+
+    private func detachedSubmissionMetadataFrame(from frame: MDKCaptureFrame) -> MDKCaptureFrame {
+        MDKCaptureFrame(
+            sequenceNumber: frame.sequenceNumber,
+            displayTime: frame.displayTime,
+            surfaceID: frame.surfaceID,
+            width: frame.width,
+            height: frame.height,
+            pixelFormat: frame.pixelFormat,
+            surface: nil,
+            origin: frame.origin,
+            sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
+            sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
+        )
     }
 
     private func submitToEncoder(
@@ -1579,6 +1595,17 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
     private func recordProcessingSuccess(isStaged: Bool) {
         outputQueue.sync {
+            processedFrameCount += 1
+            if isStaged {
+                stagedSubmissionFrameCount += 1
+            } else {
+                directSubmissionFrameCount += 1
+            }
+        }
+    }
+
+    private func recordProcessingSuccessAsync(isStaged: Bool) {
+        outputQueue.async { [self] in
             processedFrameCount += 1
             if isStaged {
                 stagedSubmissionFrameCount += 1
