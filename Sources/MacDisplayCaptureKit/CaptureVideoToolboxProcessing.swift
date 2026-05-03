@@ -66,7 +66,6 @@ public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
 
 private final class MDKVideoToolboxSubmissionToken {
     let slotIdentifier: Int?
-    let retainStagingSlotForReplayCache: Bool
     let submittedAt: TimeInterval
     let sourceSequenceNumber: UInt64
     let sourceDisplayTime: UInt64
@@ -74,14 +73,12 @@ private final class MDKVideoToolboxSubmissionToken {
 
     init(
         slotIdentifier: Int?,
-        retainStagingSlotForReplayCache: Bool,
         submittedAt: TimeInterval,
         sourceSequenceNumber: UInt64,
         sourceDisplayTime: UInt64,
         releasePendingFrame: @escaping @Sendable () -> Void
     ) {
         self.slotIdentifier = slotIdentifier
-        self.retainStagingSlotForReplayCache = retainStagingSlotForReplayCache
         self.submittedAt = submittedAt
         self.sourceSequenceNumber = sourceSequenceNumber
         self.sourceDisplayTime = sourceDisplayTime
@@ -151,7 +148,6 @@ enum MDKVideoToolboxLatencyPolicy {
 private struct MDKVideoToolboxReplayState {
     let imageBuffer: MDKVideoToolboxSendablePixelBuffer
     let frame: MDKCaptureFrame
-    let slotIdentifier: Int?
 }
 
 private struct MDKVideoToolboxStagingSlot {
@@ -263,7 +259,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let encodeQueueSpecificValue: UInt8 = 1
     private var forceNextKeyFrame = false
     private var lastFreshReplayState: MDKVideoToolboxReplayState?
-    private var replayCachedStagingSlotIdentifier: Int?
     private var lastImmediateRecoveryReplayDisplayTime: UInt64?
     private var immediateReplaySubmissionCount: UInt64 = 0
     private var suppressedImmediateReplayCount: UInt64 = 0
@@ -554,13 +549,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         )
 
         if let commandQueue, requiresDetachedSubmissionSurface {
-            if try encodeReplayFromCachedStagedFrameIfPossible(
-                frame: frame,
-                targetPixelFormat: targetPixelFormat,
-                releaseSourceFrame: releaseSourceFrame
-            ) {
-                return
-            }
             try stageAndEncode(
                 frame: frame,
                 targetPixelFormat: targetPixelFormat,
@@ -806,7 +794,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                         frame: frame,
                         slotIdentifier: slotIdentifier,
                         presentationTimeStamp: presentationTimeStamp,
-                        retainStagingSlotForReplayCache: codec == .hevc && frame.origin == .fresh,
                         releasePendingFrame: {}
                     )
                     releaseSourceFrame()
@@ -824,50 +811,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         commandBuffer.commit()
     }
 
-    private func encodeReplayFromCachedStagedFrameIfPossible(
-        frame: MDKCaptureFrame,
-        targetPixelFormat: UInt32,
-        releaseSourceFrame: @escaping @Sendable () -> Void
-    ) throws -> Bool {
-        guard codec == .hevc,
-              frame.origin != .fresh,
-              frame.cursorOverlaySample == nil,
-              !shouldSuppressImmediateReplayForPendingFrames(),
-              let lastFreshReplayState,
-              lastFreshReplayState.frame.width == frame.width,
-              lastFreshReplayState.frame.height == frame.height,
-              lastFreshReplayState.frame.pixelFormat == frame.pixelFormat,
-              lastFreshReplayState.slotIdentifier == replayCachedStagingSlotIdentifier else {
-            return false
-        }
-
-        let outputDimensions = preprocessStrategy.outputDimensions(
-            sourceWidth: frame.width,
-            sourceHeight: frame.height,
-            pixelFormat: targetPixelFormat
-        )
-        guard outputDimensions.x == frame.width,
-              outputDimensions.y == frame.height else {
-            return false
-        }
-
-        try submitToEncoder(
-            imageBuffer: lastFreshReplayState.imageBuffer.pixelBuffer,
-            frame: frame,
-            slotIdentifier: nil,
-            releasePendingFrame: {}
-        )
-        releaseSourceFrame()
-        recordProcessingSuccess(isStaged: true)
-        return true
-    }
-
     private func submitToEncoder(
         imageBuffer: CVPixelBuffer,
         frame: MDKCaptureFrame,
         slotIdentifier: Int?,
         presentationTimeStamp: CMTime? = nil,
-        retainStagingSlotForReplayCache: Bool = false,
         releasePendingFrame: @escaping @Sendable () -> Void = {}
     ) throws {
         guard let compressionSession else {
@@ -884,7 +832,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let submissionToken = Unmanaged.passRetained(
             MDKVideoToolboxSubmissionToken(
                 slotIdentifier: slotIdentifier,
-                retainStagingSlotForReplayCache: retainStagingSlotForReplayCache,
                 submittedAt: ProcessInfo.processInfo.systemUptime,
                 sourceSequenceNumber: frame.sequenceNumber,
                 sourceDisplayTime: frame.displayTime,
@@ -914,8 +861,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         if frame.origin == .fresh {
             lastFreshReplayState = MDKVideoToolboxReplayState(
                 imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
-                frame: frame,
-                slotIdentifier: retainStagingSlotForReplayCache ? slotIdentifier : nil
+                frame: frame
             )
         }
         outputQueue.sync {
@@ -1623,7 +1569,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             vtEncodeCallTiming = MDKVideoToolboxTimingAccumulator()
         }
         lastFreshReplayState = nil
-        replayCachedStagingSlotIdentifier = nil
         lastImmediateRecoveryReplayDisplayTime = nil
         immediateReplaySubmissionCount = 0
         suppressedImmediateReplayCount = 0
@@ -1698,15 +1643,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 tileMetadata: resolvedTileMetadata
             )
         }
-        if let submissionToken,
-           let slotIdentifier = submissionToken.slotIdentifier {
-            let shouldRetainStagingSlotForReplayCache = submissionToken.retainStagingSlotForReplayCache
+        if let slotIdentifier = submissionToken?.slotIdentifier {
             encodeQueue.async { [self] in
-                if outputCompleted && shouldRetainStagingSlotForReplayCache {
-                    retainStagingSlotForReplayCache(identifier: slotIdentifier)
-                } else {
-                    releaseStagingSlot(identifier: slotIdentifier)
-                }
+                releaseStagingSlot(identifier: slotIdentifier)
             }
         }
         submissionToken?.markCompleted()
@@ -1854,26 +1793,5 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         if !availableStagingSlotIdentifiers.contains(identifier) {
             availableStagingSlotIdentifiers.append(identifier)
         }
-    }
-
-    private func retainStagingSlotForReplayCache(identifier: Int) {
-        if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) != encodeQueueSpecificValue {
-            encodeQueue.async { [self] in
-                retainStagingSlotForReplayCache(identifier: identifier)
-            }
-            return
-        }
-
-        guard stagingSlots[identifier] != nil else {
-            return
-        }
-
-        if let previousIdentifier = replayCachedStagingSlotIdentifier,
-           previousIdentifier != identifier {
-            replayCachedStagingSlotIdentifier = nil
-            releaseStagingSlot(identifier: previousIdentifier)
-        }
-        availableStagingSlotIdentifiers.removeAll { $0 == identifier }
-        replayCachedStagingSlotIdentifier = identifier
     }
 }
