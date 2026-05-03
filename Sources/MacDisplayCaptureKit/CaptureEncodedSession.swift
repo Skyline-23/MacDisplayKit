@@ -136,7 +136,8 @@ private actor MDKSkyLightEncodedCaptureReplayState {
         displayTime: UInt64,
         frameSurface: MDKCaptureSurface?,
         dirtyRects: [CGRect]?,
-        sourceUpdateDropCount: UInt64?
+        sourceUpdateDropCount: UInt64?,
+        minimumEmissionDeltaMachTicks: UInt64
     ) -> MDKCaptureFrame? {
         let action = MDKResolveSkyLightEncodedCaptureFrameAction(
             status: status,
@@ -151,9 +152,17 @@ private actor MDKSkyLightEncodedCaptureReplayState {
             guard let captureSurface = frameSurface else {
                 return nil
             }
+            let currentMachTime = mach_absolute_time()
+            if let lastEmissionMachTime,
+               currentMachTime > lastEmissionMachTime,
+               currentMachTime - lastEmissionMachTime < minimumEmissionDeltaMachTicks {
+                lastCaptureSurface = captureSurface
+                lastDisplayTime = displayTime
+                return nil
+            }
             lastCaptureSurface = captureSurface
             lastDisplayTime = displayTime
-            lastEmissionMachTime = mach_absolute_time()
+            lastEmissionMachTime = currentMachTime
             return MDKCaptureFrame(
                 sequenceNumber: displayTime,
                 displayTime: displayTime,
@@ -250,12 +259,13 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         let replayIntervalNanoseconds = UInt64(
             max((1.0 / Double(max(configuration.targetFrameRate, 1))) * 1_000_000_000.0, 1_000_000.0)
         )
+        let replayIntervalMachTicks = max(MDKMachAbsoluteTicksForNanoseconds(replayIntervalNanoseconds), 1)
         self.tuningSelection = tuningSelection
         self.replayState = replayState
         self.deliveryQueue = deliveryQueue
         self.frameHandler = frameHandler
         self.replayIntervalNanoseconds = replayIntervalNanoseconds
-        self.replayIntervalMachTicks = max(MDKMachAbsoluteTicksForNanoseconds(replayIntervalNanoseconds), 1)
+        self.replayIntervalMachTicks = replayIntervalMachTicks
         let tunedQueueDepth = tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth
         let tunedMinimumFrameTime = tuningSelection?.candidate.minimumFrameTime ?? 0
         let tunedShowCursor = MDKResolvedSkyLightDisplayStreamShowCursor(
@@ -282,7 +292,8 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
                         displayTime: displayTime,
                         frameSurface: captureSurface,
                         dirtyRects: dirtyRects,
-                        sourceUpdateDropCount: sourceUpdateDropCount
+                        sourceUpdateDropCount: sourceUpdateDropCount,
+                        minimumEmissionDeltaMachTicks: replayIntervalMachTicks
                     ) else {
                         return
                     }
