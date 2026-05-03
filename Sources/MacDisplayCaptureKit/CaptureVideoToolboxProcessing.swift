@@ -822,6 +822,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: OSStatus(unimpErr))
         }
 
+        hdrConfiguration?.apply(to: imageBuffer)
+
         let resolvedPresentationTimeStamp = presentationTimeStamp ?? {
             let timestamp = CMTime(value: frameIndex, timescale: Int32(targetFrameRate))
             frameIndex += 1
@@ -1313,7 +1315,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         guard status == kCVReturnSuccess, let pixelBuffer else {
             throw MDKVideoToolboxProcessingError.stagingBufferCreationFailed(status: status)
         }
-        applyHDRConfigurationIfNeeded(to: pixelBuffer)
         guard let surface = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue() else {
             throw MDKVideoToolboxProcessingError.stagingSurfaceUnavailable
         }
@@ -1530,13 +1531,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         let wrappedBuffer = pixelBuffer.takeRetainedValue()
-        applyHDRConfigurationIfNeeded(to: wrappedBuffer)
         pixelBufferCache[frame.surfaceID] = wrappedBuffer
         return wrappedBuffer
-    }
-
-    private func applyHDRConfigurationIfNeeded(to imageBuffer: CVImageBuffer) {
-        hdrConfiguration?.apply(to: imageBuffer)
     }
 
     private func invalidateSession() {
