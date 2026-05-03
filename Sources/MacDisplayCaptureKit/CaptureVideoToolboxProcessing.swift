@@ -323,6 +323,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     }
 
     public func requestImmediateKeyFrame() {
+        guard codec.lowLatencyRateControlSupported else {
+            return
+        }
+
         if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) == encodeQueueSpecificValue {
             forceNextKeyFrame = true
             replayLastSubmittedFrameAsKeyFrameIfPossible()
@@ -462,6 +466,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     ) -> [String] {
         var notes = [
             "videoToolboxSubmitMode=sync-submit-queue",
+            "videoToolboxImmediateKeyFrameMode=\(codec.lowLatencyRateControlSupported ? "replay-latest-fresh-frame" : "native-all-keyframes")",
             "videoToolboxOutputCallback=non-nil",
             "videoToolboxCodec=\(codec.rawValue)",
             "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
@@ -858,7 +863,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             releasePendingFrame()
             throw MDKVideoToolboxProcessingError.encodeFailed(status: status)
         }
-        if frame.origin == .fresh {
+        if frame.origin == .fresh && codec.lowLatencyRateControlSupported {
             lastFreshReplayState = MDKVideoToolboxReplayState(
                 imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
                 frame: frame
