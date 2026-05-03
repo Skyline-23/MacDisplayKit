@@ -1125,15 +1125,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 )
             }
         }
-        let defersSessionPrepare =
-            codec == .hevc &&
-            hdrConfiguration?.transferFunction == .smpteSt2084PQ
-        if !defersSessionPrepare {
-            let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(session)
-            guard prepareStatus == noErr else {
-                VTCompressionSessionInvalidate(session)
-                throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: prepareStatus)
-            }
+        let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(session)
+        guard prepareStatus == noErr else {
+            VTCompressionSessionInvalidate(session)
+            throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: prepareStatus)
         }
 
         compressionSession = session
@@ -1193,7 +1188,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
         sessionConfigurationNotes.append("videoToolboxHighRefreshLowLatencyMode=\(isHighRefreshLowLatency ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxLowLatencyRateControl=\(shouldEnableLowLatencyRateControl ? "enabled" : "disabled")")
-        sessionConfigurationNotes.append("videoToolboxSessionPrepare=\(defersSessionPrepare ? "deferred" : "eager")")
         usingHardwareAcceleratedEncoder = copyBooleanSessionProperty(
             session,
             key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder
