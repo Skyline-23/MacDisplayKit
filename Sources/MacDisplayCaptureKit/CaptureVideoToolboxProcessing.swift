@@ -842,11 +842,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         outputDrainGroup.enter()
 
         let vtEncodeCallStartedAt = ProcessInfo.processInfo.systemUptime
+        let frameDuration = shouldAttachPerFrameDuration
+            ? CMTime(value: 1, timescale: Int32(targetFrameRate))
+            : CMTime.invalid
         let status = VTCompressionSessionEncodeFrame(
             compressionSession,
             imageBuffer: imageBuffer,
             presentationTimeStamp: resolvedPresentationTimeStamp,
-            duration: .invalid,
+            duration: frameDuration,
             frameProperties: makeFrameProperties(forceKeyFrame: consumeImmediateKeyFrameRequest()),
             sourceFrameRefcon: submissionToken.toOpaque(),
             infoFlagsOut: nil
@@ -867,6 +870,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         outputQueue.sync {
             submittedFrameCount += 1
         }
+    }
+
+    private var shouldAttachPerFrameDuration: Bool {
+        codec == .hevc && hdrConfiguration?.transferFunction == .smpteSt2084PQ
     }
 
     private func replayLastSubmittedFrameAsKeyFrameIfPossible() {
