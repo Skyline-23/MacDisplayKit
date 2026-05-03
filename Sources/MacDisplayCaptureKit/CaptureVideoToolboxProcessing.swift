@@ -846,7 +846,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             compressionSession,
             imageBuffer: imageBuffer,
             presentationTimeStamp: resolvedPresentationTimeStamp,
-            duration: CMTime(value: 1, timescale: Int32(targetFrameRate)),
+            duration: .invalid,
             frameProperties: makeFrameProperties(forceKeyFrame: consumeImmediateKeyFrameRequest()),
             sourceFrameRefcon: submissionToken.toOpaque(),
             infoFlagsOut: nil
