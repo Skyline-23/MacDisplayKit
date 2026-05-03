@@ -131,6 +131,15 @@ private actor MDKSkyLightEncodedCaptureReplayState {
     private var lastDisplayTime: UInt64?
     private var lastEmissionMachTime: UInt64?
 
+    func rememberFreshFrame(
+        displayTime: UInt64,
+        captureSurface: MDKCaptureSurface
+    ) {
+        lastCaptureSurface = captureSurface
+        lastDisplayTime = displayTime
+        lastEmissionMachTime = mach_absolute_time()
+    }
+
     func captureFrame(
         status: CGDisplayStreamFrameStatus,
         displayTime: UInt64,
@@ -276,6 +285,31 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             let dirtyRects = MDKDecodeCGRectData(reducedDirtyRectData)
             let sourceUpdateDropCount = UInt64(updateDropCount)
             deliveryQueue.async {
+                if status == .frameComplete,
+                   let captureSurface {
+                    frameHandler(
+                        MDKCaptureFrame(
+                            sequenceNumber: displayTime,
+                            displayTime: displayTime,
+                            surfaceID: captureSurface.id,
+                            width: captureSurface.width,
+                            height: captureSurface.height,
+                            pixelFormat: captureSurface.pixelFormat,
+                            surface: captureSurface,
+                            origin: .fresh,
+                            dirtyRects: dirtyRects,
+                            sourceUpdateDropCount: sourceUpdateDropCount
+                        )
+                    )
+                    Task {
+                        await replayState.rememberFreshFrame(
+                            displayTime: displayTime,
+                            captureSurface: captureSurface
+                        )
+                    }
+                    return
+                }
+
                 Task {
                     guard let deliveredFrame = await replayState.captureFrame(
                         status: status,
