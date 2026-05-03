@@ -157,15 +157,8 @@ private struct MDKVideoToolboxStagingSlot {
     let textures: [MTLTexture]
 }
 
-private struct MDKVideoToolboxSourceSurfaceSignature: Equatable {
-    let width: Int
-    let height: Int
-    let pixelFormat: UInt32
-    let planeCount: Int
-}
-
 private struct MDKVideoToolboxSourceTextureCacheEntry {
-    let signature: MDKVideoToolboxSourceSurfaceSignature
+    let descriptors: [MDKMetalPlaneDescriptor]
     let textures: [MTLTexture]
 }
 
@@ -1413,12 +1406,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     ) throws -> [MTLTexture] {
         try makeSourceTextures(
             forSurfaceID: frame.surfaceID,
-            signature: MDKVideoToolboxSourceSurfaceSignature(
-                width: frame.width,
-                height: frame.height,
-                pixelFormat: frame.pixelFormat,
-                planeCount: surface.planeCount
-            ),
             surface: surface,
             device: device
         )
@@ -1434,12 +1421,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
         let textures = try makeSourceTextures(
             forSurfaceID: cursorOverlaySample.surface.id,
-            signature: MDKVideoToolboxSourceSurfaceSignature(
-                width: cursorOverlaySample.surface.width,
-                height: cursorOverlaySample.surface.height,
-                pixelFormat: cursorOverlaySample.surface.pixelFormat,
-                planeCount: cursorOverlaySample.surface.planeCount
-            ),
             surface: cursorOverlaySample.surface,
             device: device
         )
@@ -1448,12 +1429,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
     private func makeSourceTextures(
         forSurfaceID surfaceID: UInt32,
-        signature: MDKVideoToolboxSourceSurfaceSignature,
         surface: MDKCaptureSurface,
         device: any MTLDevice
     ) throws -> [MTLTexture] {
+        let descriptors = try makePlaneDescriptors(for: surface)
         if let cachedEntry = sourceTextureCache[surfaceID],
-           cachedEntry.signature == signature {
+           cachedEntry.descriptors == descriptors {
             return cachedEntry.textures
         }
 
@@ -1463,13 +1444,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             usage: [.shaderRead]
         )
         sourceTextureCache[surfaceID] = MDKVideoToolboxSourceTextureCacheEntry(
-            signature: signature,
+            descriptors: descriptors,
             textures: textures
         )
         if sourceTextureCache.count > maxInflightStagingSlots {
             sourceTextureCache.removeAll(keepingCapacity: true)
             sourceTextureCache[surfaceID] = MDKVideoToolboxSourceTextureCacheEntry(
-                signature: signature,
+                descriptors: descriptors,
                 textures: textures
             )
         }
@@ -1502,6 +1483,18 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             ),
             isVerticallyFlipped: cursorOverlaySample.isVerticallyFlipped
         )
+    }
+
+    private func makePlaneDescriptors(
+        for surface: MDKCaptureSurface
+    ) throws -> [MDKMetalPlaneDescriptor] {
+        let planeCount = max(surface.planeCount, 1)
+        var descriptors: [MDKMetalPlaneDescriptor] = []
+        descriptors.reserveCapacity(planeCount)
+        for plane in 0..<planeCount {
+            descriptors.append(try surface.metalPlaneDescriptor(for: plane))
+        }
+        return descriptors
     }
 
     private func requiresScaling(
