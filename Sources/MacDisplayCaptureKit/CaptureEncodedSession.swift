@@ -276,7 +276,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             let dirtyRects = MDKDecodeCGRectData(reducedDirtyRectData)
             let sourceUpdateDropCount = UInt64(updateDropCount)
             deliveryQueue.async {
-                Task {
+                Task.detached(priority: .userInitiated) {
                     guard let deliveredFrame = await replayState.captureFrame(
                         status: status,
                         displayTime: displayTime,
@@ -308,7 +308,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         let replayIntervalMachTicks = self.replayIntervalMachTicks
         timer.setEventHandler {
             let displayTime = mach_absolute_time()
-            Task {
+            Task.detached(priority: .userInitiated) {
                 guard let replayedFrame = await replayState.captureTimerReplay(
                     displayTime: displayTime,
                     minimumEmissionDeltaMachTicks: replayIntervalMachTicks
