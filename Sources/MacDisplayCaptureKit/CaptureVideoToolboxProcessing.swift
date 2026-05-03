@@ -787,12 +787,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 return
             }
             self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
-            let metadataFrame = self.detachedSubmissionMetadataFrame(from: frame)
             self.submissionQueue.async { [self] in
                 do {
                     try submitToEncoder(
                         imageBuffer: stagedPixelBuffer.pixelBuffer,
-                        frame: metadataFrame,
+                        frame: frame,
                         slotIdentifier: slotIdentifier,
                         presentationTimeStamp: presentationTimeStamp,
                         releasePendingFrame: {}
@@ -810,22 +809,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         commandBuffer.commit()
-    }
-
-    private func detachedSubmissionMetadataFrame(from frame: MDKCaptureFrame) -> MDKCaptureFrame {
-        MDKCaptureFrame(
-            sequenceNumber: frame.sequenceNumber,
-            displayTime: frame.displayTime,
-            surfaceID: frame.surfaceID,
-            width: frame.width,
-            height: frame.height,
-            pixelFormat: frame.pixelFormat,
-            surface: nil,
-            origin: frame.origin,
-            cursorOverlaySample: nil,
-            sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
-            sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
-        )
     }
 
     private func submitToEncoder(
