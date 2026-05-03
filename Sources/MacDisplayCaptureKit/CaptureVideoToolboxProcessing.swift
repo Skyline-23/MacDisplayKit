@@ -668,6 +668,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
         let presentationTimeStamp = CMTime(value: frameIndex, timescale: Int32(targetFrameRate))
         frameIndex += 1
+        let submissionMetadataFrame = detachedSubmissionMetadataFrame(from: frame)
         stagingSubmissionGroup.enter()
 
         if frame.pixelFormat != targetPixelFormat {
@@ -791,7 +792,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 do {
                     try submitToEncoder(
                         imageBuffer: stagedPixelBuffer.pixelBuffer,
-                        frame: frame,
+                        frame: submissionMetadataFrame,
                         slotIdentifier: slotIdentifier,
                         presentationTimeStamp: presentationTimeStamp,
                         releasePendingFrame: {}
@@ -809,6 +810,22 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         commandBuffer.commit()
+    }
+
+    private func detachedSubmissionMetadataFrame(from frame: MDKCaptureFrame) -> MDKCaptureFrame {
+        MDKCaptureFrame(
+            sequenceNumber: frame.sequenceNumber,
+            displayTime: frame.displayTime,
+            surfaceID: frame.surfaceID,
+            width: frame.width,
+            height: frame.height,
+            pixelFormat: frame.pixelFormat,
+            surface: nil,
+            origin: frame.origin,
+            cursorOverlaySample: nil,
+            sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
+            sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
+        )
     }
 
     private func submitToEncoder(
