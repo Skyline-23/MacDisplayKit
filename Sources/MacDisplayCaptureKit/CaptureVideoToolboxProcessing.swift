@@ -66,14 +66,14 @@ public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
 
 private final class MDKVideoToolboxSubmissionToken {
     let slotIdentifier: Int?
-    let submittedAt: TimeInterval
+    let submittedAt: UInt64
     let sourceSequenceNumber: UInt64
     let sourceDisplayTime: UInt64
     private let releasePendingFrame: @Sendable () -> Void
 
     init(
         slotIdentifier: Int?,
-        submittedAt: TimeInterval,
+        submittedAt: UInt64,
         sourceSequenceNumber: UInt64,
         sourceDisplayTime: UInt64,
         releasePendingFrame: @escaping @Sendable () -> Void
@@ -87,6 +87,26 @@ private final class MDKVideoToolboxSubmissionToken {
 
     func markCompleted() {
         releasePendingFrame()
+    }
+}
+
+private enum MDKVideoToolboxMachClock {
+    private static let timebase: mach_timebase_info_data_t = {
+        var info = mach_timebase_info_data_t()
+        mach_timebase_info(&info)
+        return info
+    }()
+
+    static func now() -> UInt64 {
+        mach_absolute_time()
+    }
+
+    static func milliseconds(start: UInt64, end: UInt64 = now()) -> Double {
+        guard end >= start, timebase.denom != 0 else {
+            return 0
+        }
+        let nanoseconds = (Double(end - start) * Double(timebase.numer)) / Double(timebase.denom)
+        return nanoseconds / 1_000_000
     }
 }
 
@@ -196,7 +216,7 @@ private let MDKVideoToolboxOutputCallback: VTCompressionOutputCallback = { outpu
     let token = sourceFrameRefCon.map {
         Unmanaged<MDKVideoToolboxSubmissionToken>.fromOpaque($0).takeRetainedValue()
     }
-    let callbackReceivedAt = ProcessInfo.processInfo.systemUptime
+    let callbackReceivedAt = MDKVideoToolboxMachClock.now()
     processor.recordOutputCallback(
         status: status,
         sampleBuffer: sampleBuffer,
@@ -338,7 +358,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         frame: MDKCaptureFrame,
         releaseSourceFrame: @escaping @Sendable () -> Void
     ) throws {
-        let processRequestedAt = ProcessInfo.processInfo.systemUptime
+        let processRequestedAt = MDKVideoToolboxMachClock.now()
         guard let surface = frame.surface else {
             throw MDKVideoToolboxProcessingError.surfaceUnavailable
         }
@@ -357,7 +377,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
         )
         let submitFrame = { [self, retainedFrame] in
-            let encodeStartedAt = ProcessInfo.processInfo.systemUptime
+            let encodeStartedAt = MDKVideoToolboxMachClock.now()
             recordTiming(.encodeQueueWait, startedAt: processRequestedAt, endedAt: encodeStartedAt)
             do {
                 try encode(
@@ -660,7 +680,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         )
         let slotIdentifier = slot.identifier
         let stagedPixelBuffer = MDKVideoToolboxSendablePixelBuffer(pixelBuffer: slot.pixelBuffer)
-        let metalStageStartedAt = ProcessInfo.processInfo.systemUptime
+        let metalStageStartedAt = MDKVideoToolboxMachClock.now()
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             releaseStagingSlot(identifier: slotIdentifier)
@@ -832,7 +852,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let submissionToken = Unmanaged.passRetained(
             MDKVideoToolboxSubmissionToken(
                 slotIdentifier: slotIdentifier,
-                submittedAt: ProcessInfo.processInfo.systemUptime,
+                submittedAt: MDKVideoToolboxMachClock.now(),
                 sourceSequenceNumber: frame.sequenceNumber,
                 sourceDisplayTime: frame.displayTime,
                 releasePendingFrame: releasePendingFrame
@@ -841,7 +861,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
         outputDrainGroup.enter()
 
-        let vtEncodeCallStartedAt = ProcessInfo.processInfo.systemUptime
+        let vtEncodeCallStartedAt = MDKVideoToolboxMachClock.now()
         let status = VTCompressionSessionEncodeFrame(
             compressionSession,
             imageBuffer: imageBuffer,
@@ -1599,11 +1619,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         status: OSStatus,
         sampleBuffer: CMSampleBuffer?,
         submissionToken: MDKVideoToolboxSubmissionToken?,
-        callbackReceivedAt: TimeInterval
+        callbackReceivedAt: UInt64
     ) {
         let outputCompleted = status == noErr && sampleBuffer != nil
         let latencyMilliseconds = submissionToken.map {
-            max((callbackReceivedAt - $0.submittedAt) * 1000.0, 0)
+            MDKVideoToolboxMachClock.milliseconds(start: $0.submittedAt, end: callbackReceivedAt)
         }
         let resolvedSampleBuffer = sampleBuffer.map { sampleBuffer in
             guard let hdrConfiguration else {
@@ -1692,10 +1712,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
     private func recordTiming(
         _ metric: MDKVideoToolboxTimingMetric,
-        startedAt: TimeInterval,
-        endedAt: TimeInterval = ProcessInfo.processInfo.systemUptime
+        startedAt: UInt64,
+        endedAt: UInt64 = MDKVideoToolboxMachClock.now()
     ) {
-        let elapsedMilliseconds = (endedAt - startedAt) * 1000.0
+        let elapsedMilliseconds = MDKVideoToolboxMachClock.milliseconds(start: startedAt, end: endedAt)
         outputQueue.sync {
             switch metric {
             case .encodeQueueWait:
