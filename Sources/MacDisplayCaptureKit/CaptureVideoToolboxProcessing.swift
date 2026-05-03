@@ -1221,14 +1221,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     }
 
     private var shouldEnableLowLatencyRateControl: Bool {
-        guard codec.lowLatencyRateControlSupported else {
-            return false
-        }
-
-        return !(
-            codec == .hevc &&
-            hdrConfiguration?.transferFunction == .smpteSt2084PQ
-        )
+        codec.lowLatencyRateControlSupported
     }
 
     private func resolvedAverageBitRate(
