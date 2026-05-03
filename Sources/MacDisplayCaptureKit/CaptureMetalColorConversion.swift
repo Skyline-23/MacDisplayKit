@@ -90,7 +90,9 @@ final class MDKMetalBGRAToYCbCrConverter {
 
         let library: any MTLLibrary
         do {
-            library = try device.makeLibrary(source: Self.shaderSource, options: nil)
+            let compileOptions = MTLCompileOptions()
+            compileOptions.fastMathEnabled = true
+            library = try device.makeLibrary(source: Self.shaderSource, options: compileOptions)
         } catch {
             throw MDKMetalColorConversionError.libraryCreationFailed(String(describing: error))
         }
