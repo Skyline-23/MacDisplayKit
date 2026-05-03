@@ -376,7 +376,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) == encodeQueueSpecificValue {
             submitFrame()
         } else {
-            encodeQueue.sync(execute: submitFrame)
+            encodeQueue.async(execute: submitFrame)
         }
     }
 
