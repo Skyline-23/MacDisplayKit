@@ -607,32 +607,25 @@ final class MDKMetalBGRAToYCbCrConverter {
         float2 basePixel = float2(gid) * chromaSubsampling;
 
         float3 rgb = float3(0.0);
-        if (parameters.cursorOverlayEnabled == 0 &&
-            parameters.chromaSubsampling.x == 2 &&
-            parameters.chromaSubsampling.y == 2) {
-            float2 sampleCoordinate = (basePixel + float2(1.0, 1.0)) / lumaSize;
-            rgb = transformRGB(sampleRGB(sourceTexture, linearSampler, sampleCoordinate), parameters);
-        } else {
-            uint sampleCount = 0;
-            for (uint offsetY = 0; offsetY < parameters.chromaSubsampling.y; ++offsetY) {
-                for (uint offsetX = 0; offsetX < parameters.chromaSubsampling.x; ++offsetX) {
-                    float2 sampleCoordinate = (
-                        basePixel + float2(float(offsetX) + 0.5, float(offsetY) + 0.5)
-                    ) / lumaSize;
-                    float2 sourcePixel = sampleCoordinate * float2(parameters.sourceSize);
-                    float3 sample = applyCursorOverlay(
-                        sampleRGB(sourceTexture, linearSampler, sampleCoordinate),
-                        cursorTexture,
-                        linearSampler,
-                        sourcePixel,
-                        parameters
-                    );
-                    rgb += transformRGB(sample, parameters);
-                    sampleCount += 1;
-                }
+        uint sampleCount = 0;
+        for (uint offsetY = 0; offsetY < parameters.chromaSubsampling.y; ++offsetY) {
+            for (uint offsetX = 0; offsetX < parameters.chromaSubsampling.x; ++offsetX) {
+                float2 sampleCoordinate = (
+                    basePixel + float2(float(offsetX) + 0.5, float(offsetY) + 0.5)
+                ) / lumaSize;
+                float2 sourcePixel = sampleCoordinate * float2(parameters.sourceSize);
+                float3 sample = applyCursorOverlay(
+                    sampleRGB(sourceTexture, linearSampler, sampleCoordinate),
+                    cursorTexture,
+                    linearSampler,
+                    sourcePixel,
+                    parameters
+                );
+                rgb += transformRGB(sample, parameters);
+                sampleCount += 1;
             }
-            rgb *= 1.0 / max(float(sampleCount), 1.0);
         }
+        rgb *= 1.0 / max(float(sampleCount), 1.0);
 
         float cb = dot(float4(rgb, 1.0), parameters.cbCoefficients);
         float cr = dot(float4(rgb, 1.0), parameters.crCoefficients);
