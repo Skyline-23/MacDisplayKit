@@ -134,6 +134,7 @@ private actor MDKSkyLightEncodedCaptureReplayState {
     func captureFrame(
         status: CGDisplayStreamFrameStatus,
         displayTime: UInt64,
+        callbackMachTime: UInt64,
         frameSurface: MDKCaptureSurface?,
         dirtyRects: [CGRect]?,
         sourceUpdateDropCount: UInt64?
@@ -153,7 +154,7 @@ private actor MDKSkyLightEncodedCaptureReplayState {
             }
             lastCaptureSurface = captureSurface
             lastDisplayTime = displayTime
-            lastEmissionMachTime = mach_absolute_time()
+            lastEmissionMachTime = callbackMachTime
             return MDKCaptureFrame(
                 sequenceNumber: displayTime,
                 displayTime: displayTime,
@@ -171,7 +172,7 @@ private actor MDKSkyLightEncodedCaptureReplayState {
                 return nil
             }
             lastDisplayTime = displayTime
-            lastEmissionMachTime = mach_absolute_time()
+            lastEmissionMachTime = callbackMachTime
             return MDKCaptureFrame(
                 sequenceNumber: displayTime,
                 displayTime: displayTime,
@@ -272,6 +273,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             pixelFormat: configuration.resolvedCapturePixelFormat,
             yCbCrMatrix: configuration.resolvedSkyLightDisplayStreamYCbCrMatrix.map { $0.imageBufferValue as String }
         ) { status, displayTime, frameSurface, reducedDirtyRectData, updateDropCount in
+            let callbackMachTime = mach_absolute_time()
             let captureSurface = frameSurface.map(MDKCaptureSurface.init(ioSurface:))
             let dirtyRects = MDKDecodeCGRectData(reducedDirtyRectData)
             let sourceUpdateDropCount = UInt64(updateDropCount)
@@ -280,6 +282,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
                     guard let deliveredFrame = await replayState.captureFrame(
                         status: status,
                         displayTime: displayTime,
+                        callbackMachTime: callbackMachTime,
                         frameSurface: captureSurface,
                         dirtyRects: dirtyRects,
                         sourceUpdateDropCount: sourceUpdateDropCount
