@@ -858,7 +858,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             releasePendingFrame()
             throw MDKVideoToolboxProcessingError.encodeFailed(status: status)
         }
-        if frame.origin == .fresh {
+        if frame.origin == .fresh && codec.lowLatencyRateControlSupported {
             lastFreshReplayState = MDKVideoToolboxReplayState(
                 imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
                 frame: frame
