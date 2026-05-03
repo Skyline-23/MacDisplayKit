@@ -1696,7 +1696,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         endedAt: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) {
         let elapsedMilliseconds = (endedAt - startedAt) * 1000.0
-        outputQueue.sync {
+        outputQueue.async { [self] in
             switch metric {
             case .encodeQueueWait:
                 encodeQueueWaitTiming.record(elapsedMilliseconds)
