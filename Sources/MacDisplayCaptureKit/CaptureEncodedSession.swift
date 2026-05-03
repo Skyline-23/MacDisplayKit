@@ -414,16 +414,28 @@ private final class MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime: MDKEnc
     }
 }
 
+private extension MDKCaptureFrameOrigin {
+    var isReplay: Bool {
+        switch self {
+        case .fresh:
+            return false
+        case .idleReplay, .timerReplay, .recoveryReplay:
+            return true
+        }
+    }
+}
+
 // Safety: all mutable state is protected by `lock`, and callers only interact through
 // value-free acquire/release operations that do not expose shared mutable storage.
 private final class MDKEncodedCapturePendingFrameTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
 
-    func tryAcquire(limit: Int) -> Bool {
+    func tryAcquire(limit: Int, reserveReplaySlot: Bool, frameOrigin: MDKCaptureFrameOrigin) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard count < limit else {
+        let effectiveLimit = reserveReplaySlot && frameOrigin.isReplay ? max(limit - 1, 1) : limit
+        guard count < effectiveLimit else {
             return false
         }
         count += 1
@@ -1104,6 +1116,10 @@ public actor MDKEncodedCaptureSession {
         let sourceTimingTracker = shouldRecordSourceDiagnostics ? MDKEncodedCaptureSourceTimingTracker() : nil
         let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
         let maximumPendingFrameCount = sourcePreparation.recommendedPendingFrameCount
+        let reserveReplayPendingSlot =
+            configuration.codec == .hevc &&
+            configuration.resolvedSourceBackend == .skyLightDisplayStream &&
+            configuration.resolvedSkyLightProcessingMode != nil
 
         let outputHandler: @Sendable (MDKEncodedFrame) -> Void = { [weak self] encodedFrame in
             guard let self else {
@@ -1138,7 +1154,14 @@ public actor MDKEncodedCaptureSession {
 
             sourceCadenceTracker?.record(displayTime: frame.displayTime)
             sourceTimingTracker?.record(frame: frame)
-            guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
+            guard pendingFrameTracker.tryAcquire(
+                limit: maximumPendingFrameCount,
+                reserveReplaySlot: reserveReplayPendingSlot,
+                frameOrigin: frame.origin
+            ) else {
+                guard !reserveReplayPendingSlot || !frame.origin.isReplay else {
+                    return
+                }
                 Task {
                     let replacedDisplayTime = await latestFrameMailbox.store(frame)
                     if let replacedDisplayTime {
