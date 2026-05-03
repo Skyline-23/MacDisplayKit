@@ -80,8 +80,6 @@ public final class MDKEncodedFrame: @unchecked Sendable {
     public let sourceDisplayTime: UInt64
     public let outputCallbackLatencyMilliseconds: Double?
     public let tileMetadata: MDKEncodedFrameTileMetadata
-    private lazy var cachedIsKeyFrame = computeIsKeyFrame()
-    private lazy var cachedHDRValidationReport = computeHDRValidationReport()
 
     public init(
         sampleBuffer: CMSampleBuffer,
@@ -108,10 +106,6 @@ public final class MDKEncodedFrame: @unchecked Sendable {
     }
 
     public var isKeyFrame: Bool {
-        cachedIsKeyFrame
-    }
-
-    private func computeIsKeyFrame() -> Bool {
         guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
             as? [[CFString: Any]],
             let firstAttachment = attachments.first else {
@@ -139,10 +133,6 @@ public final class MDKEncodedFrame: @unchecked Sendable {
     }
 
     public var hdrValidationReport: MDKEncodedFrameHDRValidationReport {
-        cachedHDRValidationReport
-    }
-
-    private func computeHDRValidationReport() -> MDKEncodedFrameHDRValidationReport {
         let extensions = formatDescriptionExtensions
         let colorPrimaries = extensions[kCMFormatDescriptionExtension_ColorPrimaries as String] as? String
         let transferFunction = extensions[kCMFormatDescriptionExtension_TransferFunction as String] as? String
