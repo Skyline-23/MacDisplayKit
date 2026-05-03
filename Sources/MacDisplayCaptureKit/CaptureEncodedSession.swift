@@ -247,9 +247,8 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
     ) {
         let replayState = MDKSkyLightEncodedCaptureReplayState()
         let deliveryQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.encoded-capture.skylight.delivery")
-        let replayRateDivisor = configuration.codec == .hevc ? 2.0 : 1.0
         let replayIntervalNanoseconds = UInt64(
-            max((replayRateDivisor / Double(max(configuration.targetFrameRate, 1))) * 1_000_000_000.0, 1_000_000.0)
+            max((1.0 / Double(max(configuration.targetFrameRate, 1))) * 1_000_000_000.0, 1_000_000.0)
         )
         self.tuningSelection = tuningSelection
         self.replayState = replayState
