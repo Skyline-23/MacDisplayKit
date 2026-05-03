@@ -220,7 +220,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let hdrConfiguration: MDKVideoHDRConfiguration?
     private let targetAverageBitRateBitsPerSecond: Int?
     private let tileMetadata: MDKEncodedFrameTileMetadata
-    private let recordsTimingMetrics: Bool
 
     private var compressionSession: VTCompressionSession?
     private var activeDimensions: SIMD2<Int>?
@@ -303,11 +302,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.maxInflightStagingSlots = max(maxInflightStagingSlots, 1)
         self.outputHandler = outputHandler
         self.failureHandler = failureHandler
-        let negotiatedHDRConfiguration = hdrConfiguration?.negotiatedForEncodedDelivery(codec: codec)
-        self.hdrConfiguration = negotiatedHDRConfiguration
+        self.hdrConfiguration = hdrConfiguration?.negotiatedForEncodedDelivery(codec: codec)
         self.targetAverageBitRateBitsPerSecond = targetAverageBitRateBitsPerSecond.flatMap { $0 > 0 ? $0 : nil }
         self.tileMetadata = tileMetadata
-        self.recordsTimingMetrics = !(codec == .hevc && negotiatedHDRConfiguration?.transferFunction == .smpteSt2084PQ)
         self.encodeQueue.setSpecific(key: encodeQueueSpecificKey, value: encodeQueueSpecificValue)
     }
 
@@ -481,7 +478,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxPixelBufferPoolIsShared=\(describeHardwareAcceleration(encoderPixelBufferPoolIsShared))",
             "videoToolboxRecommendedParallelizationLimit=\(recommendedParallelizationLimit.map(String.init) ?? "unknown")",
             "videoToolboxPixelBufferCacheSize=\(pixelBufferCache.count)",
-            "videoToolboxTimingMetrics=\(recordsTimingMetrics ? "enabled" : "disabled")",
             "videoToolboxEncodeQueueWaitSampleCount=\(encodeQueueWaitTiming.sampleCount)",
             "videoToolboxEncodeQueueWaitAverageMilliseconds=\(formatMilliseconds(encodeQueueWaitTiming.averageMilliseconds))",
             "videoToolboxEncodeQueueWaitMaxMilliseconds=\(formatMilliseconds(encodeQueueWaitTiming.maxMilliseconds))",
@@ -1699,10 +1695,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         startedAt: TimeInterval,
         endedAt: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) {
-        guard recordsTimingMetrics else {
-            return
-        }
-
         let elapsedMilliseconds = (endedAt - startedAt) * 1000.0
         outputQueue.sync {
             switch metric {
