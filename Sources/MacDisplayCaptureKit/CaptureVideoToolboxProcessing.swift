@@ -352,8 +352,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             pixelFormat: frame.pixelFormat,
             surface: surface,
             origin: frame.origin,
-            dirtyRects: frame.dirtyRects,
-            sourceUpdateDropCount: frame.sourceUpdateDropCount,
             cursorOverlaySample: frame.cursorOverlaySample,
             sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
             sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
