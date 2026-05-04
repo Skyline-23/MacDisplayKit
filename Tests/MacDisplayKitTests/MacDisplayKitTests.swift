@@ -272,7 +272,7 @@ final class MacDisplayKitTests: XCTestCase {
         )
     }
 
-    func testProcessorKeepsRawYUVPassthroughDirectWhenMetalQueueIsAvailable() throws {
+    func testProcessorStagesRawYUVPassthroughWhenMetalQueueIsAvailable() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("Metal device is not available on this host.")
         }
@@ -283,7 +283,7 @@ final class MacDisplayKitTests: XCTestCase {
             hdrConfiguration: nil
         )
 
-        XCTAssertFalse(
+        XCTAssertTrue(
             processor.shouldUseDetachedSubmissionSurface(
                 sourcePixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
                 targetPixelFormat: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,

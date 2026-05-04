@@ -584,7 +584,26 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             return true
         }
 
-        return false
+        guard !needsScaling,
+              !hasCursorOverlay,
+              sourcePixelFormat == targetPixelFormat,
+              commandQueue != nil else {
+            return false
+        }
+
+        switch sourcePixelFormat {
+        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+             kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr8BiPlanarVideoRange,
+             kCVPixelFormatType_422YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
+             kCVPixelFormatType_422YpCbCr10BiPlanarFullRange:
+            return true
+        default:
+            return false
+        }
     }
 
     private func encodeDirect(
@@ -1496,8 +1515,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         for frame: MDKCaptureFrame,
         surface: MDKCaptureSurface
     ) throws -> CVPixelBuffer {
-        let shouldCache = shouldCacheWrappedPixelBuffer(for: frame.pixelFormat)
-        if shouldCache, let cached = pixelBufferCache[frame.surfaceID] {
+        if let cached = pixelBufferCache[frame.surfaceID] {
             return cached
         }
 
@@ -1513,26 +1531,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         let wrappedBuffer = pixelBuffer.takeRetainedValue()
-        if shouldCache {
-            pixelBufferCache[frame.surfaceID] = wrappedBuffer
-        }
+        pixelBufferCache[frame.surfaceID] = wrappedBuffer
         return wrappedBuffer
-    }
-
-    private func shouldCacheWrappedPixelBuffer(for pixelFormat: UInt32) -> Bool {
-        switch pixelFormat {
-        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
-             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
-             kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
-             kCVPixelFormatType_422YpCbCr8BiPlanarVideoRange,
-             kCVPixelFormatType_422YpCbCr8BiPlanarFullRange,
-             kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
-             kCVPixelFormatType_422YpCbCr10BiPlanarFullRange:
-            return false
-        default:
-            return true
-        }
     }
 
     private func invalidateSession() {
