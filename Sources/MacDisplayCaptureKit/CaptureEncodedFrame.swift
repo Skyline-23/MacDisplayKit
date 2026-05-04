@@ -135,7 +135,7 @@ public final class MDKEncodedFrame: @unchecked Sendable {
         if let isHDRSignaledOverride {
             return isHDRSignaledOverride
         }
-        hdrValidationReport.isHDRSignaled
+        return hdrValidationReport.isHDRSignaled
     }
 
     public var hdrValidationReport: MDKEncodedFrameHDRValidationReport {
