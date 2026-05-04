@@ -243,6 +243,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var outputCallbackLatencyHistogram: [String: Int] = [:]
     private var minOutputCallbackLatencyMilliseconds: Double?
     private var maxOutputCallbackLatencyMilliseconds: Double?
+    private var lastDeliveredEncodedFrame: MDKEncodedFrame?
+    private var presentationRepeatFrameCount: UInt64 = 0
     private var submittedFrameCount: UInt64 = 0
     private var usingHardwareAcceleratedEncoder: Bool?
     private var encoderPixelBufferPoolIsShared: Bool?
@@ -489,7 +491,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxMetalStageMaxMilliseconds=\(formatMilliseconds(metalStageTiming.maxMilliseconds))",
             "videoToolboxVTEncodeCallSampleCount=\(vtEncodeCallTiming.sampleCount)",
             "videoToolboxVTEncodeCallAverageMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.averageMilliseconds))",
-            "videoToolboxVTEncodeCallMaxMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.maxMilliseconds))"
+            "videoToolboxVTEncodeCallMaxMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.maxMilliseconds))",
+            "videoToolboxPresentationRepeatMode=\(shouldEmitPresentationRepeats ? "hevc-hdr-sequence-gap" : "disabled")",
+            "videoToolboxPresentationRepeatFrameCount=\(presentationRepeatFrameCount)"
         ]
         if includeDrainWaitStatus {
             notes.append("videoToolboxStagingSubmissionWait=\(stagingSubmissionWaitStatus == .success ? "success" : "timeout")")
@@ -1669,12 +1673,68 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 completedOutputFrameCount += 1
             }
             if let encodedFrame, outputCompleted {
+                emitPresentationRepeatsIfNeeded(before: encodedFrame)
                 outputHandler?(encodedFrame)
+                lastDeliveredEncodedFrame = encodedFrame
             } else if status != noErr {
                 failureHandler?("VT output callback failed (\(describe(status: status))).")
             }
             outputDrainGroup.leave()
         }
+    }
+
+    private var shouldEmitPresentationRepeats: Bool {
+        codec == .hevc && hdrConfiguration?.transferFunction == .smpteSt2084PQ
+    }
+
+    private func emitPresentationRepeatsIfNeeded(before encodedFrame: MDKEncodedFrame) {
+        guard shouldEmitPresentationRepeats,
+              let previousFrame = lastDeliveredEncodedFrame,
+              encodedFrame.sourceSequenceNumber > previousFrame.sourceSequenceNumber + 1 else {
+            return
+        }
+
+        let missingFrameCount = min(
+            encodedFrame.sourceSequenceNumber - previousFrame.sourceSequenceNumber - 1,
+            2
+        )
+        let frameIntervalMachTicks = MDKMachAbsoluteTicksForNanoseconds(
+            UInt64(1_000_000_000 / max(targetFrameRate, 1))
+        )
+        for repeatIndex in 1...missingFrameCount {
+            let repeatSequenceNumber = previousFrame.sourceSequenceNumber + repeatIndex
+            let repeatDisplayTime = previousFrame.sourceDisplayTime &+ (frameIntervalMachTicks * repeatIndex)
+            let repeatFrame = makePresentationRepeatFrame(
+                from: previousFrame,
+                sourceSequenceNumber: repeatSequenceNumber,
+                sourceDisplayTime: repeatDisplayTime
+            )
+            outputHandler?(repeatFrame)
+            presentationRepeatFrameCount += 1
+        }
+    }
+
+    private func makePresentationRepeatFrame(
+        from frame: MDKEncodedFrame,
+        sourceSequenceNumber: UInt64,
+        sourceDisplayTime: UInt64
+    ) -> MDKEncodedFrame {
+        let repeatedTileMetadata = MDKEncodedFrameTileMetadata(
+            frameGroupID: frame.tileMetadata.frameGroupID == frame.sourceSequenceNumber ? sourceSequenceNumber : frame.tileMetadata.frameGroupID,
+            tileIndex: frame.tileMetadata.tileIndex,
+            tileCount: frame.tileMetadata.tileCount,
+            encodedLaneIndex: frame.tileMetadata.encodedLaneIndex,
+            encodedLaneCount: frame.tileMetadata.encodedLaneCount,
+            tileRegion: frame.tileMetadata.tileRegion
+        )
+        return MDKEncodedFrame(
+            sampleBuffer: frame.sampleBuffer,
+            codec: frame.codec,
+            sourceSequenceNumber: sourceSequenceNumber,
+            sourceDisplayTime: sourceDisplayTime,
+            outputCallbackLatencyMilliseconds: frame.outputCallbackLatencyMilliseconds,
+            tileMetadata: repeatedTileMetadata
+        )
     }
 
     private func describe(status: OSStatus) -> String {
