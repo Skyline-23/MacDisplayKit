@@ -858,7 +858,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             releasePendingFrame()
             throw MDKVideoToolboxProcessingError.encodeFailed(status: status)
         }
-        if frame.origin == .fresh {
+        if frame.origin == .fresh && shouldCacheImmediateReplayState {
             lastFreshReplayState = MDKVideoToolboxReplayState(
                 imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
                 frame: frame
@@ -931,6 +931,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         return pendingFrames > 0
+    }
+
+    private var shouldCacheImmediateReplayState: Bool {
+        !(codec == .hevc && hdrConfiguration?.transferFunction == .smpteSt2084PQ)
     }
 
     private func consumeImmediateKeyFrameRequest() -> Bool {
