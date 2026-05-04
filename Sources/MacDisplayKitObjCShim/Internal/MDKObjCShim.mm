@@ -12692,6 +12692,52 @@ static BOOL MDKPopulateSkyLightDisplayStreamProperties(
     return propertyCount > 0;
 }
 
+static NSString *MDKDescribeSkyLightCreateNil(
+    NSUInteger displayID,
+    size_t width,
+    size_t height,
+    OSType pixelFormat,
+    double minimumFrameTime,
+    NSInteger queueDepth,
+    BOOL showCursor,
+    NSString * _Nullable yCbCrMatrix,
+    NSUInteger propertyCount
+) {
+    NSString *modeDescription = @"mode=unavailable";
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(static_cast<CGDirectDisplayID>(displayID));
+    if (mode != nil) {
+        modeDescription = [NSString stringWithFormat:
+            @"modePixels=%zux%zu modePoints=%zux%zu modeHz=%.3f",
+            CGDisplayModeGetPixelWidth(mode),
+            CGDisplayModeGetPixelHeight(mode),
+            CGDisplayModeGetWidth(mode),
+            CGDisplayModeGetHeight(mode),
+            CGDisplayModeGetRefreshRate(mode)
+        ];
+        CFRelease(mode);
+    }
+
+    const CGRect bounds = CGDisplayBounds(static_cast<CGDirectDisplayID>(displayID));
+    return [NSString stringWithFormat:
+        @"SLDisplayStreamCreateWithDispatchQueue returned nil. displayID=%lu online=%d active=%d tcc=%d requested=%zux%zu pixelFormat=0x%08x minFrameTime=%.6f queueDepth=%ld showCursor=%d matrix=%@ properties=%lu bounds=%.0fx%.0f %@",
+        static_cast<unsigned long>(displayID),
+        CGDisplayIsOnline(static_cast<CGDirectDisplayID>(displayID)),
+        CGDisplayIsActive(static_cast<CGDirectDisplayID>(displayID)),
+        CGPreflightScreenCaptureAccess(),
+        width,
+        height,
+        static_cast<unsigned int>(pixelFormat),
+        minimumFrameTime,
+        static_cast<long>(queueDepth),
+        showCursor,
+        yCbCrMatrix ?: @"unset",
+        static_cast<unsigned long>(propertyCount),
+        bounds.size.width,
+        bounds.size.height,
+        modeDescription
+    ];
+}
+
 static CGImageRef _Nullable MDKCopyCurrentSystemCursorImage(CGPoint * _Nullable hotSpotOut, CGSize * _Nullable logicalSizeOut) {
     __block CGImageRef cursorImage = nil;
     __block CGPoint hotSpot = CGPointZero;
@@ -13400,13 +13446,14 @@ static CGRect MDKCreateCursorDrawRect(
     }
 
     NSMutableDictionary *streamProperties = [NSMutableDictionary dictionary];
+    NSUInteger appliedPropertyCount = 0;
     MDKPopulateSkyLightDisplayStreamProperties(
         _minimumFrameTime,
         _queueDepth,
         _showCursor,
         _yCbCrMatrix,
         streamProperties,
-        nullptr
+        &appliedPropertyCount
     );
     const CFDictionaryRef streamPropertiesRef =
         streamProperties.count > 0 ? (__bridge CFDictionaryRef) streamProperties : nil;
@@ -13442,7 +13489,17 @@ static CGRect MDKCreateCursorDrawRect(
             *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
                                          code:3
                                      userInfo:@{
-                                         NSLocalizedDescriptionKey: @"SLDisplayStreamCreateWithDispatchQueue returned nil."
+                                         NSLocalizedDescriptionKey: MDKDescribeSkyLightCreateNil(
+                                             _displayID,
+                                             width,
+                                             height,
+                                             static_cast<OSType>(_pixelFormat),
+                                             _minimumFrameTime,
+                                             _queueDepth,
+                                             _showCursor,
+                                             _yCbCrMatrix,
+                                             appliedPropertyCount
+                                         )
                                      }];
         }
         return NO;
@@ -13658,7 +13715,17 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
             *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
                                          code:3
                                      userInfo:@{
-                                         NSLocalizedDescriptionKey: @"SLDisplayStreamCreateWithDispatchQueue returned nil."
+                                         NSLocalizedDescriptionKey: MDKDescribeSkyLightCreateNil(
+                                             displayID,
+                                             width,
+                                             height,
+                                             requestedPixelFormat,
+                                             requestedMinimumFrameTime,
+                                             requestedQueueDepth,
+                                             requestedShowCursor,
+                                             nil,
+                                             appliedPropertyCount
+                                         )
                                      }];
         }
         return nil;
