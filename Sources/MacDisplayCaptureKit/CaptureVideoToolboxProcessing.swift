@@ -69,7 +69,6 @@ private final class MDKVideoToolboxSubmissionToken {
     let submittedAt: TimeInterval
     let sourceSequenceNumber: UInt64
     let sourceDisplayTime: UInt64
-    let expectsKeyFrame: Bool
     private let releasePendingFrame: @Sendable () -> Void
 
     init(
@@ -77,14 +76,12 @@ private final class MDKVideoToolboxSubmissionToken {
         submittedAt: TimeInterval,
         sourceSequenceNumber: UInt64,
         sourceDisplayTime: UInt64,
-        expectsKeyFrame: Bool,
         releasePendingFrame: @escaping @Sendable () -> Void
     ) {
         self.slotIdentifier = slotIdentifier
         self.submittedAt = submittedAt
         self.sourceSequenceNumber = sourceSequenceNumber
         self.sourceDisplayTime = sourceDisplayTime
-        self.expectsKeyFrame = expectsKeyFrame
         self.releasePendingFrame = releasePendingFrame
     }
 
@@ -641,24 +638,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             throw MDKVideoToolboxProcessingError.surfaceUnavailable
         }
 
-        let outputDimensions = preprocessStrategy.outputDimensions(
-            sourceWidth: frame.width,
-            sourceHeight: frame.height,
-            pixelFormat: targetPixelFormat
-        )
-        if shouldSubmitProResBGRADirectAfterMetalPacing(
-            frame: frame,
-            targetPixelFormat: targetPixelFormat,
-            outputDimensions: outputDimensions
-        ) {
-            try paceWithMetalAndEncodeDirect(
-                frame: frame,
-                commandQueue: commandQueue,
-                releaseSourceFrame: releaseSourceFrame
-            )
-            return
-        }
-
         let sourceTextures = try makeSourceTextures(
             for: frame,
             surface: surface,
@@ -667,6 +646,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let cursorTexture = try makeCursorTexture(
             for: frame.cursorOverlaySample,
             device: device
+        )
+        let outputDimensions = preprocessStrategy.outputDimensions(
+            sourceWidth: frame.width,
+            sourceHeight: frame.height,
+            pixelFormat: targetPixelFormat
         )
         let slot = try acquireStagingSlot(
             width: outputDimensions.x,
@@ -827,80 +811,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         commandBuffer.commit()
     }
 
-    private func shouldSubmitProResBGRADirectAfterMetalPacing(
-        frame: MDKCaptureFrame,
-        targetPixelFormat: UInt32,
-        outputDimensions: SIMD2<Int>
-    ) -> Bool {
-        codec == .proResProxy &&
-            frame.pixelFormat == kCVPixelFormatType_32BGRA &&
-            targetPixelFormat == kCVPixelFormatType_32BGRA &&
-            outputDimensions.x == frame.width &&
-            outputDimensions.y == frame.height &&
-            frame.cursorOverlaySample == nil
-    }
-
-    private func paceWithMetalAndEncodeDirect(
-        frame: MDKCaptureFrame,
-        commandQueue: any MTLCommandQueue,
-        releaseSourceFrame: @escaping @Sendable () -> Void
-    ) throws {
-        guard let surface = frame.surface else {
-            throw MDKVideoToolboxProcessingError.surfaceUnavailable
-        }
-        let directPixelBuffer = MDKVideoToolboxSendablePixelBuffer(
-            pixelBuffer: try wrappedPixelBuffer(for: frame, surface: surface)
-        )
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-            throw MDKVideoToolboxProcessingError.commandBufferUnavailable
-        }
-
-        if !sessionConfigurationNotes.contains("videoToolboxProResBGRADirectMetalPacing=enabled") {
-            sessionConfigurationNotes.append("videoToolboxProResBGRADirectMetalPacing=enabled")
-        }
-
-        let presentationTimeStamp = CMTime(value: frameIndex, timescale: Int32(targetFrameRate))
-        frameIndex += 1
-        let metalStageStartedAt = ProcessInfo.processInfo.systemUptime
-        stagingSubmissionGroup.enter()
-
-        commandBuffer.addCompletedHandler { [weak self] commandBuffer in
-            guard let self else {
-                releaseSourceFrame()
-                return
-            }
-            let commandBufferStatus = commandBuffer.status
-            guard commandBufferStatus == .completed else {
-                releaseSourceFrame()
-                self.recordProcessingFailure("Metal pacing command failed (\(commandBufferStatus.rawValue)).")
-                self.failureHandler?("Metal pacing command failed (\(commandBufferStatus.rawValue)).")
-                self.stagingSubmissionGroup.leave()
-                return
-            }
-            self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
-            self.submissionQueue.async { [self] in
-                do {
-                    try submitToEncoder(
-                        imageBuffer: directPixelBuffer.pixelBuffer,
-                        frame: frame,
-                        slotIdentifier: nil,
-                        presentationTimeStamp: presentationTimeStamp,
-                        releasePendingFrame: {}
-                    )
-                    releaseSourceFrame()
-                    recordProcessingSuccess(isStaged: false)
-                } catch {
-                    releaseSourceFrame()
-                    let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-                    recordProcessingFailure(errorDescription)
-                    failureHandler?(errorDescription)
-                }
-                stagingSubmissionGroup.leave()
-            }
-        }
-        commandBuffer.commit()
-    }
-
     private func submitToEncoder(
         imageBuffer: CVPixelBuffer,
         frame: MDKCaptureFrame,
@@ -919,18 +829,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             frameIndex += 1
             return timestamp
         }()
-        let forceKeyFrame = consumeImmediateKeyFrameRequest()
-        let expectsKeyFrame =
-            forceKeyFrame ||
-            resolvedPresentationTimeStamp.value == 0 ||
-            (targetFrameRate > 0 && resolvedPresentationTimeStamp.value % CMTimeValue(targetFrameRate) == 0)
         let submissionToken = Unmanaged.passRetained(
             MDKVideoToolboxSubmissionToken(
                 slotIdentifier: slotIdentifier,
                 submittedAt: ProcessInfo.processInfo.systemUptime,
                 sourceSequenceNumber: frame.sequenceNumber,
                 sourceDisplayTime: frame.displayTime,
-                expectsKeyFrame: expectsKeyFrame,
                 releasePendingFrame: releasePendingFrame
             )
         )
@@ -943,7 +847,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             imageBuffer: imageBuffer,
             presentationTimeStamp: resolvedPresentationTimeStamp,
             duration: .invalid,
-            frameProperties: makeFrameProperties(forceKeyFrame: forceKeyFrame),
+            frameProperties: makeFrameProperties(forceKeyFrame: consumeImmediateKeyFrameRequest()),
             sourceFrameRefcon: submissionToken.toOpaque(),
             infoFlagsOut: nil
         )
@@ -1702,14 +1606,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             max((callbackReceivedAt - $0.submittedAt) * 1000.0, 0)
         }
         let resolvedSampleBuffer = sampleBuffer.map { sampleBuffer in
-            guard codec == .hevc,
-                  let hdrConfiguration else {
+            guard let hdrConfiguration else {
                 return sampleBuffer
             }
             let isKeyFrame: Bool
-            if let expectsKeyFrame = submissionToken?.expectsKeyFrame {
-                isKeyFrame = expectsKeyFrame
-            } else if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
+            if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
                 as? [[CFString: Any]],
                let firstAttachment = attachments.first {
                 let notSync = firstAttachment[kCMSampleAttachmentKey_NotSync] as? Bool ?? false
