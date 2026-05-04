@@ -662,8 +662,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let stagedPixelBuffer = MDKVideoToolboxSendablePixelBuffer(pixelBuffer: slot.pixelBuffer)
         let metalStageStartedAt = ProcessInfo.processInfo.systemUptime
 
-        guard let commandBuffer = commandQueue.makeCommandBufferWithUnretainedReferences() ??
-            commandQueue.makeCommandBuffer() else {
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             releaseStagingSlot(identifier: slotIdentifier)
             throw MDKVideoToolboxProcessingError.commandBufferUnavailable
         }
