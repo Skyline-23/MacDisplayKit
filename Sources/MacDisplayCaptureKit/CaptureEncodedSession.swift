@@ -437,22 +437,6 @@ private final class MDKEncodedCapturePendingFrameTracker: @unchecked Sendable {
     }
 }
 
-private actor MDKEncodedCaptureActorPendingFrameTracker {
-    private var count = 0
-
-    func tryAcquire(limit: Int) -> Bool {
-        guard count < limit else {
-            return false
-        }
-        count += 1
-        return true
-    }
-
-    func releaseOne() {
-        count = max(count - 1, 0)
-    }
-}
-
 private actor MDKEncodedCaptureLatestFrameMailbox {
     private var latestFrame: MDKCaptureFrame?
 
@@ -495,37 +479,6 @@ private func MDKProcessMailboxAwareSourceFrame(
         }
     } catch {
         pendingFrameTracker.releaseOne()
-        let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-        failureHandler(description)
-    }
-}
-
-private func MDKProcessMailboxAwareActorSourceFrame(
-    _ frame: MDKCaptureFrame,
-    processor: any MDKEncodedCaptureProcessorRuntime,
-    pendingFrameTracker: MDKEncodedCaptureActorPendingFrameTracker,
-    latestFrameMailbox: MDKEncodedCaptureLatestFrameMailbox,
-    failureHandler: @escaping @Sendable (String) -> Void
-) async {
-    do {
-        try processor.process(frame: frame) {
-            Task {
-                if let latestFrame = await latestFrameMailbox.take() {
-                    await MDKProcessMailboxAwareActorSourceFrame(
-                        latestFrame,
-                        processor: processor,
-                        pendingFrameTracker: pendingFrameTracker,
-                        latestFrameMailbox: latestFrameMailbox,
-                        failureHandler: failureHandler
-                    )
-                    return
-                }
-
-                await pendingFrameTracker.releaseOne()
-            }
-        }
-    } catch {
-        await pendingFrameTracker.releaseOne()
         let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
         failureHandler(description)
     }
@@ -1146,9 +1099,6 @@ public actor MDKEncodedCaptureSession {
             configuration.resolvedSkyLightProcessingMode != nil
         )
         let pendingFrameTracker = MDKEncodedCapturePendingFrameTracker()
-        let actorPendingFrameTracker = configuration.codec == .proResProxy
-            ? MDKEncodedCaptureActorPendingFrameTracker()
-            : nil
         let latestFrameMailbox = MDKEncodedCaptureLatestFrameMailbox()
         let sourceCadenceTracker = shouldRecordSourceDiagnostics ? MDKEncodedCaptureSourceCadenceTracker() : nil
         let sourceTimingTracker = shouldRecordSourceDiagnostics ? MDKEncodedCaptureSourceTimingTracker() : nil
@@ -1188,30 +1138,6 @@ public actor MDKEncodedCaptureSession {
 
             sourceCadenceTracker?.record(displayTime: frame.displayTime)
             sourceTimingTracker?.record(frame: frame)
-            if let actorPendingFrameTracker {
-                Task {
-                    guard await actorPendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
-                        let replacedDisplayTime = await latestFrameMailbox.store(frame)
-                        if let replacedDisplayTime {
-                            await self.handleSourceFrameDropped(
-                                sourceDisplayTime: replacedDisplayTime,
-                                runtimeGeneration: currentRuntimeGeneration
-                            )
-                        }
-                        return
-                    }
-
-                    await MDKProcessMailboxAwareActorSourceFrame(
-                        frame,
-                        processor: processor,
-                        pendingFrameTracker: actorPendingFrameTracker,
-                        latestFrameMailbox: latestFrameMailbox,
-                        failureHandler: failureHandler
-                    )
-                }
-                return
-            }
-
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
                     let replacedDisplayTime = await latestFrameMailbox.store(frame)
@@ -1236,9 +1162,6 @@ public actor MDKEncodedCaptureSession {
         self.sourceCadenceTracker = sourceCadenceTracker
         self.sourceTimingTracker = sourceTimingTracker
         runtimeDiagnosticNotes = sourcePreparation.diagnosticNotes
-        if actorPendingFrameTracker != nil {
-            runtimeDiagnosticNotes.append("sourcePendingAdmission=actor-prores")
-        }
         if !shouldRecordSourceDiagnostics {
             runtimeDiagnosticNotes.append("sourceHotPathDiagnostics=disabled")
         }
