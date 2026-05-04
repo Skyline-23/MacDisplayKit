@@ -786,7 +786,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 self.stagingSubmissionGroup.leave()
                 return
             }
-            let metalStageCompletedAt = ProcessInfo.processInfo.systemUptime
+            self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
             self.submissionQueue.async { [self] in
                 do {
                     try submitToEncoder(
@@ -807,7 +807,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 }
                 stagingSubmissionGroup.leave()
             }
-            self.recordTiming(.metalStage, startedAt: metalStageStartedAt, endedAt: metalStageCompletedAt)
         }
         commandBuffer.commit()
     }
