@@ -463,24 +463,53 @@ private func MDKProcessMailboxAwareSourceFrame(
     do {
         try processor.process(frame: frame) {
             Task {
-                if let latestFrame = await latestFrameMailbox.take() {
-                    MDKProcessMailboxAwareSourceFrame(
-                        latestFrame,
-                        processor: processor,
-                        pendingFrameTracker: pendingFrameTracker,
-                        latestFrameMailbox: latestFrameMailbox,
-                        failureHandler: failureHandler
-                    )
-                    return
-                }
-
-                pendingFrameTracker.releaseOne()
+                await MDKDrainMailboxAwareSourceFrames(
+                    processor: processor,
+                    pendingFrameTracker: pendingFrameTracker,
+                    latestFrameMailbox: latestFrameMailbox,
+                    failureHandler: failureHandler
+                )
             }
         }
     } catch {
         pendingFrameTracker.releaseOne()
         let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
         failureHandler(description)
+    }
+}
+
+private func MDKDrainMailboxAwareSourceFrames(
+    processor: any MDKEncodedCaptureProcessorRuntime,
+    pendingFrameTracker: MDKEncodedCapturePendingFrameTracker,
+    latestFrameMailbox: MDKEncodedCaptureLatestFrameMailbox,
+    failureHandler: @escaping @Sendable (String) -> Void
+) async {
+    while let latestFrame = await latestFrameMailbox.take() {
+        do {
+            try await MDKProcessMailboxFrameUntilSourceRelease(latestFrame, processor: processor)
+        } catch {
+            pendingFrameTracker.releaseOne()
+            let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            failureHandler(description)
+            return
+        }
+    }
+
+    pendingFrameTracker.releaseOne()
+}
+
+private func MDKProcessMailboxFrameUntilSourceRelease(
+    _ frame: MDKCaptureFrame,
+    processor: any MDKEncodedCaptureProcessorRuntime
+) async throws {
+    try await withCheckedThrowingContinuation { continuation in
+        do {
+            try processor.process(frame: frame) {
+                continuation.resume()
+            }
+        } catch {
+            continuation.resume(throwing: error)
+        }
     }
 }
 
