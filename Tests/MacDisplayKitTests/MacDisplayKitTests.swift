@@ -311,6 +311,35 @@ final class MacDisplayKitTests: XCTestCase {
         )
     }
 
+    func testProcessorKeepsProResBGRAPassthroughDirectWhenNoCopyIsNeeded() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device is not available on this host.")
+        }
+        let processor = MDKVideoToolboxEncodingProcessor(
+            codec: .proResProxy,
+            targetFrameRate: 120,
+            device: device,
+            hdrConfiguration: nil
+        )
+
+        XCTAssertFalse(
+            processor.shouldUseDetachedSubmissionSurface(
+                sourcePixelFormat: kCVPixelFormatType_32BGRA,
+                targetPixelFormat: kCVPixelFormatType_32BGRA,
+                needsScaling: false,
+                hasCursorOverlay: false
+            )
+        )
+        XCTAssertTrue(
+            processor.shouldUseDetachedSubmissionSurface(
+                sourcePixelFormat: kCVPixelFormatType_32BGRA,
+                targetPixelFormat: kCVPixelFormatType_32BGRA,
+                needsScaling: false,
+                hasCursorOverlay: true
+            )
+        )
+    }
+
     func testAutoEncoderInputStrategyTracksResolvedCaptureBackend() {
         let baseStreamConfiguration = MDKSkyLightDisplayStreamConfiguration(
             queueDepth: 2,
