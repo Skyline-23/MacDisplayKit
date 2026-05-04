@@ -289,10 +289,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.scaler = device.map { MDKMetalBilinearScaler(device: $0) }
         if let device {
             do {
-                self.colorConverter = try MDKMetalBGRAToYCbCrConverter(
-                    device: device,
-                    pipelineCachePolicy: codec == .proResProxy ? .preferShared : .localAndPublish
-                )
+                self.colorConverter = try MDKMetalBGRAToYCbCrConverter(device: device)
                 self.colorConverterInitializationErrorDescription = nil
             } catch {
                 self.colorConverter = nil

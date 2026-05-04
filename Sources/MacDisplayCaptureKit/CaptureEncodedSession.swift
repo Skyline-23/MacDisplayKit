@@ -1093,11 +1093,9 @@ public actor MDKEncodedCaptureSession {
         runtimeGeneration &+= 1
         let currentRuntimeGeneration = runtimeGeneration
         let callbackOnlyDelivery = configuration.deliveryMode == .callbackOnly && callbacks != nil
-        let callbackOnlyHDRDelivery =
-            configuration.resolvedEncodedHDRConfiguration?.transferFunction == .smpteSt2084PQ
         let shouldRecordSourceDiagnostics = !(
+            configuration.codec == .hevc &&
             callbackOnlyDelivery &&
-            callbackOnlyHDRDelivery &&
             configuration.resolvedSkyLightProcessingMode != nil
         )
         let pendingFrameTracker = MDKEncodedCapturePendingFrameTracker()
