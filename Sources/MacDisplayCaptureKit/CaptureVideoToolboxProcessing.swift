@@ -98,6 +98,29 @@ private final class MDKVideoToolboxSendablePixelBuffer: @unchecked Sendable {
     }
 }
 
+private final class MDKVideoToolboxReleaseGate: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.release-gate")
+    private let release: @Sendable () -> Void
+    private var hasReleased = false
+
+    init(_ release: @escaping @Sendable () -> Void) {
+        self.release = release
+    }
+
+    func releaseOnce() {
+        let shouldRelease = queue.sync {
+            guard !hasReleased else {
+                return false
+            }
+            hasReleased = true
+            return true
+        }
+        if shouldRelease {
+            release()
+        }
+    }
+}
+
 private struct MDKVideoToolboxTimingAccumulator {
     var sampleCount: UInt64 = 0
     var totalMilliseconds: Double = 0
@@ -220,6 +243,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let hdrConfiguration: MDKVideoHDRConfiguration?
     private let targetAverageBitRateBitsPerSecond: Int?
     private let tileMetadata: MDKEncodedFrameTileMetadata
+    private let sourceRegion: CGRect?
+    private let releaseSourceFrameAfterOutput: Bool
 
     private var compressionSession: VTCompressionSession?
     private var activeDimensions: SIMD2<Int>?
@@ -278,7 +303,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         failureHandler: (@Sendable (String) -> Void)? = nil,
         hdrConfiguration: MDKVideoHDRConfiguration? = nil,
         targetAverageBitRateBitsPerSecond: Int? = nil,
-        tileMetadata: MDKEncodedFrameTileMetadata = .singleFrame
+        tileMetadata: MDKEncodedFrameTileMetadata = .singleFrame,
+        sourceRegion: CGRect? = nil,
+        releaseSourceFrameAfterOutput: Bool = false
     ) {
         self.codec = codec
         self.preprocessStrategy = preprocessStrategy
@@ -305,6 +332,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.hdrConfiguration = hdrConfiguration?.negotiatedForEncodedDelivery(codec: codec)
         self.targetAverageBitRateBitsPerSecond = targetAverageBitRateBitsPerSecond.flatMap { $0 > 0 ? $0 : nil }
         self.tileMetadata = tileMetadata
+        self.sourceRegion = sourceRegion
+        self.releaseSourceFrameAfterOutput = releaseSourceFrameAfterOutput
         self.encodeQueue.setSpecific(key: encodeQueueSpecificKey, value: encodeQueueSpecificValue)
     }
 
@@ -526,9 +555,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             hdrConfiguration: hdrConfiguration,
             strategy: encoderInputStrategy
         )
+        let region = effectiveSourceRegion(for: frame)
+        let processingWidth = max(Int(region.width.rounded(.down)), 1)
+        let processingHeight = max(Int(region.height.rounded(.down)), 1)
         let outputDimensions = preprocessStrategy.outputDimensions(
-            sourceWidth: frame.width,
-            sourceHeight: frame.height,
+            sourceWidth: processingWidth,
+            sourceHeight: processingHeight,
             pixelFormat: targetPixelFormat
         )
         try ensureCompressionSession(
@@ -538,7 +570,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         )
 
         let needsPixelFormatConversion = frame.pixelFormat != targetPixelFormat
-        let needsScaling = outputDimensions.x != frame.width || outputDimensions.y != frame.height
+        let needsScaling = outputDimensions.x != processingWidth || outputDimensions.y != processingHeight
 
         let hasCursorOverlay = frame.cursorOverlaySample != nil
         let requiresDetachedSubmissionSurface = shouldUseDetachedSubmissionSurface(
@@ -614,14 +646,23 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             throw MDKVideoToolboxProcessingError.surfaceUnavailable
         }
 
+        let releaseGate = MDKVideoToolboxReleaseGate(releaseSourceFrame)
         let imageBuffer = try wrappedPixelBuffer(for: frame, surface: surface)
+        let outputRelease: @Sendable () -> Void
+        if releaseSourceFrameAfterOutput {
+            outputRelease = { releaseGate.releaseOnce() }
+        } else {
+            outputRelease = {}
+        }
         try submitToEncoder(
             imageBuffer: imageBuffer,
             frame: frame,
             slotIdentifier: nil,
-            releasePendingFrame: {}
+            releasePendingFrame: outputRelease
         )
-        releaseSourceFrame()
+        if !releaseSourceFrameAfterOutput {
+            releaseGate.releaseOnce()
+        }
         recordProcessingSuccess(isStaged: false)
     }
 
@@ -648,8 +689,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             device: device
         )
         let outputDimensions = preprocessStrategy.outputDimensions(
-            sourceWidth: frame.width,
-            sourceHeight: frame.height,
+            sourceWidth: max(Int(effectiveSourceRegion(for: frame).width.rounded(.down)), 1),
+            sourceHeight: max(Int(effectiveSourceRegion(for: frame).height.rounded(.down)), 1),
             pixelFormat: targetPixelFormat
         )
         let slot = try acquireStagingSlot(
@@ -660,10 +701,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         )
         let slotIdentifier = slot.identifier
         let stagedPixelBuffer = MDKVideoToolboxSendablePixelBuffer(pixelBuffer: slot.pixelBuffer)
+        let releaseGate = MDKVideoToolboxReleaseGate(releaseSourceFrame)
         let metalStageStartedAt = ProcessInfo.processInfo.systemUptime
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             releaseStagingSlot(identifier: slotIdentifier)
+            releaseGate.releaseOnce()
             throw MDKVideoToolboxProcessingError.commandBufferUnavailable
         }
         let presentationTimeStamp = CMTime(value: frameIndex, timescale: Int32(targetFrameRate))
@@ -693,6 +736,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 sourceTextures: sourceTextures,
                 destinationTextures: slot.textures,
                 destinationPixelFormat: targetPixelFormat,
+                sourceRegion: effectiveSourceRegion(for: frame),
                 hdrConfiguration: hdrConfiguration,
                 cursorTexture: cursorTexture,
                 cursorOverlaySample: frame.cursorOverlaySample
@@ -739,12 +783,25 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
 
             for (sourceTexture, destinationTexture) in zip(sourceTextures, slot.textures) {
-                let copySize = MTLSize(width: sourceTexture.width, height: sourceTexture.height, depth: 1)
+                let sourceRegion = effectiveSourceRegion(for: frame)
+                let copyWidth = min(
+                    destinationTexture.width,
+                    max(Int(sourceRegion.width.rounded(.down)), 1)
+                )
+                let copyHeight = min(
+                    destinationTexture.height,
+                    max(Int(sourceRegion.height.rounded(.down)), 1)
+                )
+                let copySize = MTLSize(width: copyWidth, height: copyHeight, depth: 1)
                 blitEncoder.copy(
                     from: sourceTexture,
                     sourceSlice: 0,
                     sourceLevel: 0,
-                    sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                    sourceOrigin: MTLOrigin(
+                        x: max(Int(sourceRegion.minX.rounded(.down)), 0),
+                        y: max(Int(sourceRegion.minY.rounded(.down)), 0),
+                        z: 0
+                    ),
                     sourceSize: copySize,
                     to: destinationTexture,
                     destinationSlice: 0,
@@ -772,14 +829,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 )
             }
         }
-        commandBuffer.addCompletedHandler { [weak self] commandBuffer in
+        commandBuffer.addCompletedHandler { [weak self, releaseGate] commandBuffer in
             guard let self else {
-                releaseSourceFrame()
+                releaseGate.releaseOnce()
                 return
             }
             let commandBufferStatus = commandBuffer.status
             guard commandBufferStatus == .completed else {
-                releaseSourceFrame()
+                releaseGate.releaseOnce()
                 self.recordProcessingFailure("Metal staged copy failed (\(commandBufferStatus.rawValue)).")
                 self.releaseStagingSlot(identifier: slotIdentifier)
                 self.failureHandler?("Metal staged copy failed (\(commandBufferStatus.rawValue)).")
@@ -789,17 +846,25 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
             self.submissionQueue.async { [self] in
                 do {
+                    let outputRelease: @Sendable () -> Void
+                    if releaseSourceFrameAfterOutput {
+                        outputRelease = { releaseGate.releaseOnce() }
+                    } else {
+                        outputRelease = {}
+                    }
                     try submitToEncoder(
                         imageBuffer: stagedPixelBuffer.pixelBuffer,
                         frame: frame,
                         slotIdentifier: slotIdentifier,
                         presentationTimeStamp: presentationTimeStamp,
-                        releasePendingFrame: {}
+                        releasePendingFrame: outputRelease
                     )
-                    releaseSourceFrame()
+                    if !releaseSourceFrameAfterOutput {
+                        releaseGate.releaseOnce()
+                    }
                     recordProcessingSuccess(isStaged: true)
                 } catch {
-                    releaseSourceFrame()
+                    releaseGate.releaseOnce()
                     let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
                     recordProcessingFailure(errorDescription)
                     releaseStagingSlot(identifier: slotIdentifier)
@@ -809,6 +874,15 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         commandBuffer.commit()
+    }
+
+    private func effectiveSourceRegion(for frame: MDKCaptureFrame) -> CGRect {
+        let fullFrame = CGRect(x: 0, y: 0, width: frame.width, height: frame.height)
+        guard let sourceRegion else {
+            return fullFrame
+        }
+        let boundedRegion = sourceRegion.intersection(fullFrame)
+        return boundedRegion.isNull || boundedRegion.isEmpty ? fullFrame : boundedRegion
     }
 
     private func submitToEncoder(
