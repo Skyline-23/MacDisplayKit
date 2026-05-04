@@ -340,10 +340,9 @@ private final class MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime: MDKEnc
 
     init(
         configuration: MDKEncodedCaptureConfiguration,
-        sourceBackend: MDKEncodedCaptureSourceBackend? = nil,
         frameHandler: @escaping @Sendable (MDKCaptureFrame) -> Void
     ) {
-        self.sourceBackend = sourceBackend ?? configuration.resolvedSourceBackend
+        self.sourceBackend = configuration.resolvedSourceBackend
         let requestExtendedRange = configuration.resolvedEncodedHDRConfiguration.map {
             $0.transferFunction != .ituR709
         } ?? false
@@ -412,50 +411,6 @@ private final class MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime: MDKEnc
 
     func stop() -> Int32 {
         shimSession.stop()
-    }
-}
-
-private final class MDKFallbackEncodedCaptureSourceRuntime: MDKEncodedCaptureSourceRuntime, @unchecked Sendable {
-    private let primary: any MDKEncodedCaptureSourceRuntime
-    private let fallback: any MDKEncodedCaptureSourceRuntime
-    private var active: (any MDKEncodedCaptureSourceRuntime)?
-
-    var runtimeDescription: String {
-        guard let active else {
-            return primary.runtimeDescription
-        }
-
-        if (active as AnyObject) === (primary as AnyObject) {
-            return primary.runtimeDescription
-        }
-
-        return "\(fallback.runtimeDescription)[fallback-from=\(primary.runtimeDescription)]"
-    }
-
-    init(
-        primary: any MDKEncodedCaptureSourceRuntime,
-        fallback: any MDKEncodedCaptureSourceRuntime
-    ) {
-        self.primary = primary
-        self.fallback = fallback
-    }
-
-    func start() throws {
-        do {
-            try primary.start()
-            active = primary
-        } catch {
-            _ = primary.stop()
-            try fallback.start()
-            active = fallback
-        }
-    }
-
-    func stop() -> Int32 {
-        defer {
-            active = nil
-        }
-        return active?.stop() ?? 0
     }
 }
 
@@ -937,19 +892,10 @@ public actor MDKEncodedCaptureSession {
                     frameHandler: frameHandler
                 )
             case .skyLightDisplayStream:
-                let primary = MDKSkyLightEncodedCaptureSourceRuntime(
+                return MDKSkyLightEncodedCaptureSourceRuntime(
                     configuration: configuration,
                     tuningSelection: preparation.skyLightTuningSelection,
                     frameHandler: frameHandler
-                )
-                let fallback = MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime(
-                    configuration: configuration,
-                    sourceBackend: .privateDirectIOSurface,
-                    frameHandler: frameHandler
-                )
-                return MDKFallbackEncodedCaptureSourceRuntime(
-                    primary: primary,
-                    fallback: fallback
                 )
             }
         }
@@ -1232,7 +1178,6 @@ public actor MDKEncodedCaptureSession {
             throw error
         }
 
-        runtimeDiagnosticNotes.append("activeSourceRuntime=\(source.runtimeDescription)")
         runtime = Runtime(source: source, processor: processor)
         statistics = preservedStatistics(
             lastStopStatus: nil,
