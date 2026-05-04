@@ -212,8 +212,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     public let encoderInputStrategy: MDKEncodedCaptureEncoderInputStrategy
     private let device: (any MTLDevice)?
     private let commandQueue: (any MTLCommandQueue)?
-    private let scaler: MDKMetalBilinearScaler?
-    private let colorConverter: MDKMetalBGRAToYCbCrConverter?
+    private var scaler: MDKMetalBilinearScaler?
+    private var colorConverter: MDKMetalBGRAToYCbCrConverter?
     private let maxInflightStagingSlots: Int
     private let outputHandler: (@Sendable (MDKEncodedFrame) -> Void)?
     private let failureHandler: (@Sendable (String) -> Void)?
@@ -250,7 +250,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var sessionConfigurationNotes: [String] = []
     private var directSubmissionFrameCount: UInt64 = 0
     private var stagedSubmissionFrameCount: UInt64 = 0
-    private let colorConverterInitializationErrorDescription: String?
+    private var colorConverterInitializationErrorDescription: String?
     private let outputDrainGroup = DispatchGroup()
     private let stagingSubmissionGroup = DispatchGroup()
     private let encodeQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode")
@@ -286,8 +286,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.encoderInputStrategy = encoderInputStrategy
         self.device = device
         self.commandQueue = device?.makeCommandQueue()
-        self.scaler = device.map { MDKMetalBilinearScaler(device: $0) }
-        if let device {
+        self.scaler = (codec == .proResProxy) ? nil : device.map { MDKMetalBilinearScaler(device: $0) }
+        if let device, codec != .proResProxy {
             do {
                 self.colorConverter = try MDKMetalBGRAToYCbCrConverter(device: device)
                 self.colorConverterInitializationErrorDescription = nil
@@ -295,6 +295,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 self.colorConverter = nil
                 self.colorConverterInitializationErrorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
             }
+        } else if device != nil {
+            self.colorConverter = nil
+            self.colorConverterInitializationErrorDescription = nil
         } else {
             self.colorConverter = nil
             self.colorConverterInitializationErrorDescription = "Metal device unavailable."
@@ -669,16 +672,18 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let presentationTimeStamp = CMTime(value: frameIndex, timescale: Int32(targetFrameRate))
         frameIndex += 1
         stagingSubmissionGroup.enter()
-
-        if frame.pixelFormat != targetPixelFormat {
-            guard let colorConverter else {
+        func loadColorConverter() throws -> MDKMetalBGRAToYCbCrConverter {
+            do {
+                return try ensureColorConverter()
+            } catch {
                 stagingSubmissionGroup.leave()
                 releaseStagingSlot(identifier: slotIdentifier)
-                throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
-                    sourcePixelFormat: frame.pixelFormat,
-                    targetPixelFormat: targetPixelFormat
-                )
+                throw error
             }
+        }
+
+        if frame.pixelFormat != targetPixelFormat {
+            let colorConverter = try loadColorConverter()
             if !sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) {
                 sessionConfigurationNotes.append(
                     String(
@@ -698,7 +703,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 cursorOverlaySample: frame.cursorOverlaySample
             )
         } else if requiresScaling(sourceTextures: sourceTextures, destinationTextures: slot.textures) {
-            guard let scaler else {
+            guard let scaler = ensureScaler() else {
                 stagingSubmissionGroup.leave()
                 releaseStagingSlot(identifier: slotIdentifier)
                 throw MDKVideoToolboxProcessingError.scalerUnavailable
@@ -715,14 +720,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 destinationWidth: outputDimensions.x,
                 destinationHeight: outputDimensions.y
             ), let cursorTexture {
-                guard let colorConverter else {
-                    stagingSubmissionGroup.leave()
-                    releaseStagingSlot(identifier: slotIdentifier)
-                    throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
-                        sourcePixelFormat: frame.pixelFormat,
-                        targetPixelFormat: targetPixelFormat
-                    )
-                }
+                let colorConverter = try loadColorConverter()
                 try colorConverter.overlayCursorOnBGRA(
                     commandBuffer: commandBuffer,
                     destinationTexture: slot.textures[0],
@@ -755,14 +753,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             blitEncoder.endEncoding()
             if let cursorOverlaySample = frame.cursorOverlaySample,
                let cursorTexture {
-                guard let colorConverter else {
-                    stagingSubmissionGroup.leave()
-                    releaseStagingSlot(identifier: slotIdentifier)
-                    throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
-                        sourcePixelFormat: frame.pixelFormat,
-                        targetPixelFormat: targetPixelFormat
-                    )
-                }
+                let colorConverter = try loadColorConverter()
                 try colorConverter.overlayCursorOnBGRA(
                     commandBuffer: commandBuffer,
                     destinationTexture: slot.textures[0],
@@ -809,6 +800,36 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         commandBuffer.commit()
+    }
+
+    private func ensureScaler() -> MDKMetalBilinearScaler? {
+        if let scaler {
+            return scaler
+        }
+        guard let device else {
+            return nil
+        }
+        let scaler = MDKMetalBilinearScaler(device: device)
+        self.scaler = scaler
+        return scaler
+    }
+
+    private func ensureColorConverter() throws -> MDKMetalBGRAToYCbCrConverter {
+        if let colorConverter {
+            return colorConverter
+        }
+        guard let device else {
+            throw MDKVideoToolboxProcessingError.metalDeviceUnavailable
+        }
+        do {
+            let colorConverter = try MDKMetalBGRAToYCbCrConverter(device: device)
+            self.colorConverter = colorConverter
+            colorConverterInitializationErrorDescription = nil
+            return colorConverter
+        } catch {
+            colorConverterInitializationErrorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            throw error
+        }
     }
 
     private func submitToEncoder(
