@@ -745,103 +745,6 @@ private final class MDKEncodedCaptureSourceTimingTracker: @unchecked Sendable {
 
 extension MDKVideoToolboxEncodingProcessor: MDKEncodedCaptureProcessorRuntime {}
 
-private final class MDKTemporalLaneEncodedCaptureProcessor: MDKEncodedCaptureProcessorRuntime, @unchecked Sendable {
-    private let lanes: [MDKVideoToolboxEncodingProcessor]
-    private let laneSelectionQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.encoded-capture.temporal-lanes")
-    private var nextLaneIndex = 0
-
-    init(
-        configuration: MDKEncodedCaptureConfiguration,
-        outputHandler: @escaping @Sendable (MDKEncodedFrame) -> Void,
-        failureHandler: @escaping @Sendable (String) -> Void
-    ) {
-        let laneCount = Int(max(configuration.tileLayout.encodedLaneCount, 1))
-        self.lanes = (0..<laneCount).map { laneIndex in
-            MDKVideoToolboxEncodingProcessor(
-                codec: configuration.codec,
-                preprocessStrategy: configuration.preprocessStrategy,
-                targetFrameRate: configuration.targetFrameRate,
-                encoderInputStrategy: configuration.resolvedEncoderInputStrategy,
-                maxInflightStagingSlots: 128,
-                outputHandler: outputHandler,
-                failureHandler: failureHandler,
-                hdrConfiguration: configuration.resolvedEncodedHDRConfiguration,
-                targetAverageBitRateBitsPerSecond: configuration.targetAverageBitRateBitsPerSecond,
-                tileMetadata: configuration.tileLayout.metadata(
-                    frameGroupID: 0,
-                    encodedLaneIndex: UInt32(laneIndex)
-                )
-            )
-        }
-    }
-
-    func process(
-        frame: MDKCaptureFrame,
-        releaseSourceFrame: @escaping @Sendable () -> Void
-    ) throws {
-        let lane = laneSelectionQueue.sync { () -> MDKVideoToolboxEncodingProcessor in
-            let lane = lanes[nextLaneIndex]
-            nextLaneIndex = (nextLaneIndex + 1) % lanes.count
-            return lane
-        }
-        try lane.process(frame: frame, releaseSourceFrame: releaseSourceFrame)
-    }
-
-    func requestImmediateKeyFrame() {
-        lanes.forEach { $0.requestImmediateKeyFrame() }
-    }
-
-    func finalize() -> MDKCaptureFrameProcessingSummary? {
-        summarize(lanes.compactMap { $0.finalize() })
-    }
-
-    func liveSummary() -> MDKCaptureFrameProcessingSummary? {
-        summarize(lanes.compactMap { $0.liveSummary() })
-    }
-
-    private func summarize(_ summaries: [MDKCaptureFrameProcessingSummary]) -> MDKCaptureFrameProcessingSummary? {
-        guard !summaries.isEmpty else {
-            return nil
-        }
-
-        let outputCallbackCounts = summaries.compactMap(\.outputCallbackCount)
-        let completedOutputFrameCounts = summaries.compactMap(\.completedOutputFrameCount)
-        let minimumLatency = summaries.compactMap(\.minOutputCallbackLatencyMilliseconds).min()
-        let maximumLatency = summaries.compactMap(\.maxOutputCallbackLatencyMilliseconds).max()
-        var notes = ["videoToolboxTemporalLaneCount=\(lanes.count)"]
-        notes += summaries.flatMap(\.notes)
-
-        return MDKCaptureFrameProcessingSummary(
-            processedFrameCount: summaries.reduce(0) { $0 + $1.processedFrameCount },
-            processingFailureCount: summaries.reduce(0) { $0 + $1.processingFailureCount },
-            processingErrorHistogram: mergeHistograms(summaries.map(\.processingErrorHistogram)),
-            outputCallbackCount: outputCallbackCounts.count == summaries.count ? outputCallbackCounts.reduce(0, +) : nil,
-            completedOutputFrameCount: completedOutputFrameCounts.count == summaries.count ? completedOutputFrameCounts.reduce(0, +) : nil,
-            outputCallbackStatusHistogram: mergeOptionalHistograms(summaries.map(\.outputCallbackStatusHistogram)),
-            outputCallbackLatencyHistogram: mergeOptionalHistograms(summaries.map(\.outputCallbackLatencyHistogram)),
-            minOutputCallbackLatencyMilliseconds: minimumLatency,
-            maxOutputCallbackLatencyMilliseconds: maximumLatency,
-            notes: notes
-        )
-    }
-
-    private func mergeHistograms(_ histograms: [[String: Int]]) -> [String: Int] {
-        histograms.reduce(into: [:]) { result, histogram in
-            for (key, value) in histogram {
-                result[key, default: 0] += value
-            }
-        }
-    }
-
-    private func mergeOptionalHistograms(_ histograms: [[String: Int]?]) -> [String: Int]? {
-        let compact = histograms.compactMap { $0 }
-        guard compact.count == histograms.count else {
-            return nil
-        }
-        return mergeHistograms(compact)
-    }
-}
-
 public struct MDKEncodedCaptureSessionStatistics: Codable, Equatable, Sendable {
     public let emittedFrameCount: UInt64
     public let droppedFrameCount: UInt64
@@ -997,13 +900,6 @@ public actor MDKEncodedCaptureSession {
             }
         }
         self.processorFactory = { configuration, outputHandler, failureHandler in
-            if configuration.tileLayout.encodedLaneCount > 1 {
-                return MDKTemporalLaneEncodedCaptureProcessor(
-                    configuration: configuration,
-                    outputHandler: outputHandler,
-                    failureHandler: failureHandler
-                )
-            }
             return MDKVideoToolboxEncodingProcessor(
                 codec: configuration.codec,
                 preprocessStrategy: configuration.preprocessStrategy,
