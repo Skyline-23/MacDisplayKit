@@ -82,6 +82,7 @@ final class MDKMetalBGRAToYCbCrConverter {
     private let device: any MTLDevice
     private let lumaPipeline: any MTLComputePipelineState
     private let chromaPipeline: any MTLComputePipelineState
+    private let combined420Pipeline: any MTLComputePipelineState
     private let bgraCursorOverlayPipeline: any MTLComputePipelineState
     private let transparentCursorTexture: any MTLTexture
 
@@ -97,15 +98,17 @@ final class MDKMetalBGRAToYCbCrConverter {
 
         guard let lumaFunction = library.makeFunction(name: "bgraToYCbCrLuma"),
               let chromaFunction = library.makeFunction(name: "bgraToYCbCrChroma"),
+              let combined420Function = library.makeFunction(name: "bgraToYCbCr420Combined"),
               let bgraCursorOverlayFunction = library.makeFunction(name: "overlayCursorOnBGRA") else {
             throw MDKMetalColorConversionError.functionMissing(
-                "bgraToYCbCrLuma/bgraToYCbCrChroma/overlayCursorOnBGRA"
+                "bgraToYCbCrLuma/bgraToYCbCrChroma/bgraToYCbCr420Combined/overlayCursorOnBGRA"
             )
         }
 
         do {
             lumaPipeline = try device.makeComputePipelineState(function: lumaFunction)
             chromaPipeline = try device.makeComputePipelineState(function: chromaFunction)
+            combined420Pipeline = try device.makeComputePipelineState(function: combined420Function)
             bgraCursorOverlayPipeline = try device.makeComputePipelineState(function: bgraCursorOverlayFunction)
         } catch {
             throw MDKMetalColorConversionError.pipelineCreationFailed(String(describing: error))
@@ -190,6 +193,26 @@ final class MDKMetalBGRAToYCbCrConverter {
             index: 0
         )
 
+        if shouldUseCombined420Kernel(
+            sourceTexture: sourceTextures[0],
+            destinationTextures: destinationTextures,
+            target: target,
+            cursorOverlaySample: cursorOverlaySample
+        ) {
+            computeEncoder.setTexture(sourceTextures[0], index: 0)
+            computeEncoder.setTexture(destinationTextures[0], index: 1)
+            computeEncoder.setTexture(destinationTextures[1], index: 2)
+            computeEncoder.setComputePipelineState(combined420Pipeline)
+            dispatch(
+                encoder: computeEncoder,
+                pipeline: combined420Pipeline,
+                width: destinationTextures[1].width,
+                height: destinationTextures[1].height
+            )
+            computeEncoder.endEncoding()
+            return
+        }
+
         computeEncoder.setTexture(sourceTextures[0], index: 0)
         computeEncoder.setTexture(destinationTextures[0], index: 1)
         computeEncoder.setTexture(cursorTexture ?? transparentCursorTexture, index: 2)
@@ -213,6 +236,26 @@ final class MDKMetalBGRAToYCbCrConverter {
         )
 
         computeEncoder.endEncoding()
+    }
+
+    private func shouldUseCombined420Kernel(
+        sourceTexture: MTLTexture,
+        destinationTextures: [MTLTexture],
+        target: MDKMetalYCbCrTargetDescription,
+        cursorOverlaySample: MDKCursorOverlaySample?
+    ) -> Bool {
+        guard cursorOverlaySample == nil,
+              target.chromaSubsampling == SIMD2<UInt32>(2, 2),
+              destinationTextures.count == 2 else {
+            return false
+        }
+
+        let lumaTexture = destinationTextures[0]
+        let chromaTexture = destinationTextures[1]
+        return lumaTexture.width == sourceTexture.width &&
+            lumaTexture.height == sourceTexture.height &&
+            chromaTexture.width == max(lumaTexture.width / 2, 1) &&
+            chromaTexture.height == max(lumaTexture.height / 2, 1)
     }
 
     func overlayCursorOnBGRA(
@@ -635,6 +678,55 @@ final class MDKMetalBGRAToYCbCrConverter {
             float2(1.0)
         );
         destinationTexture.write(float4(limitedUV.x, limitedUV.y, 0.0, 1.0), gid);
+    }
+
+    kernel void bgraToYCbCr420Combined(
+        texture2d<float, access::sample> sourceTexture [[texture(0)]],
+        texture2d<float, access::write> lumaTexture [[texture(1)]],
+        texture2d<float, access::write> chromaTexture [[texture(2)]],
+        constant ConversionParameters &parameters [[buffer(0)]],
+        uint2 gid [[thread_position_in_grid]]
+    ) {
+        if (gid.x >= chromaTexture.get_width() || gid.y >= chromaTexture.get_height()) {
+            return;
+        }
+
+        constexpr sampler linearSampler(coord::normalized, address::clamp_to_edge, filter::linear);
+        uint2 lumaBase = gid * uint2(2, 2);
+        float2 lumaSize = float2(parameters.destinationLumaSize);
+        float3 chromaRGB = float3(0.0);
+        uint sampleCount = 0;
+
+        for (uint offsetY = 0; offsetY < 2; ++offsetY) {
+            for (uint offsetX = 0; offsetX < 2; ++offsetX) {
+                uint2 lumaGid = lumaBase + uint2(offsetX, offsetY);
+                if (lumaGid.x >= lumaTexture.get_width() || lumaGid.y >= lumaTexture.get_height()) {
+                    continue;
+                }
+
+                float2 normalizedCoordinates = (float2(lumaGid) + float2(0.5)) / lumaSize;
+                float3 rgb = transformRGB(
+                    sampleRGB(sourceTexture, linearSampler, normalizedCoordinates),
+                    parameters
+                );
+                float y = dot(float4(rgb, 1.0), parameters.yCoefficients);
+                float limitedY = clamp((y * parameters.lumaScale) + parameters.lumaOffset, 0.0, 1.0);
+                lumaTexture.write(limitedY, lumaGid);
+
+                chromaRGB += rgb;
+                sampleCount += 1;
+            }
+        }
+
+        chromaRGB *= 1.0 / max(float(sampleCount), 1.0);
+        float cb = dot(float4(chromaRGB, 1.0), parameters.cbCoefficients);
+        float cr = dot(float4(chromaRGB, 1.0), parameters.crCoefficients);
+        float2 limitedUV = clamp(
+            (float2(cb, cr) * parameters.chromaScale) + parameters.chromaOffset,
+            float2(0.0),
+            float2(1.0)
+        );
+        chromaTexture.write(float4(limitedUV.x, limitedUV.y, 0.0, 1.0), gid);
     }
 
     kernel void overlayCursorOnBGRA(
