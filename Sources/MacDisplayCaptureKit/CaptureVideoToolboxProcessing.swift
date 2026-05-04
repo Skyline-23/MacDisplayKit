@@ -237,6 +237,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var processingFailureCount: UInt64 = 0
     private var processingErrorHistogram: [String: Int] = [:]
     private let outputQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.output")
+    private let outputDeliveryQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.output.delivery", qos: .userInteractive)
     private var outputCallbackCount: UInt64 = 0
     private var completedOutputFrameCount: UInt64 = 0
     private var outputCallbackStatusHistogram: [String: Int] = [:]
@@ -1649,7 +1650,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         submissionToken?.markCompleted()
-        outputQueue.async { [self] in
+        let recordOutputStatistics: @Sendable () -> Void = { [self] in
             outputCallbackCount += 1
             outputCallbackStatusHistogram[describe(status: status), default: 0] += 1
 
@@ -1668,12 +1669,18 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             if outputCompleted {
                 completedOutputFrameCount += 1
             }
-            if let encodedFrame, outputCompleted {
-                outputHandler?(encodedFrame)
-            } else if status != noErr {
+            if status != noErr {
                 failureHandler?("VT output callback failed (\(describe(status: status))).")
             }
             outputDrainGroup.leave()
+        }
+        if let encodedFrame, outputCompleted {
+            outputDeliveryQueue.async { [self] in
+                outputHandler?(encodedFrame)
+                outputQueue.async(execute: recordOutputStatistics)
+            }
+        } else {
+            outputQueue.async(execute: recordOutputStatistics)
         }
     }
 
