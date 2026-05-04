@@ -171,32 +171,6 @@ static void *MDKLookupCMCaptureSymbol(const char *symbolName) {
     );
 }
 
-static dispatch_queue_t MDKSkyLightDisplayStreamRetirementQueue(void) {
-    static dispatch_queue_t queue;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        queue = dispatch_queue_create(
-            "com.skyline23.MacDisplayKit.skylight.displaystream.retirement",
-            DISPATCH_QUEUE_SERIAL
-        );
-    });
-    return queue;
-}
-
-static void MDKRetireSkyLightDisplayStream(CGDisplayStreamRef stream) {
-    if (stream == nil) {
-        return;
-    }
-
-    dispatch_after(
-        dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(250 * NSEC_PER_MSEC)),
-        MDKSkyLightDisplayStreamRetirementQueue(),
-        ^{
-            CFRelease(stream);
-        }
-    );
-}
-
 struct MDKDyldInterposeTuple {
     const void *replacement;
     const void *replacee;
@@ -13497,7 +13471,7 @@ static CGRect MDKCreateCursorDrawRect(
         stopStatus = stopSymbol(_stream);
         dispatch_sync(_queue, ^{
         });
-        MDKRetireSkyLightDisplayStream(_stream);
+        CFRelease(_stream);
         _stream = nil;
     }
     _running = NO;
@@ -13698,8 +13672,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
     dispatch_sync(queue, ^{
     });
     const NSTimeInterval elapsed = std::max(CFAbsoluteTimeGetCurrent() - startedAt, 0.0);
-    MDKRetireSkyLightDisplayStream(stream);
-    stream = nil;
+    CFRelease(stream);
 
     NSArray<NSNumber *> *intervals = MDKCreateIntervalMillisecondsFromDisplayTimes(displayTimes);
     NSDictionary<NSString *, NSNumber *> *intervalHistogram = MDKHistogramForMillisecondIntervals(intervals);
