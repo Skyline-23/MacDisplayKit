@@ -484,6 +484,164 @@ private func MDKProcessMailboxAwareSourceFrame(
     }
 }
 
+private final class MDKSourceReleaseCoordinator: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "com.skyline23.MacDisplayKit.encoded-capture.source-release")
+    private let releaseSourceFrame: @Sendable () -> Void
+    private var remainingCount: Int
+
+    init(count: Int, releaseSourceFrame: @escaping @Sendable () -> Void) {
+        self.remainingCount = max(count, 1)
+        self.releaseSourceFrame = releaseSourceFrame
+    }
+
+    func releaseOne() {
+        let shouldRelease = queue.sync {
+            guard self.remainingCount > 0 else {
+                return false
+            }
+            self.remainingCount -= 1
+            return self.remainingCount == 0
+        }
+        if shouldRelease {
+            releaseSourceFrame()
+        }
+    }
+}
+
+private final class MDKSpatialTileEncodedCaptureProcessor: MDKEncodedCaptureProcessorRuntime, @unchecked Sendable {
+    private let lanes: [MDKVideoToolboxEncodingProcessor]
+
+    init(
+        configuration: MDKEncodedCaptureConfiguration,
+        outputHandler: @escaping @Sendable (MDKEncodedFrame) -> Void,
+        failureHandler: @escaping @Sendable (String) -> Void
+    ) {
+        let tileCount = Int(max(configuration.tileLayout.tileCount, 1))
+        let width = configuration.streamConfiguration.resolvedOutputWidth
+        let height = configuration.streamConfiguration.resolvedOutputHeight
+        let regions = Self.verticalTileRegions(width: width, height: height, tileCount: tileCount)
+        self.lanes = regions.enumerated().map { tileIndex, region in
+            MDKVideoToolboxEncodingProcessor(
+                codec: configuration.codec,
+                preprocessStrategy: configuration.preprocessStrategy,
+                targetFrameRate: configuration.targetFrameRate,
+                encoderInputStrategy: configuration.resolvedEncoderInputStrategy,
+                maxInflightStagingSlots: 128,
+                outputHandler: outputHandler,
+                failureHandler: failureHandler,
+                hdrConfiguration: configuration.resolvedEncodedHDRConfiguration,
+                targetAverageBitRateBitsPerSecond: configuration.targetAverageBitRateBitsPerSecond,
+                tileMetadata: configuration.tileLayout.metadata(
+                    frameGroupID: 0,
+                    tileIndex: UInt32(tileIndex),
+                    encodedLaneIndex: UInt32(tileIndex),
+                    tileRegion: region
+                ),
+                sourceRegion: region
+            )
+        }
+    }
+
+    func process(
+        frame: MDKCaptureFrame,
+        releaseSourceFrame: @escaping @Sendable () -> Void
+    ) throws {
+        let releaseCoordinator = MDKSourceReleaseCoordinator(
+            count: lanes.count,
+            releaseSourceFrame: releaseSourceFrame
+        )
+        var scheduledLaneCount = 0
+        do {
+            for lane in lanes {
+                try lane.process(frame: frame) {
+                    releaseCoordinator.releaseOne()
+                }
+                scheduledLaneCount += 1
+            }
+        } catch {
+            for _ in scheduledLaneCount..<lanes.count {
+                releaseCoordinator.releaseOne()
+            }
+            throw error
+        }
+    }
+
+    func requestImmediateKeyFrame() {
+        lanes.forEach { $0.requestImmediateKeyFrame() }
+    }
+
+    func finalize() -> MDKCaptureFrameProcessingSummary? {
+        summarize(lanes.compactMap { $0.finalize() })
+    }
+
+    func liveSummary() -> MDKCaptureFrameProcessingSummary? {
+        summarize(lanes.compactMap { $0.liveSummary() })
+    }
+
+    private func summarize(_ summaries: [MDKCaptureFrameProcessingSummary]) -> MDKCaptureFrameProcessingSummary? {
+        guard !summaries.isEmpty else {
+            return nil
+        }
+
+        let outputCallbackCounts = summaries.compactMap(\.outputCallbackCount)
+        let completedOutputFrameCounts = summaries.compactMap(\.completedOutputFrameCount)
+        var notes = ["videoToolboxSpatialTileCount=\(lanes.count)"]
+        notes += summaries.flatMap(\.notes)
+
+        return MDKCaptureFrameProcessingSummary(
+            processedFrameCount: summaries.reduce(0) { $0 + $1.processedFrameCount },
+            processingFailureCount: summaries.reduce(0) { $0 + $1.processingFailureCount },
+            processingErrorHistogram: mergeHistograms(summaries.map(\.processingErrorHistogram)),
+            outputCallbackCount: outputCallbackCounts.count == summaries.count ? outputCallbackCounts.reduce(0, +) : nil,
+            completedOutputFrameCount: completedOutputFrameCounts.count == summaries.count ? completedOutputFrameCounts.reduce(0, +) : nil,
+            outputCallbackStatusHistogram: mergeOptionalHistograms(summaries.map(\.outputCallbackStatusHistogram)),
+            outputCallbackLatencyHistogram: mergeOptionalHistograms(summaries.map(\.outputCallbackLatencyHistogram)),
+            minOutputCallbackLatencyMilliseconds: summaries.compactMap(\.minOutputCallbackLatencyMilliseconds).min(),
+            maxOutputCallbackLatencyMilliseconds: summaries.compactMap(\.maxOutputCallbackLatencyMilliseconds).max(),
+            notes: notes
+        )
+    }
+
+    private func mergeHistograms(_ histograms: [[String: Int]]) -> [String: Int] {
+        histograms.reduce(into: [:]) { result, histogram in
+            for (key, value) in histogram {
+                result[key, default: 0] += value
+            }
+        }
+    }
+
+    private func mergeOptionalHistograms(_ histograms: [[String: Int]?]) -> [String: Int]? {
+        let compact = histograms.compactMap { $0 }
+        guard compact.count == histograms.count else {
+            return nil
+        }
+        return mergeHistograms(compact)
+    }
+
+    private static func verticalTileRegions(width: Int, height: Int, tileCount: Int) -> [CGRect] {
+        guard tileCount > 1, width > 0, height > 0 else {
+            return [CGRect(x: 0, y: 0, width: width, height: height)]
+        }
+
+        var regions: [CGRect] = []
+        regions.reserveCapacity(tileCount)
+        var y = 0
+        for tileIndex in 0..<tileCount {
+            let remainingTiles = tileCount - tileIndex
+            let remainingHeight = max(height - y, 1)
+            var tileHeight = remainingHeight / remainingTiles
+            if tileIndex < tileCount - 1 {
+                tileHeight = max((tileHeight / 2) * 2, 2)
+            } else {
+                tileHeight = remainingHeight
+            }
+            regions.append(CGRect(x: 0, y: y, width: width, height: tileHeight))
+            y += tileHeight
+        }
+        return regions
+    }
+}
+
 private final class MDKEncodedCaptureSourceCadenceTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var frameCount: UInt64 = 0
@@ -900,6 +1058,13 @@ public actor MDKEncodedCaptureSession {
             }
         }
         self.processorFactory = { configuration, outputHandler, failureHandler in
+            if configuration.tileLayout.tileCount > 1 {
+                return MDKSpatialTileEncodedCaptureProcessor(
+                    configuration: configuration,
+                    outputHandler: outputHandler,
+                    failureHandler: failureHandler
+                )
+            }
             return MDKVideoToolboxEncodingProcessor(
                 codec: configuration.codec,
                 preprocessStrategy: configuration.preprocessStrategy,
