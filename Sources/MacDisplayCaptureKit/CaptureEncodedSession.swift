@@ -246,7 +246,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         frameHandler: @escaping @Sendable (MDKCaptureFrame) -> Void
     ) {
         let replayState = MDKSkyLightEncodedCaptureReplayState()
-        let deliveryQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.encoded-capture.skylight.delivery")
+        let deliveryQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.encoded-capture.skylight.replay-timer")
         let replayIntervalNanoseconds = UInt64(
             max((1.0 / Double(max(configuration.targetFrameRate, 1))) * 1_000_000_000.0, 1_000_000.0)
         )
@@ -275,20 +275,18 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             let captureSurface = frameSurface.map(MDKCaptureSurface.init(ioSurface:))
             let dirtyRects = MDKDecodeCGRectData(reducedDirtyRectData)
             let sourceUpdateDropCount = UInt64(updateDropCount)
-            deliveryQueue.async {
-                Task {
-                    guard let deliveredFrame = await replayState.captureFrame(
-                        status: status,
-                        displayTime: displayTime,
-                        frameSurface: captureSurface,
-                        dirtyRects: dirtyRects,
-                        sourceUpdateDropCount: sourceUpdateDropCount
-                    ) else {
-                        return
-                    }
-
-                    frameHandler(deliveredFrame)
+            Task {
+                guard let deliveredFrame = await replayState.captureFrame(
+                    status: status,
+                    displayTime: displayTime,
+                    frameSurface: captureSurface,
+                    dirtyRects: dirtyRects,
+                    sourceUpdateDropCount: sourceUpdateDropCount
+                ) else {
+                    return
                 }
+
+                frameHandler(deliveredFrame)
             }
         }
     }
