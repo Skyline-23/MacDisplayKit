@@ -98,14 +98,6 @@ private final class MDKVideoToolboxSendablePixelBuffer: @unchecked Sendable {
     }
 }
 
-private final class MDKVideoToolboxSendableCompressionSession: @unchecked Sendable {
-    let compressionSession: VTCompressionSession
-
-    init(compressionSession: VTCompressionSession) {
-        self.compressionSession = compressionSession
-    }
-}
-
 private struct MDKVideoToolboxTimingAccumulator {
     var sampleCount: UInt64 = 0
     var totalMilliseconds: Double = 0
@@ -263,7 +255,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let stagingSubmissionGroup = DispatchGroup()
     private let encodeQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode")
     private let submissionQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.submit")
-    private let lowLatencyDrainQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.low-latency-drain")
     private let encodeQueueSpecificKey = DispatchSpecificKey<UInt8>()
     private let encodeQueueSpecificValue: UInt8 = 1
     private var forceNextKeyFrame = false
@@ -867,18 +858,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             releasePendingFrame()
             throw MDKVideoToolboxProcessingError.encodeFailed(status: status)
         }
-        if shouldDrainLowLatencyFramesAfterSubmission {
-            let drainSession = MDKVideoToolboxSendableCompressionSession(
-                compressionSession: compressionSession
-            )
-            let drainTimeStamp = resolvedPresentationTimeStamp
-            lowLatencyDrainQueue.async {
-                VTCompressionSessionCompleteFrames(
-                    drainSession.compressionSession,
-                    untilPresentationTimeStamp: drainTimeStamp
-                )
-            }
-        }
         if frame.origin == .fresh {
             lastFreshReplayState = MDKVideoToolboxReplayState(
                 imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
@@ -888,11 +867,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         outputQueue.sync {
             submittedFrameCount += 1
         }
-    }
-
-    private var shouldDrainLowLatencyFramesAfterSubmission: Bool {
-        codec == .hevc &&
-            hdrConfiguration?.transferFunction == .smpteSt2084PQ
     }
 
     private func replayLastSubmittedFrameAsKeyFrameIfPossible() {
@@ -1562,7 +1536,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     }
 
     private func invalidateSession() {
-        lowLatencyDrainQueue.sync {}
         if let compressionSession {
             VTCompressionSessionCompleteFrames(compressionSession, untilPresentationTimeStamp: .invalid)
             VTCompressionSessionInvalidate(compressionSession)
