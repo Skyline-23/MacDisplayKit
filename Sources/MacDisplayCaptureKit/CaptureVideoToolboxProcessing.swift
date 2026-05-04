@@ -289,7 +289,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.scaler = device.map { MDKMetalBilinearScaler(device: $0) }
         if let device {
             do {
-                self.colorConverter = try MDKMetalBGRAToYCbCrConverter(device: device)
+                self.colorConverter = try MDKMetalBGRAToYCbCrConverter(
+                    device: device,
+                    pipelineCachePolicy: codec == .proResProxy ? .preferShared : .localAndPublish
+                )
                 self.colorConverterInitializationErrorDescription = nil
             } catch {
                 self.colorConverter = nil
@@ -466,7 +469,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxCodec=\(codec.rawValue)",
             "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
             "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "hybrid-direct-or-metal-staging")",
-            "videoToolboxStagedSourceReleaseMode=post-submit",
+            "videoToolboxStagedSourceReleaseMode=\(codec == .proResProxy ? "post-metal-stage" : "post-submit")",
             "videoToolboxDirectSubmissionFrameCount=\(directSubmissionFrameCount)",
             "videoToolboxStagedSubmissionFrameCount=\(stagedSubmissionFrameCount)",
             "videoToolboxColorConversionMode=\(sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) ? "custom" : "passthrough")",
@@ -787,6 +790,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 return
             }
             self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
+            let shouldReleaseSourceAfterMetalStage = codec == .proResProxy
+            if shouldReleaseSourceAfterMetalStage {
+                releaseSourceFrame()
+            }
             self.submissionQueue.async { [self] in
                 do {
                     try submitToEncoder(
@@ -796,10 +803,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                         presentationTimeStamp: presentationTimeStamp,
                         releasePendingFrame: {}
                     )
-                    releaseSourceFrame()
+                    if !shouldReleaseSourceAfterMetalStage {
+                        releaseSourceFrame()
+                    }
                     recordProcessingSuccess(isStaged: true)
                 } catch {
-                    releaseSourceFrame()
+                    if !shouldReleaseSourceAfterMetalStage {
+                        releaseSourceFrame()
+                    }
                     let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
                     recordProcessingFailure(errorDescription)
                     releaseStagingSlot(identifier: slotIdentifier)
