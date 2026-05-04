@@ -294,7 +294,16 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
     }
 
     func start() throws {
-        try shimSession.start()
+        do {
+            try shimSession.start()
+        } catch {
+            let description = (error as NSError).localizedDescription
+            guard description.contains("SLDisplayStreamCreateWithDispatchQueue returned nil.") else {
+                throw error
+            }
+            Thread.sleep(forTimeInterval: 0.035)
+            try shimSession.start()
+        }
         let timer = DispatchSource.makeTimerSource(queue: deliveryQueue)
         let intervalNanoseconds = min(replayIntervalNanoseconds, UInt64(Int.max))
         let leewayNanoseconds = min(max(intervalNanoseconds / 4, 500_000), UInt64(Int.max))
@@ -1100,7 +1109,7 @@ public actor MDKEncodedCaptureSession {
         )
         let pendingFrameTracker = MDKEncodedCapturePendingFrameTracker()
         let latestFrameMailbox = MDKEncodedCaptureLatestFrameMailbox()
-        let sourceCadenceTracker = shouldRecordSourceDiagnostics ? MDKEncodedCaptureSourceCadenceTracker() : nil
+        let sourceCadenceTracker = MDKEncodedCaptureSourceCadenceTracker()
         let sourceTimingTracker = shouldRecordSourceDiagnostics ? MDKEncodedCaptureSourceTimingTracker() : nil
         let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
         let maximumPendingFrameCount = sourcePreparation.recommendedPendingFrameCount
@@ -1136,7 +1145,7 @@ public actor MDKEncodedCaptureSession {
                 return
             }
 
-            sourceCadenceTracker?.record(displayTime: frame.displayTime)
+            sourceCadenceTracker.record(displayTime: frame.displayTime)
             sourceTimingTracker?.record(frame: frame)
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
@@ -1163,7 +1172,7 @@ public actor MDKEncodedCaptureSession {
         self.sourceTimingTracker = sourceTimingTracker
         runtimeDiagnosticNotes = sourcePreparation.diagnosticNotes
         if !shouldRecordSourceDiagnostics {
-            runtimeDiagnosticNotes.append("sourceHotPathDiagnostics=disabled")
+            runtimeDiagnosticNotes.append("sourceHotPathDiagnostics=cadence-only")
         }
 
         do {
