@@ -285,12 +285,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.targetFrameRate = max(targetFrameRate, 1)
         self.encoderInputStrategy = encoderInputStrategy
         self.device = device
-        self.maxInflightStagingSlots = max(maxInflightStagingSlots, 1)
-        if codec == .proResProxy {
-            self.commandQueue = device?.makeCommandQueue(maxCommandBufferCount: self.maxInflightStagingSlots)
-        } else {
-            self.commandQueue = device?.makeCommandQueue()
-        }
+        self.commandQueue = device?.makeCommandQueue()
         self.scaler = device.map { MDKMetalBilinearScaler(device: $0) }
         if let device {
             do {
@@ -304,6 +299,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             self.colorConverter = nil
             self.colorConverterInitializationErrorDescription = "Metal device unavailable."
         }
+        self.maxInflightStagingSlots = max(maxInflightStagingSlots, 1)
         self.outputHandler = outputHandler
         self.failureHandler = failureHandler
         self.hdrConfiguration = hdrConfiguration?.negotiatedForEncodedDelivery(codec: codec)
@@ -470,7 +466,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxCodec=\(codec.rawValue)",
             "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
             "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "hybrid-direct-or-metal-staging")",
-            "videoToolboxMetalCommandQueueCapacity=\(codec == .proResProxy ? "staging-budget" : "default")",
             "videoToolboxStagedSourceReleaseMode=post-submit",
             "videoToolboxDirectSubmissionFrameCount=\(directSubmissionFrameCount)",
             "videoToolboxStagedSubmissionFrameCount=\(stagedSubmissionFrameCount)",
