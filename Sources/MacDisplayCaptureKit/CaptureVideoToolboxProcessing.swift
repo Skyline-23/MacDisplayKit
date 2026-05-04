@@ -98,6 +98,14 @@ private final class MDKVideoToolboxSendablePixelBuffer: @unchecked Sendable {
     }
 }
 
+private final class MDKVideoToolboxSendableSampleBuffer: @unchecked Sendable {
+    let sampleBuffer: CMSampleBuffer
+
+    init(sampleBuffer: CMSampleBuffer) {
+        self.sampleBuffer = sampleBuffer
+    }
+}
+
 private struct MDKVideoToolboxTimingAccumulator {
     var sampleCount: UInt64 = 0
     var totalMilliseconds: Double = 0
@@ -1605,26 +1613,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let latencyMilliseconds = submissionToken.map {
             max((callbackReceivedAt - $0.submittedAt) * 1000.0, 0)
         }
-        let resolvedSampleBuffer = sampleBuffer.map { sampleBuffer in
-            guard let hdrConfiguration else {
-                return sampleBuffer
-            }
-            let isKeyFrame: Bool
-            if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
-                as? [[CFString: Any]],
-               let firstAttachment = attachments.first {
-                let notSync = firstAttachment[kCMSampleAttachmentKey_NotSync] as? Bool ?? false
-                isKeyFrame = !notSync
-            } else {
-                isKeyFrame = true
-            }
-            return MDKHEVCHDRStaticMetadataTransport.makeAugmentedSampleBufferIfNeeded(
-                sampleBuffer: sampleBuffer,
-                hdrConfiguration: hdrConfiguration,
-                isKeyFrame: isKeyFrame
-            ) ?? sampleBuffer
-        }
         let sourceSequenceNumber = submissionToken?.sourceSequenceNumber ?? 0
+        let sendableSampleBuffer = sampleBuffer.map(MDKVideoToolboxSendableSampleBuffer.init(sampleBuffer:))
         let resolvedTileMetadata = MDKEncodedFrameTileMetadata(
             frameGroupID: tileMetadata.frameGroupID == 0 ? sourceSequenceNumber : tileMetadata.frameGroupID,
             tileIndex: tileMetadata.tileIndex,
@@ -1633,16 +1623,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             encodedLaneCount: tileMetadata.encodedLaneCount,
             tileRegion: tileMetadata.tileRegion
         )
-        let encodedFrame = resolvedSampleBuffer.map {
-            MDKEncodedFrame(
-                sampleBuffer: $0,
-                codec: codec,
-                sourceSequenceNumber: sourceSequenceNumber,
-                sourceDisplayTime: submissionToken?.sourceDisplayTime ?? 0,
-                outputCallbackLatencyMilliseconds: latencyMilliseconds,
-                tileMetadata: resolvedTileMetadata
-            )
-        }
+        let sourceDisplayTime = submissionToken?.sourceDisplayTime ?? 0
         if let slotIdentifier = submissionToken?.slotIdentifier {
             encodeQueue.async { [self] in
                 releaseStagingSlot(identifier: slotIdentifier)
@@ -1668,6 +1649,16 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             if outputCompleted {
                 completedOutputFrameCount += 1
             }
+            let encodedFrame = sendableSampleBuffer.map { wrappedSampleBuffer in
+                MDKEncodedFrame(
+                    sampleBuffer: resolvedOutputSampleBuffer(wrappedSampleBuffer.sampleBuffer),
+                    codec: codec,
+                    sourceSequenceNumber: sourceSequenceNumber,
+                    sourceDisplayTime: sourceDisplayTime,
+                    outputCallbackLatencyMilliseconds: latencyMilliseconds,
+                    tileMetadata: resolvedTileMetadata
+                )
+            }
             if let encodedFrame, outputCompleted {
                 outputHandler?(encodedFrame)
             } else if status != noErr {
@@ -1675,6 +1666,26 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
             outputDrainGroup.leave()
         }
+    }
+
+    private func resolvedOutputSampleBuffer(_ sampleBuffer: CMSampleBuffer) -> CMSampleBuffer {
+        guard let hdrConfiguration else {
+            return sampleBuffer
+        }
+        let isKeyFrame: Bool
+        if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
+            as? [[CFString: Any]],
+           let firstAttachment = attachments.first {
+            let notSync = firstAttachment[kCMSampleAttachmentKey_NotSync] as? Bool ?? false
+            isKeyFrame = !notSync
+        } else {
+            isKeyFrame = true
+        }
+        return MDKHEVCHDRStaticMetadataTransport.makeAugmentedSampleBufferIfNeeded(
+            sampleBuffer: sampleBuffer,
+            hdrConfiguration: hdrConfiguration,
+            isKeyFrame: isKeyFrame
+        ) ?? sampleBuffer
     }
 
     private func describe(status: OSStatus) -> String {
