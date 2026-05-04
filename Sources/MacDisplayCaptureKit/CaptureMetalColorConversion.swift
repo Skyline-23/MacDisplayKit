@@ -78,6 +78,39 @@ private struct MDKMetalYCbCrCoefficientSet {
     let crCoefficients: SIMD4<Float>
 }
 
+enum MDKMetalBGRAToYCbCrPipelineCachePolicy {
+    case local
+    case localAndPublish
+    case preferShared
+}
+
+private struct MDKMetalBGRAToYCbCrPipelineSet {
+    let lumaPipeline: any MTLComputePipelineState
+    let chromaPipeline: any MTLComputePipelineState
+    let bgraCursorOverlayPipeline: any MTLComputePipelineState
+}
+
+private final class MDKMetalBGRAToYCbCrPipelineCache: @unchecked Sendable {
+    static let shared = MDKMetalBGRAToYCbCrPipelineCache()
+
+    private let queue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.metal-ycbcr-pipeline-cache")
+    private var pipelineSetsByDeviceID: [UInt64: MDKMetalBGRAToYCbCrPipelineSet] = [:]
+
+    private init() {}
+
+    func cachedPipelineSet(for device: any MTLDevice) -> MDKMetalBGRAToYCbCrPipelineSet? {
+        queue.sync {
+            pipelineSetsByDeviceID[device.registryID]
+        }
+    }
+
+    func publish(_ pipelineSet: MDKMetalBGRAToYCbCrPipelineSet, for device: any MTLDevice) {
+        queue.sync {
+            pipelineSetsByDeviceID[device.registryID] = pipelineSet
+        }
+    }
+}
+
 final class MDKMetalBGRAToYCbCrConverter {
     private let device: any MTLDevice
     private let lumaPipeline: any MTLComputePipelineState
@@ -85,8 +118,20 @@ final class MDKMetalBGRAToYCbCrConverter {
     private let bgraCursorOverlayPipeline: any MTLComputePipelineState
     private let transparentCursorTexture: any MTLTexture
 
-    init(device: any MTLDevice) throws {
+    init(
+        device: any MTLDevice,
+        cachePolicy: MDKMetalBGRAToYCbCrPipelineCachePolicy = .local
+    ) throws {
         self.device = device
+
+        if cachePolicy == .preferShared,
+           let cachedPipelineSet = MDKMetalBGRAToYCbCrPipelineCache.shared.cachedPipelineSet(for: device) {
+            self.lumaPipeline = cachedPipelineSet.lumaPipeline
+            self.chromaPipeline = cachedPipelineSet.chromaPipeline
+            self.bgraCursorOverlayPipeline = cachedPipelineSet.bgraCursorOverlayPipeline
+            self.transparentCursorTexture = try Self.makeTransparentCursorTexture(device: device)
+            return
+        }
 
         let library: any MTLLibrary
         do {
@@ -111,6 +156,21 @@ final class MDKMetalBGRAToYCbCrConverter {
             throw MDKMetalColorConversionError.pipelineCreationFailed(String(describing: error))
         }
 
+        if cachePolicy == .localAndPublish {
+            MDKMetalBGRAToYCbCrPipelineCache.shared.publish(
+                MDKMetalBGRAToYCbCrPipelineSet(
+                    lumaPipeline: lumaPipeline,
+                    chromaPipeline: chromaPipeline,
+                    bgraCursorOverlayPipeline: bgraCursorOverlayPipeline
+                ),
+                for: device
+            )
+        }
+
+        self.transparentCursorTexture = try Self.makeTransparentCursorTexture(device: device)
+    }
+
+    private static func makeTransparentCursorTexture(device: any MTLDevice) throws -> any MTLTexture {
         let transparentTextureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm,
             width: 1,
@@ -129,7 +189,7 @@ final class MDKMetalBGRAToYCbCrConverter {
             withBytes: &transparentPixel,
             bytesPerRow: MemoryLayout<UInt32>.size
         )
-        self.transparentCursorTexture = transparentCursorTexture
+        return transparentCursorTexture
     }
 
     func encode(
