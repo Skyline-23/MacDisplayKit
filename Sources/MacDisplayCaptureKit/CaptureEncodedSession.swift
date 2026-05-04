@@ -330,6 +330,48 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
     }
 }
 
+private final class MDKAVFoundationEncodedCaptureSourceRuntime: MDKEncodedCaptureSourceRuntime, @unchecked Sendable {
+    private let configuration: MDKEncodedCaptureConfiguration
+    private let frameHandler: @Sendable (MDKCaptureFrame) -> Void
+    private var session: MDKCaptureSession?
+
+    var runtimeDescription: String {
+        "avfoundation-encoded-source"
+    }
+
+    init(
+        configuration: MDKEncodedCaptureConfiguration,
+        frameHandler: @escaping @Sendable (MDKCaptureFrame) -> Void
+    ) {
+        self.configuration = configuration
+        self.frameHandler = frameHandler
+    }
+
+    func start() throws {
+        guard session == nil else {
+            return
+        }
+        let captureConfiguration = MDKCaptureConfiguration(
+            displayID: configuration.displayID,
+            width: configuration.streamConfiguration.resolvedOutputWidth,
+            height: configuration.streamConfiguration.resolvedOutputHeight,
+            frameRate: configuration.targetFrameRate,
+            pixelFormat: configuration.resolvedCapturePixelFormat,
+            backend: .avFoundation,
+            dynamicRangeMode: configuration.resolvedEncodedHDRConfiguration == nil ? .sdr : .hdrLocal
+        )
+        let session = try MDKCaptureSessionFactory.makeSession(configuration: captureConfiguration)
+        try session.start(frameHandler: frameHandler)
+        self.session = session
+    }
+
+    func stop() -> Int32 {
+        session?.stop()
+        session = nil
+        return 0
+    }
+}
+
 private final class MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime: MDKEncodedCaptureSourceRuntime, @unchecked Sendable {
     private let shimSession: MDKShimPrivateDisplayIOSurfaceCaptureSession
     private let sourceBackend: MDKEncodedCaptureSourceBackend
@@ -892,9 +934,8 @@ public actor MDKEncodedCaptureSession {
                     frameHandler: frameHandler
                 )
             case .skyLightDisplayStream:
-                return MDKSkyLightEncodedCaptureSourceRuntime(
+                return MDKAVFoundationEncodedCaptureSourceRuntime(
                     configuration: configuration,
-                    tuningSelection: preparation.skyLightTuningSelection,
                     frameHandler: frameHandler
                 )
             }
