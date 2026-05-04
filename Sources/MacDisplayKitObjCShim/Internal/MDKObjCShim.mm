@@ -171,6 +171,22 @@ static void *MDKLookupCMCaptureSymbol(const char *symbolName) {
     );
 }
 
+static dispatch_queue_t MDKSkyLightDisplayStreamLifecycleQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        queue = dispatch_queue_create(
+            "com.skyline23.MacDisplayKit.skylight.displaystream.lifecycle",
+            DISPATCH_QUEUE_SERIAL
+        );
+    });
+    return queue;
+}
+
+static void MDKSkyLightDisplayStreamLifecycleSync(dispatch_block_t block) {
+    dispatch_sync(MDKSkyLightDisplayStreamLifecycleQueue(), block);
+}
+
 struct MDKDyldInterposeTuple {
     const void *replacement;
     const void *replacee;
@@ -13412,52 +13428,65 @@ static CGRect MDKCreateCursorDrawRect(
         streamProperties.count > 0 ? (__bridge CFDictionaryRef) streamProperties : nil;
 
     __weak MDKShimSkyLightDisplayStreamSession *weakSelf = self;
-    _stream = createSymbol(
-        static_cast<CGDirectDisplayID>(_displayID),
-        width,
-        height,
-        static_cast<int32_t>(_pixelFormat),
-        streamPropertiesRef,
-        _queue,
-        ^(CGDisplayStreamFrameStatus status,
-          uint64_t displayTime,
-          IOSurfaceRef frameSurface,
-          CGDisplayStreamUpdateRef updateRef) {
-            MDKShimSkyLightDisplayStreamSession *strongSelf = weakSelf;
-            if (strongSelf == nil || strongSelf->_frameHandler == nil) {
-                return;
-            }
+    __block BOOL createReturnedNil = NO;
+    __block CGError startStatus = kCGErrorSuccess;
+    MDKSkyLightDisplayStreamLifecycleSync(^{
+        _stream = createSymbol(
+            static_cast<CGDirectDisplayID>(_displayID),
+            width,
+            height,
+            static_cast<int32_t>(_pixelFormat),
+            streamPropertiesRef,
+            _queue,
+            ^(CGDisplayStreamFrameStatus status,
+              uint64_t displayTime,
+              IOSurfaceRef frameSurface,
+              CGDisplayStreamUpdateRef updateRef) {
+                MDKShimSkyLightDisplayStreamSession *strongSelf = weakSelf;
+                if (strongSelf == nil || strongSelf->_frameHandler == nil) {
+                    return;
+                }
 
-            strongSelf->_frameHandler(
-                status,
-                displayTime,
-                frameSurface,
-                MDKCreateReducedDirtyRectData(updateRef),
-                updateRef != nil ? static_cast<NSUInteger>(CGDisplayStreamUpdateGetDropCount(updateRef)) : 0
-            );
+                strongSelf->_frameHandler(
+                    status,
+                    displayTime,
+                    frameSurface,
+                    MDKCreateReducedDirtyRectData(updateRef),
+                    updateRef != nil ? static_cast<NSUInteger>(CGDisplayStreamUpdateGetDropCount(updateRef)) : 0
+                );
+            }
+        );
+        if (_stream == nil) {
+            createReturnedNil = YES;
+            return;
         }
-    );
+        startStatus = startSymbol(_stream);
+        if (startStatus != kCGErrorSuccess) {
+            CFRelease(_stream);
+            _stream = nil;
+        }
+    });
     if (_stream == nil) {
         if (error != nullptr) {
-            *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
-                                         code:3
-                                     userInfo:@{
-                                         NSLocalizedDescriptionKey: @"SLDisplayStreamCreateWithDispatchQueue returned nil."
-                                     }];
+            if (createReturnedNil) {
+                *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
+                                             code:3
+                                         userInfo:@{
+                                             NSLocalizedDescriptionKey: @"SLDisplayStreamCreateWithDispatchQueue returned nil."
+                                         }];
+            } else {
+                *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
+                                             code:startStatus
+                                         userInfo:@{
+                                             NSLocalizedDescriptionKey: @"SLDisplayStreamStart returned a non-zero status."
+                                         }];
+            }
         }
         return NO;
     }
 
-    const CGError startStatus = startSymbol(_stream);
-    _running = (startStatus == kCGErrorSuccess);
-    if (!_running && error != nullptr) {
-        *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
-                                     code:startStatus
-                                 userInfo:@{
-                                     NSLocalizedDescriptionKey: @"SLDisplayStreamStart returned a non-zero status."
-                                 }];
-    }
-    return _running;
+    _running = YES;
+    return YES;
 }
 
 - (int32_t)stop {
@@ -13466,14 +13495,16 @@ static CGRect MDKCreateCursorDrawRect(
         MDKLookupCaptureSymbol("SLDisplayStreamStop")
     );
 
-    CGError stopStatus = kCGErrorSuccess;
-    if (_stream != nil && stopSymbol != nullptr) {
-        stopStatus = stopSymbol(_stream);
-        dispatch_sync(_queue, ^{
-        });
-        CFRelease(_stream);
-        _stream = nil;
-    }
+    __block CGError stopStatus = kCGErrorSuccess;
+    MDKSkyLightDisplayStreamLifecycleSync(^{
+        if (_stream != nil && stopSymbol != nullptr) {
+            stopStatus = stopSymbol(_stream);
+            dispatch_sync(_queue, ^{
+            });
+            CFRelease(_stream);
+            _stream = nil;
+        }
+    });
     _running = NO;
     return stopStatus;
 }
@@ -13578,81 +13609,84 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
         ? static_cast<OSType>(pixelFormat)
         : kCVPixelFormatType_32BGRA;
 
-    CGDisplayStreamRef stream = createSymbol(
-        static_cast<CGDirectDisplayID>(displayID),
-        width,
-        height,
-        static_cast<int32_t>(requestedPixelFormat),
-        streamPropertiesRef,
-        queue,
-        ^(CGDisplayStreamFrameStatus status,
-          uint64_t displayTime,
-          IOSurfaceRef frameSurface,
-          CGDisplayStreamUpdateRef updateRef) {
-            callbackCount += 1;
-            NSString *statusName = MDKDescribeDisplayStreamFrameStatus(status);
-            frameStatusHistogram[statusName] = @([frameStatusHistogram[statusName] integerValue] + 1);
+    __block CGDisplayStreamRef stream = nil;
+    MDKSkyLightDisplayStreamLifecycleSync(^{
+        stream = createSymbol(
+            static_cast<CGDirectDisplayID>(displayID),
+            width,
+            height,
+            static_cast<int32_t>(requestedPixelFormat),
+            streamPropertiesRef,
+            queue,
+            ^(CGDisplayStreamFrameStatus status,
+              uint64_t displayTime,
+              IOSurfaceRef frameSurface,
+              CGDisplayStreamUpdateRef updateRef) {
+                callbackCount += 1;
+                NSString *statusName = MDKDescribeDisplayStreamFrameStatus(status);
+                frameStatusHistogram[statusName] = @([frameStatusHistogram[statusName] integerValue] + 1);
 
-            if (status != kCGDisplayStreamFrameStatusFrameComplete || frameSurface == nil) {
-                return;
-            }
-
-            completeFrameCount += 1;
-            sawSurface = YES;
-            if (surfaceWidth == 0) {
-                surfaceWidth = IOSurfaceGetWidth(frameSurface);
-            }
-            if (surfaceHeight == 0) {
-                surfaceHeight = IOSurfaceGetHeight(frameSurface);
-            }
-            if (surfacePixelFormat == 0) {
-                surfacePixelFormat = IOSurfaceGetPixelFormat(frameSurface);
-            }
-            if (updateRef != nil) {
-                size_t reducedDirtyRectCount = 0;
-                const CGRect *reducedDirtyRects = CGDisplayStreamUpdateGetRects(
-                    updateRef,
-                    kCGDisplayStreamUpdateReducedDirtyRects,
-                    &reducedDirtyRectCount
-                );
-                const CGRect frameBounds = CGRectMake(
-                    0.0,
-                    0.0,
-                    static_cast<CGFloat>(width),
-                    static_cast<CGFloat>(height)
-                );
-                double coveredArea = 0.0;
-                for (size_t rectIndex = 0; rectIndex < reducedDirtyRectCount; rectIndex += 1) {
-                    CGRect clippedRect = CGRectIntersection(reducedDirtyRects[rectIndex], frameBounds);
-                    if (CGRectIsNull(clippedRect) || CGRectIsEmpty(clippedRect)) {
-                        continue;
-                    }
-                    coveredArea += static_cast<double>(clippedRect.size.width) *
-                        static_cast<double>(clippedRect.size.height);
+                if (status != kCGDisplayStreamFrameStatusFrameComplete || frameSurface == nil) {
+                    return;
                 }
-                const double frameArea = std::max(
-                    static_cast<double>(width) * static_cast<double>(height),
-                    1.0
-                );
-                const double reducedDirtyCoverageRatio = std::min(coveredArea / frameArea, 1.0);
-                reducedDirtySampleCount += 1;
-                reducedDirtyCoverageRatioSum += reducedDirtyCoverageRatio;
-                reducedDirtyCoverageRatioMax = std::max(reducedDirtyCoverageRatioMax, reducedDirtyCoverageRatio);
-                reducedDirtyRectCountSum += reducedDirtyRectCount;
-                reducedDirtyRectCountMax = std::max<std::uint64_t>(
-                    reducedDirtyRectCountMax,
-                    static_cast<std::uint64_t>(reducedDirtyRectCount)
-                );
 
-                const std::uint64_t droppedFrames = static_cast<std::uint64_t>(
-                    CGDisplayStreamUpdateGetDropCount(updateRef)
-                );
-                dropCountSum += droppedFrames;
-                dropCountMax = std::max(dropCountMax, droppedFrames);
+                completeFrameCount += 1;
+                sawSurface = YES;
+                if (surfaceWidth == 0) {
+                    surfaceWidth = IOSurfaceGetWidth(frameSurface);
+                }
+                if (surfaceHeight == 0) {
+                    surfaceHeight = IOSurfaceGetHeight(frameSurface);
+                }
+                if (surfacePixelFormat == 0) {
+                    surfacePixelFormat = IOSurfaceGetPixelFormat(frameSurface);
+                }
+                if (updateRef != nil) {
+                    size_t reducedDirtyRectCount = 0;
+                    const CGRect *reducedDirtyRects = CGDisplayStreamUpdateGetRects(
+                        updateRef,
+                        kCGDisplayStreamUpdateReducedDirtyRects,
+                        &reducedDirtyRectCount
+                    );
+                    const CGRect frameBounds = CGRectMake(
+                        0.0,
+                        0.0,
+                        static_cast<CGFloat>(width),
+                        static_cast<CGFloat>(height)
+                    );
+                    double coveredArea = 0.0;
+                    for (size_t rectIndex = 0; rectIndex < reducedDirtyRectCount; rectIndex += 1) {
+                        CGRect clippedRect = CGRectIntersection(reducedDirtyRects[rectIndex], frameBounds);
+                        if (CGRectIsNull(clippedRect) || CGRectIsEmpty(clippedRect)) {
+                            continue;
+                        }
+                        coveredArea += static_cast<double>(clippedRect.size.width) *
+                            static_cast<double>(clippedRect.size.height);
+                    }
+                    const double frameArea = std::max(
+                        static_cast<double>(width) * static_cast<double>(height),
+                        1.0
+                    );
+                    const double reducedDirtyCoverageRatio = std::min(coveredArea / frameArea, 1.0);
+                    reducedDirtySampleCount += 1;
+                    reducedDirtyCoverageRatioSum += reducedDirtyCoverageRatio;
+                    reducedDirtyCoverageRatioMax = std::max(reducedDirtyCoverageRatioMax, reducedDirtyCoverageRatio);
+                    reducedDirtyRectCountSum += reducedDirtyRectCount;
+                    reducedDirtyRectCountMax = std::max<std::uint64_t>(
+                        reducedDirtyRectCountMax,
+                        static_cast<std::uint64_t>(reducedDirtyRectCount)
+                    );
+
+                    const std::uint64_t droppedFrames = static_cast<std::uint64_t>(
+                        CGDisplayStreamUpdateGetDropCount(updateRef)
+                    );
+                    dropCountSum += droppedFrames;
+                    dropCountMax = std::max(dropCountMax, droppedFrames);
+                }
+                [displayTimes addObject:@(displayTime)];
             }
-            [displayTimes addObject:@(displayTime)];
-        }
-    );
+        );
+    });
     if (stream == nil) {
         if (error != nullptr) {
             *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
@@ -13665,14 +13699,21 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
     }
 
     const CFAbsoluteTime startedAt = CFAbsoluteTimeGetCurrent();
-    const CGError startStatus = startSymbol(stream);
+    __block CGError startStatus = kCGErrorSuccess;
+    MDKSkyLightDisplayStreamLifecycleSync(^{
+        startStatus = startSymbol(stream);
+    });
     const NSTimeInterval targetDuration = std::max(sampleDuration, 0.001);
     [NSThread sleepForTimeInterval:targetDuration];
-    const CGError stopStatus = stopSymbol(stream);
-    dispatch_sync(queue, ^{
+    __block CGError stopStatus = kCGErrorSuccess;
+    MDKSkyLightDisplayStreamLifecycleSync(^{
+        stopStatus = stopSymbol(stream);
+        dispatch_sync(queue, ^{
+        });
+        CFRelease(stream);
+        stream = nil;
     });
     const NSTimeInterval elapsed = std::max(CFAbsoluteTimeGetCurrent() - startedAt, 0.0);
-    CFRelease(stream);
 
     NSArray<NSNumber *> *intervals = MDKCreateIntervalMillisecondsFromDisplayTimes(displayTimes);
     NSDictionary<NSString *, NSNumber *> *intervalHistogram = MDKHistogramForMillisecondIntervals(intervals);
