@@ -237,7 +237,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var processingFailureCount: UInt64 = 0
     private var processingErrorHistogram: [String: Int] = [:]
     private let outputQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.output")
-    private let outputDeliveryQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.output-delivery")
     private var outputCallbackCount: UInt64 = 0
     private var completedOutputFrameCount: UInt64 = 0
     private var outputCallbackStatusHistogram: [String: Int] = [:]
@@ -290,10 +289,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.scaler = device.map { MDKMetalBilinearScaler(device: $0) }
         if let device {
             do {
-                self.colorConverter = try MDKMetalBGRAToYCbCrConverter(
-                    device: device,
-                    cachePolicy: Self.colorConverterCachePolicy(for: codec)
-                )
+                self.colorConverter = try MDKMetalBGRAToYCbCrConverter(device: device)
                 self.colorConverterInitializationErrorDescription = nil
             } catch {
                 self.colorConverter = nil
@@ -310,19 +306,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.targetAverageBitRateBitsPerSecond = targetAverageBitRateBitsPerSecond.flatMap { $0 > 0 ? $0 : nil }
         self.tileMetadata = tileMetadata
         self.encodeQueue.setSpecific(key: encodeQueueSpecificKey, value: encodeQueueSpecificValue)
-    }
-
-    private static func colorConverterCachePolicy(
-        for codec: MDKVideoEncoderCodec
-    ) -> MDKMetalBGRAToYCbCrPipelineCachePolicy {
-        switch codec {
-        case .hevc:
-            return .localAndPublish
-        case .proResProxy:
-            return .preferShared
-        case .h264:
-            return .local
-        }
     }
 
     deinit {
@@ -480,7 +463,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         var notes = [
             "videoToolboxSubmitMode=sync-submit-queue",
             "videoToolboxOutputCallback=non-nil",
-            "videoToolboxOutputDeliveryMode=\(shouldDecoupleOutputDelivery ? "codec-decoupled" : "stats-queue")",
             "videoToolboxCodec=\(codec.rawValue)",
             "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
             "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "hybrid-direct-or-metal-staging")",
@@ -1667,11 +1649,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         submissionToken?.markCompleted()
-        if shouldDecoupleOutputDelivery, let encodedFrame, outputCompleted {
-            outputDeliveryQueue.async { [outputHandler] in
-                outputHandler?(encodedFrame)
-            }
-        }
         outputQueue.async { [self] in
             outputCallbackCount += 1
             outputCallbackStatusHistogram[describe(status: status), default: 0] += 1
@@ -1691,17 +1668,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             if outputCompleted {
                 completedOutputFrameCount += 1
             }
-            if let encodedFrame, outputCompleted, !shouldDecoupleOutputDelivery {
+            if let encodedFrame, outputCompleted {
                 outputHandler?(encodedFrame)
             } else if status != noErr {
                 failureHandler?("VT output callback failed (\(describe(status: status))).")
             }
             outputDrainGroup.leave()
         }
-    }
-
-    private var shouldDecoupleOutputDelivery: Bool {
-        codec == .proResProxy
     }
 
     private func describe(status: OSStatus) -> String {
