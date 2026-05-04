@@ -340,9 +340,10 @@ private final class MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime: MDKEnc
 
     init(
         configuration: MDKEncodedCaptureConfiguration,
+        sourceBackend: MDKEncodedCaptureSourceBackend? = nil,
         frameHandler: @escaping @Sendable (MDKCaptureFrame) -> Void
     ) {
-        self.sourceBackend = configuration.resolvedSourceBackend
+        self.sourceBackend = sourceBackend ?? configuration.resolvedSourceBackend
         let requestExtendedRange = configuration.resolvedEncodedHDRConfiguration.map {
             $0.transferFunction != .ituR709
         } ?? false
@@ -411,6 +412,42 @@ private final class MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime: MDKEnc
 
     func stop() -> Int32 {
         shimSession.stop()
+    }
+}
+
+private final class MDKFallbackEncodedCaptureSourceRuntime: MDKEncodedCaptureSourceRuntime, @unchecked Sendable {
+    private let primary: any MDKEncodedCaptureSourceRuntime
+    private let fallback: any MDKEncodedCaptureSourceRuntime
+    private var activeSource: (any MDKEncodedCaptureSourceRuntime)?
+
+    var runtimeDescription: String {
+        if let activeSource {
+            return activeSource.runtimeDescription
+        }
+        return "\(primary.runtimeDescription)[fallback=\(fallback.runtimeDescription)]"
+    }
+
+    init(
+        primary: any MDKEncodedCaptureSourceRuntime,
+        fallback: any MDKEncodedCaptureSourceRuntime
+    ) {
+        self.primary = primary
+        self.fallback = fallback
+    }
+
+    func start() throws {
+        do {
+            try primary.start()
+            activeSource = primary
+        } catch {
+            _ = primary.stop()
+            try fallback.start()
+            activeSource = fallback
+        }
+    }
+
+    func stop() -> Int32 {
+        activeSource?.stop() ?? 0
     }
 }
 
@@ -892,10 +929,22 @@ public actor MDKEncodedCaptureSession {
                     frameHandler: frameHandler
                 )
             case .skyLightDisplayStream:
-                return MDKSkyLightEncodedCaptureSourceRuntime(
+                let skyLightSource = MDKSkyLightEncodedCaptureSourceRuntime(
                     configuration: configuration,
                     tuningSelection: preparation.skyLightTuningSelection,
                     frameHandler: frameHandler
+                )
+                guard configuration.codec == .proResProxy else {
+                    return skyLightSource
+                }
+                let fallbackSource = MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime(
+                    configuration: configuration,
+                    sourceBackend: .privateDirectIOSurface,
+                    frameHandler: frameHandler
+                )
+                return MDKFallbackEncodedCaptureSourceRuntime(
+                    primary: skyLightSource,
+                    fallback: fallbackSource
                 )
             }
         }
