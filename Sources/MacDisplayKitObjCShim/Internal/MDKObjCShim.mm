@@ -12692,6 +12692,48 @@ static BOOL MDKPopulateSkyLightDisplayStreamProperties(
     return propertyCount > 0;
 }
 
+static BOOL MDKWarmUpReplayBackedDisplayStream(
+    NSUInteger displayID,
+    size_t width,
+    size_t height,
+    OSType pixelFormat
+) {
+    if (width == 0 || height == 0) {
+        return NO;
+    }
+
+    dispatch_queue_t queue = dispatch_queue_create(
+        "com.skyline23.MacDisplayKit.cgdisplaystream.raw-warmup",
+        DISPATCH_QUEUE_SERIAL
+    );
+    CGDisplayStreamRef stream = CGDisplayStreamCreateWithDispatchQueue(
+        static_cast<CGDirectDisplayID>(displayID),
+        width,
+        height,
+        static_cast<int32_t>(pixelFormat),
+        nil,
+        queue,
+        ^(__unused CGDisplayStreamFrameStatus status,
+          __unused uint64_t displayTime,
+          __unused IOSurfaceRef frameSurface,
+          __unused CGDisplayStreamUpdateRef updateRef) {
+        }
+    );
+    if (stream == nil) {
+        return NO;
+    }
+
+    const CGError startStatus = CGDisplayStreamStart(stream);
+    if (startStatus == kCGErrorSuccess) {
+        [NSThread sleepForTimeInterval:0.035];
+        CGDisplayStreamStop(stream);
+        dispatch_sync(queue, ^{
+        });
+    }
+    CFRelease(stream);
+    return startStatus == kCGErrorSuccess;
+}
+
 static CGImageRef _Nullable MDKCopyCurrentSystemCursorImage(CGPoint * _Nullable hotSpotOut, CGSize * _Nullable logicalSizeOut) {
     __block CGImageRef cursorImage = nil;
     __block CGPoint hotSpot = CGPointZero;
@@ -13412,13 +13454,7 @@ static CGRect MDKCreateCursorDrawRect(
         streamProperties.count > 0 ? (__bridge CFDictionaryRef) streamProperties : nil;
 
     __weak MDKShimSkyLightDisplayStreamSession *weakSelf = self;
-    _stream = createSymbol(
-        static_cast<CGDirectDisplayID>(_displayID),
-        width,
-        height,
-        static_cast<int32_t>(_pixelFormat),
-        streamPropertiesRef,
-        _queue,
+    CGDisplayStreamFrameAvailableHandler frameHandler =
         ^(CGDisplayStreamFrameStatus status,
           uint64_t displayTime,
           IOSurfaceRef frameSurface,
@@ -13435,8 +13471,28 @@ static CGRect MDKCreateCursorDrawRect(
                 MDKCreateReducedDirtyRectData(updateRef),
                 updateRef != nil ? static_cast<NSUInteger>(CGDisplayStreamUpdateGetDropCount(updateRef)) : 0
             );
-        }
+        };
+    _stream = createSymbol(
+        static_cast<CGDirectDisplayID>(_displayID),
+        width,
+        height,
+        static_cast<int32_t>(_pixelFormat),
+        streamPropertiesRef,
+        _queue,
+        frameHandler
     );
+    if (_stream == nil &&
+        MDKWarmUpReplayBackedDisplayStream(_displayID, width, height, static_cast<OSType>(_pixelFormat))) {
+        _stream = createSymbol(
+            static_cast<CGDirectDisplayID>(_displayID),
+            width,
+            height,
+            static_cast<int32_t>(_pixelFormat),
+            streamPropertiesRef,
+            _queue,
+            frameHandler
+        );
+    }
     if (_stream == nil) {
         if (error != nullptr) {
             *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
@@ -13578,13 +13634,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
         ? static_cast<OSType>(pixelFormat)
         : kCVPixelFormatType_32BGRA;
 
-    CGDisplayStreamRef stream = createSymbol(
-        static_cast<CGDirectDisplayID>(displayID),
-        width,
-        height,
-        static_cast<int32_t>(requestedPixelFormat),
-        streamPropertiesRef,
-        queue,
+    CGDisplayStreamFrameAvailableHandler frameHandler =
         ^(CGDisplayStreamFrameStatus status,
           uint64_t displayTime,
           IOSurfaceRef frameSurface,
@@ -13651,8 +13701,28 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
                 dropCountMax = std::max(dropCountMax, droppedFrames);
             }
             [displayTimes addObject:@(displayTime)];
-        }
+        };
+    CGDisplayStreamRef stream = createSymbol(
+        static_cast<CGDirectDisplayID>(displayID),
+        width,
+        height,
+        static_cast<int32_t>(requestedPixelFormat),
+        streamPropertiesRef,
+        queue,
+        frameHandler
     );
+    if (stream == nil &&
+        MDKWarmUpReplayBackedDisplayStream(displayID, width, height, requestedPixelFormat)) {
+        stream = createSymbol(
+            static_cast<CGDirectDisplayID>(displayID),
+            width,
+            height,
+            static_cast<int32_t>(requestedPixelFormat),
+            streamPropertiesRef,
+            queue,
+            frameHandler
+        );
+    }
     if (stream == nil) {
         if (error != nullptr) {
             *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
