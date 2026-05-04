@@ -213,7 +213,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let device: (any MTLDevice)?
     private let commandQueue: (any MTLCommandQueue)?
     private let scaler: MDKMetalBilinearScaler?
-    private let colorConverter: MDKMetalBGRAToYCbCrConverter?
+    private var colorConverter: MDKMetalBGRAToYCbCrConverter?
+    private let colorConverterCachePolicy: MDKMetalBGRAToYCbCrPipelineCachePolicy
     private let maxInflightStagingSlots: Int
     private let outputHandler: (@Sendable (MDKEncodedFrame) -> Void)?
     private let failureHandler: (@Sendable (String) -> Void)?
@@ -250,7 +251,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var sessionConfigurationNotes: [String] = []
     private var directSubmissionFrameCount: UInt64 = 0
     private var stagedSubmissionFrameCount: UInt64 = 0
-    private let colorConverterInitializationErrorDescription: String?
+    private var colorConverterInitializationErrorDescription: String?
     private let outputDrainGroup = DispatchGroup()
     private let stagingSubmissionGroup = DispatchGroup()
     private let encodeQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode")
@@ -287,9 +288,23 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.device = device
         self.commandQueue = device?.makeCommandQueue()
         self.scaler = device.map { MDKMetalBilinearScaler(device: $0) }
-        if let device {
+        self.colorConverterCachePolicy = switch codec {
+        case .hevc:
+            .localAndPublish
+        case .proResProxy:
+            .preferShared
+        case .h264:
+            .local
+        }
+        if codec == .proResProxy {
+            self.colorConverter = nil
+            self.colorConverterInitializationErrorDescription = nil
+        } else if let device {
             do {
-                self.colorConverter = try MDKMetalBGRAToYCbCrConverter(device: device)
+                self.colorConverter = try MDKMetalBGRAToYCbCrConverter(
+                    device: device,
+                    cachePolicy: colorConverterCachePolicy
+                )
                 self.colorConverterInitializationErrorDescription = nil
             } catch {
                 self.colorConverter = nil
@@ -671,13 +686,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         stagingSubmissionGroup.enter()
 
         if frame.pixelFormat != targetPixelFormat {
-            guard let colorConverter else {
+            let colorConverter: MDKMetalBGRAToYCbCrConverter
+            do {
+                colorConverter = try ensureColorConverter()
+            } catch {
                 stagingSubmissionGroup.leave()
                 releaseStagingSlot(identifier: slotIdentifier)
-                throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
-                    sourcePixelFormat: frame.pixelFormat,
-                    targetPixelFormat: targetPixelFormat
-                )
+                throw error
             }
             if !sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) {
                 sessionConfigurationNotes.append(
@@ -715,13 +730,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 destinationWidth: outputDimensions.x,
                 destinationHeight: outputDimensions.y
             ), let cursorTexture {
-                guard let colorConverter else {
+                let colorConverter: MDKMetalBGRAToYCbCrConverter
+                do {
+                    colorConverter = try ensureColorConverter()
+                } catch {
                     stagingSubmissionGroup.leave()
                     releaseStagingSlot(identifier: slotIdentifier)
-                    throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
-                        sourcePixelFormat: frame.pixelFormat,
-                        targetPixelFormat: targetPixelFormat
-                    )
+                    throw error
                 }
                 try colorConverter.overlayCursorOnBGRA(
                     commandBuffer: commandBuffer,
@@ -755,13 +770,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             blitEncoder.endEncoding()
             if let cursorOverlaySample = frame.cursorOverlaySample,
                let cursorTexture {
-                guard let colorConverter else {
+                let colorConverter: MDKMetalBGRAToYCbCrConverter
+                do {
+                    colorConverter = try ensureColorConverter()
+                } catch {
                     stagingSubmissionGroup.leave()
                     releaseStagingSlot(identifier: slotIdentifier)
-                    throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
-                        sourcePixelFormat: frame.pixelFormat,
-                        targetPixelFormat: targetPixelFormat
-                    )
+                    throw error
                 }
                 try colorConverter.overlayCursorOnBGRA(
                     commandBuffer: commandBuffer,
@@ -809,6 +824,27 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         commandBuffer.commit()
+    }
+
+    private func ensureColorConverter() throws -> MDKMetalBGRAToYCbCrConverter {
+        if let colorConverter {
+            return colorConverter
+        }
+        guard let device else {
+            throw MDKVideoToolboxProcessingError.metalDeviceUnavailable
+        }
+        do {
+            let converter = try MDKMetalBGRAToYCbCrConverter(
+                device: device,
+                cachePolicy: colorConverterCachePolicy
+            )
+            colorConverter = converter
+            colorConverterInitializationErrorDescription = nil
+            return converter
+        } catch {
+            colorConverterInitializationErrorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            throw error
+        }
     }
 
     private func submitToEncoder(
