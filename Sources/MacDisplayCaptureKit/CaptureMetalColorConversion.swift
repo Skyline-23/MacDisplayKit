@@ -78,6 +78,66 @@ private struct MDKMetalYCbCrCoefficientSet {
     let crCoefficients: SIMD4<Float>
 }
 
+private final class MDKMetalBGRAToYCbCrConverterPipelines {
+    let luma: any MTLComputePipelineState
+    let chroma: any MTLComputePipelineState
+    let bgraCursorOverlay: any MTLComputePipelineState
+
+    init(
+        luma: any MTLComputePipelineState,
+        chroma: any MTLComputePipelineState,
+        bgraCursorOverlay: any MTLComputePipelineState
+    ) {
+        self.luma = luma
+        self.chroma = chroma
+        self.bgraCursorOverlay = bgraCursorOverlay
+    }
+}
+
+private enum MDKMetalBGRAToYCbCrConverterPipelineCache {
+    private static let queue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.color-conversion.pipeline-cache")
+    nonisolated(unsafe) private static var pipelinesByDeviceRegistryID: [UInt64: MDKMetalBGRAToYCbCrConverterPipelines] = [:]
+
+    static func pipelines(
+        for device: any MTLDevice,
+        shaderSource: String
+    ) throws -> MDKMetalBGRAToYCbCrConverterPipelines {
+        try queue.sync {
+            let cacheKey = device.registryID
+            if let pipelines = pipelinesByDeviceRegistryID[cacheKey] {
+                return pipelines
+            }
+
+            let library: any MTLLibrary
+            do {
+                library = try device.makeLibrary(source: shaderSource, options: nil)
+            } catch {
+                throw MDKMetalColorConversionError.libraryCreationFailed(String(describing: error))
+            }
+
+            guard let lumaFunction = library.makeFunction(name: "bgraToYCbCrLuma"),
+                  let chromaFunction = library.makeFunction(name: "bgraToYCbCrChroma"),
+                  let bgraCursorOverlayFunction = library.makeFunction(name: "overlayCursorOnBGRA") else {
+                throw MDKMetalColorConversionError.functionMissing(
+                    "bgraToYCbCrLuma/bgraToYCbCrChroma/overlayCursorOnBGRA"
+                )
+            }
+
+            do {
+                let pipelines = MDKMetalBGRAToYCbCrConverterPipelines(
+                    luma: try device.makeComputePipelineState(function: lumaFunction),
+                    chroma: try device.makeComputePipelineState(function: chromaFunction),
+                    bgraCursorOverlay: try device.makeComputePipelineState(function: bgraCursorOverlayFunction)
+                )
+                pipelinesByDeviceRegistryID[cacheKey] = pipelines
+                return pipelines
+            } catch {
+                throw MDKMetalColorConversionError.pipelineCreationFailed(String(describing: error))
+            }
+        }
+    }
+}
+
 final class MDKMetalBGRAToYCbCrConverter {
     private let device: any MTLDevice
     private let lumaPipeline: any MTLComputePipelineState
@@ -88,28 +148,13 @@ final class MDKMetalBGRAToYCbCrConverter {
     init(device: any MTLDevice) throws {
         self.device = device
 
-        let library: any MTLLibrary
-        do {
-            library = try device.makeLibrary(source: Self.shaderSource, options: nil)
-        } catch {
-            throw MDKMetalColorConversionError.libraryCreationFailed(String(describing: error))
-        }
-
-        guard let lumaFunction = library.makeFunction(name: "bgraToYCbCrLuma"),
-              let chromaFunction = library.makeFunction(name: "bgraToYCbCrChroma"),
-              let bgraCursorOverlayFunction = library.makeFunction(name: "overlayCursorOnBGRA") else {
-            throw MDKMetalColorConversionError.functionMissing(
-                "bgraToYCbCrLuma/bgraToYCbCrChroma/overlayCursorOnBGRA"
-            )
-        }
-
-        do {
-            lumaPipeline = try device.makeComputePipelineState(function: lumaFunction)
-            chromaPipeline = try device.makeComputePipelineState(function: chromaFunction)
-            bgraCursorOverlayPipeline = try device.makeComputePipelineState(function: bgraCursorOverlayFunction)
-        } catch {
-            throw MDKMetalColorConversionError.pipelineCreationFailed(String(describing: error))
-        }
+        let pipelines = try MDKMetalBGRAToYCbCrConverterPipelineCache.pipelines(
+            for: device,
+            shaderSource: Self.shaderSource
+        )
+        lumaPipeline = pipelines.luma
+        chromaPipeline = pipelines.chroma
+        bgraCursorOverlayPipeline = pipelines.bgraCursorOverlay
 
         let transparentTextureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm,
