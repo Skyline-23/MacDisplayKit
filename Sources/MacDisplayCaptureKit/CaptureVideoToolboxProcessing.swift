@@ -1325,7 +1325,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let textures = try makeTextures(
             for: stagingSurface,
             device: device,
-            usage: [.shaderWrite]
+            usage: [.shaderRead, .shaderWrite]
         )
         let slot = MDKVideoToolboxStagingSlot(
             identifier: slotIdentifier,
