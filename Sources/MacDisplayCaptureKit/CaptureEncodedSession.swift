@@ -414,10 +414,15 @@ private final class MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime: MDKEnc
     }
 }
 
-private actor MDKEncodedCapturePendingFrameTracker {
+// Safety: all mutable state is protected by `lock`, and callers only interact through
+// value-free acquire/release operations that do not expose shared mutable storage.
+private final class MDKEncodedCapturePendingFrameTracker: @unchecked Sendable {
+    private let lock = NSLock()
     private var count = 0
 
     func tryAcquire(limit: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
         guard count < limit else {
             return false
         }
@@ -426,7 +431,9 @@ private actor MDKEncodedCapturePendingFrameTracker {
     }
 
     func releaseOne() {
+        lock.lock()
         count = max(count - 1, 0)
+        lock.unlock()
     }
 }
 
@@ -452,12 +459,12 @@ private func MDKProcessMailboxAwareSourceFrame(
     pendingFrameTracker: MDKEncodedCapturePendingFrameTracker,
     latestFrameMailbox: MDKEncodedCaptureLatestFrameMailbox,
     failureHandler: @escaping @Sendable (String) -> Void
-) async {
+) {
     do {
         try processor.process(frame: frame) {
             Task {
                 if let latestFrame = await latestFrameMailbox.take() {
-                    await MDKProcessMailboxAwareSourceFrame(
+                    MDKProcessMailboxAwareSourceFrame(
                         latestFrame,
                         processor: processor,
                         pendingFrameTracker: pendingFrameTracker,
@@ -467,11 +474,11 @@ private func MDKProcessMailboxAwareSourceFrame(
                     return
                 }
 
-                await pendingFrameTracker.releaseOne()
+                pendingFrameTracker.releaseOne()
             }
         }
     } catch {
-        await pendingFrameTracker.releaseOne()
+        pendingFrameTracker.releaseOne()
         let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
         failureHandler(description)
     }
@@ -1131,8 +1138,8 @@ public actor MDKEncodedCaptureSession {
 
             sourceCadenceTracker?.record(displayTime: frame.displayTime)
             sourceTimingTracker?.record(frame: frame)
-            Task {
-                guard await pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
+            guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
+                Task {
                     let replacedDisplayTime = await latestFrameMailbox.store(frame)
                     if let replacedDisplayTime {
                         await self.handleSourceFrameDropped(
@@ -1140,17 +1147,17 @@ public actor MDKEncodedCaptureSession {
                             runtimeGeneration: currentRuntimeGeneration
                         )
                     }
-                    return
                 }
-
-                await MDKProcessMailboxAwareSourceFrame(
-                    frame,
-                    processor: processor,
-                    pendingFrameTracker: pendingFrameTracker,
-                    latestFrameMailbox: latestFrameMailbox,
-                    failureHandler: failureHandler
-                )
+                return
             }
+
+            MDKProcessMailboxAwareSourceFrame(
+                frame,
+                processor: processor,
+                pendingFrameTracker: pendingFrameTracker,
+                latestFrameMailbox: latestFrameMailbox,
+                failureHandler: failureHandler
+            )
         }
         self.sourceCadenceTracker = sourceCadenceTracker
         self.sourceTimingTracker = sourceTimingTracker
