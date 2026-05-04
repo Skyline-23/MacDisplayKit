@@ -1640,8 +1640,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 sourceSequenceNumber: sourceSequenceNumber,
                 sourceDisplayTime: submissionToken?.sourceDisplayTime ?? 0,
                 outputCallbackLatencyMilliseconds: latencyMilliseconds,
-                tileMetadata: resolvedTileMetadata,
-                isHDRSignaledOverride: processorOwnedHDRSignalOverride
+                tileMetadata: resolvedTileMetadata
             )
         }
         if let slotIdentifier = submissionToken?.slotIdentifier {
@@ -1680,13 +1679,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
     private func describe(status: OSStatus) -> String {
         status == noErr ? "noErr" : String(status)
-    }
-
-    private var processorOwnedHDRSignalOverride: Bool? {
-        guard hdrConfiguration?.transferFunction == .smpteSt2084PQ else {
-            return nil
-        }
-        return true
     }
 
     private func roundedLatencyBucket(for latencyMilliseconds: Double) -> String {

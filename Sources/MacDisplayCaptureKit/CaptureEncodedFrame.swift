@@ -80,7 +80,6 @@ public final class MDKEncodedFrame: @unchecked Sendable {
     public let sourceDisplayTime: UInt64
     public let outputCallbackLatencyMilliseconds: Double?
     public let tileMetadata: MDKEncodedFrameTileMetadata
-    private let isHDRSignaledOverride: Bool?
 
     public init(
         sampleBuffer: CMSampleBuffer,
@@ -88,8 +87,7 @@ public final class MDKEncodedFrame: @unchecked Sendable {
         sourceSequenceNumber: UInt64,
         sourceDisplayTime: UInt64,
         outputCallbackLatencyMilliseconds: Double?,
-        tileMetadata: MDKEncodedFrameTileMetadata = .singleFrame,
-        isHDRSignaledOverride: Bool? = nil
+        tileMetadata: MDKEncodedFrameTileMetadata = .singleFrame
     ) {
         self.sampleBuffer = sampleBuffer
         self.codec = codec
@@ -97,7 +95,6 @@ public final class MDKEncodedFrame: @unchecked Sendable {
         self.sourceDisplayTime = sourceDisplayTime
         self.outputCallbackLatencyMilliseconds = outputCallbackLatencyMilliseconds
         self.tileMetadata = tileMetadata
-        self.isHDRSignaledOverride = isHDRSignaledOverride
     }
 
     public var presentationTimeStamp: CMTime {
@@ -132,9 +129,6 @@ public final class MDKEncodedFrame: @unchecked Sendable {
     }
 
     public var isHDRSignaled: Bool {
-        if let isHDRSignaledOverride {
-            return isHDRSignaledOverride
-        }
         hdrValidationReport.isHDRSignaled
     }
 
