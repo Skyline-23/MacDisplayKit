@@ -223,6 +223,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
     private var compressionSession: VTCompressionSession?
     private var activeDimensions: SIMD2<Int>?
+    private var activeVisibleDimensions: SIMD2<Int>?
     private var activePixelFormat: UInt32?
     private var pixelBufferAttributes: CFDictionary?
     private var encoderPixelBufferAttributes: CFDictionary?
@@ -531,17 +532,25 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             sourceHeight: frame.height,
             pixelFormat: targetPixelFormat
         )
+        let codedDimensions = codedOutputDimensions(
+            visibleDimensions: outputDimensions,
+            sourcePixelFormat: frame.pixelFormat,
+            targetPixelFormat: targetPixelFormat
+        )
         try ensureCompressionSession(
-            width: outputDimensions.x,
-            height: outputDimensions.y,
+            width: codedDimensions.x,
+            height: codedDimensions.y,
+            visibleWidth: outputDimensions.x,
+            visibleHeight: outputDimensions.y,
             pixelFormat: targetPixelFormat
         )
 
         let needsPixelFormatConversion = frame.pixelFormat != targetPixelFormat
         let needsScaling = outputDimensions.x != frame.width || outputDimensions.y != frame.height
+        let needsCodedPadding = codedDimensions != outputDimensions
 
         let hasCursorOverlay = frame.cursorOverlaySample != nil
-        let requiresDetachedSubmissionSurface = shouldUseDetachedSubmissionSurface(
+        let requiresDetachedSubmissionSurface = needsCodedPadding || shouldUseDetachedSubmissionSurface(
             sourcePixelFormat: frame.pixelFormat,
             targetPixelFormat: targetPixelFormat,
             needsScaling: needsScaling,
@@ -552,11 +561,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             try stageAndEncode(
                 frame: frame,
                 targetPixelFormat: targetPixelFormat,
+                visibleDimensions: outputDimensions,
+                codedDimensions: codedDimensions,
                 commandQueue: commandQueue,
                 releaseSourceFrame: releaseSourceFrame
             )
         } else {
-            guard !needsPixelFormatConversion && !needsScaling else {
+            guard !needsPixelFormatConversion && !needsScaling && !needsCodedPadding else {
                 throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
                     sourcePixelFormat: frame.pixelFormat,
                     targetPixelFormat: targetPixelFormat
@@ -628,6 +639,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private func stageAndEncode(
         frame: MDKCaptureFrame,
         targetPixelFormat: UInt32,
+        visibleDimensions: SIMD2<Int>,
+        codedDimensions: SIMD2<Int>,
         commandQueue: any MTLCommandQueue,
         releaseSourceFrame: @escaping @Sendable () -> Void
     ) throws {
@@ -647,14 +660,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             for: frame.cursorOverlaySample,
             device: device
         )
-        let outputDimensions = preprocessStrategy.outputDimensions(
-            sourceWidth: frame.width,
-            sourceHeight: frame.height,
-            pixelFormat: targetPixelFormat
-        )
         let slot = try acquireStagingSlot(
-            width: outputDimensions.x,
-            height: outputDimensions.y,
+            width: codedDimensions.x,
+            height: codedDimensions.y,
             pixelFormat: targetPixelFormat,
             device: device
         )
@@ -693,6 +701,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 sourceTextures: sourceTextures,
                 destinationTextures: slot.textures,
                 destinationPixelFormat: targetPixelFormat,
+                destinationVisibleSize: visibleDimensions,
                 hdrConfiguration: hdrConfiguration,
                 cursorTexture: cursorTexture,
                 cursorOverlaySample: frame.cursorOverlaySample
@@ -712,8 +721,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 from: frame.cursorOverlaySample,
                 sourceWidth: frame.width,
                 sourceHeight: frame.height,
-                destinationWidth: outputDimensions.x,
-                destinationHeight: outputDimensions.y
+                destinationWidth: visibleDimensions.x,
+                destinationHeight: visibleDimensions.y
             ), let cursorTexture {
                 guard let colorConverter else {
                     stagingSubmissionGroup.leave()
@@ -823,6 +832,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         hdrConfiguration?.apply(to: imageBuffer)
+        applyCleanApertureIfNeeded(to: imageBuffer)
 
         let resolvedPresentationTimeStamp = presentationTimeStamp ?? {
             let timestamp = CMTime(value: frameIndex, timescale: Int32(targetFrameRate))
@@ -958,11 +968,15 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private func ensureCompressionSession(
         width: Int,
         height: Int,
+        visibleWidth: Int,
+        visibleHeight: Int,
         pixelFormat: UInt32
     ) throws {
         if let activeDimensions,
+           let activeVisibleDimensions,
            activePixelFormat == pixelFormat,
            activeDimensions == SIMD2(width, height),
+           activeVisibleDimensions == SIMD2(visibleWidth, visibleHeight),
            compressionSession != nil {
             return
         }
@@ -1133,11 +1147,19 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
         compressionSession = session
         activeDimensions = SIMD2(width, height)
+        activeVisibleDimensions = SIMD2(visibleWidth, visibleHeight)
         activePixelFormat = pixelFormat
         sessionConfigurationNotes.append(String(format: "videoToolboxEncoderInputPixelFormat=0x%08X", pixelFormat))
         sessionConfigurationNotes.append("videoToolboxEncoderInputStrategy=\(encoderInputStrategy.rawValue)")
         sessionConfigurationNotes.append("videoToolboxEncodedWidth=\(width)")
         sessionConfigurationNotes.append("videoToolboxEncodedHeight=\(height)")
+        if width != visibleWidth || height != visibleHeight {
+            sessionConfigurationNotes.append("videoToolboxVisibleWidth=\(visibleWidth)")
+            sessionConfigurationNotes.append("videoToolboxVisibleHeight=\(visibleHeight)")
+            sessionConfigurationNotes.append("videoToolboxCleanAperture=enabled")
+        } else {
+            sessionConfigurationNotes.append("videoToolboxCleanAperture=disabled")
+        }
         sessionConfigurationNotes.append("videoToolboxTargetFrameRateHint=\(expectedFrameRateHint)")
         if #available(macOS 15.0, *),
             let maximumRealTimeFrameRateHint {
@@ -1265,6 +1287,58 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             return "apollo-requested"
         }
         return isHighRefreshLowLatency ? "low-latency-heuristic" : "codec-default"
+    }
+
+    private func codedOutputDimensions(
+        visibleDimensions: SIMD2<Int>,
+        sourcePixelFormat: UInt32,
+        targetPixelFormat: UInt32
+    ) -> SIMD2<Int> {
+        guard shouldAlignCodedAperture(
+            sourcePixelFormat: sourcePixelFormat,
+            targetPixelFormat: targetPixelFormat
+        ) else {
+            return visibleDimensions
+        }
+
+        return SIMD2(
+            alignDimension(visibleDimensions.x, to: 16),
+            alignDimension(visibleDimensions.y, to: 16)
+        )
+    }
+
+    private func shouldAlignCodedAperture(
+        sourcePixelFormat: UInt32,
+        targetPixelFormat: UInt32
+    ) -> Bool {
+        codec == .hevc &&
+            sourcePixelFormat != targetPixelFormat &&
+            hdrConfiguration?.transferFunction == .smpteSt2084PQ &&
+            isBiPlanarYUVPixelFormat(targetPixelFormat)
+    }
+
+    private func alignDimension(_ value: Int, to alignment: Int) -> Int {
+        guard alignment > 1 else {
+            return value
+        }
+        let remainder = value % alignment
+        return remainder == 0 ? value : value + alignment - remainder
+    }
+
+    private func isBiPlanarYUVPixelFormat(_ pixelFormat: UInt32) -> Bool {
+        switch pixelFormat {
+        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+             kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+             kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr8BiPlanarVideoRange,
+             kCVPixelFormatType_422YpCbCr8BiPlanarFullRange,
+             kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
+             kCVPixelFormatType_422YpCbCr10BiPlanarFullRange:
+            return true
+        default:
+            return false
+        }
     }
 
     private func setSessionProperty(
@@ -1535,6 +1609,27 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         return wrappedBuffer
     }
 
+    private func applyCleanApertureIfNeeded(to imageBuffer: CVPixelBuffer) {
+        guard let activeDimensions,
+              let activeVisibleDimensions,
+              activeDimensions != activeVisibleDimensions else {
+            return
+        }
+
+        let cleanAperture: [CFString: Any] = [
+            kCVImageBufferCleanApertureWidthKey: activeVisibleDimensions.x,
+            kCVImageBufferCleanApertureHeightKey: activeVisibleDimensions.y,
+            kCVImageBufferCleanApertureHorizontalOffsetKey: 0,
+            kCVImageBufferCleanApertureVerticalOffsetKey: 0
+        ]
+        CVBufferSetAttachment(
+            imageBuffer,
+            kCVImageBufferCleanApertureKey,
+            cleanAperture as CFDictionary,
+            .shouldPropagate
+        )
+    }
+
     private func invalidateSession() {
         if let compressionSession {
             VTCompressionSessionCompleteFrames(compressionSession, untilPresentationTimeStamp: .invalid)
@@ -1542,6 +1637,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             self.compressionSession = nil
         }
         activeDimensions = nil
+        activeVisibleDimensions = nil
         activePixelFormat = nil
         pixelBufferAttributes = nil
         encoderPixelBufferAttributes = nil

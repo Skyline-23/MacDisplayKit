@@ -137,6 +137,7 @@ final class MDKMetalBGRAToYCbCrConverter {
         sourceTextures: [MTLTexture],
         destinationTextures: [MTLTexture],
         destinationPixelFormat: UInt32,
+        destinationVisibleSize: SIMD2<Int>? = nil,
         hdrConfiguration: MDKVideoHDRConfiguration? = nil,
         cursorTexture: MTLTexture? = nil,
         cursorOverlaySample: MDKCursorOverlaySample? = nil
@@ -153,6 +154,10 @@ final class MDKMetalBGRAToYCbCrConverter {
             for: destinationPixelFormat,
             hdrConfiguration: hdrConfiguration
         )
+        let visibleSize = destinationVisibleSize ?? SIMD2(
+            destinationTextures[0].width,
+            destinationTextures[0].height
+        )
         let cursorRect = cursorOverlaySample.map {
             SIMD4(
                 Float($0.rect.minX),
@@ -163,7 +168,7 @@ final class MDKMetalBGRAToYCbCrConverter {
         } ?? SIMD4<Float>(repeating: 0)
         var parameters = MDKMetalYCbCrConversionParameters(
             sourceSize: SIMD2(UInt32(sourceTextures[0].width), UInt32(sourceTextures[0].height)),
-            destinationLumaSize: SIMD2(UInt32(destinationTextures[0].width), UInt32(destinationTextures[0].height)),
+            destinationLumaSize: SIMD2(UInt32(visibleSize.x), UInt32(visibleSize.y)),
             chromaSubsampling: target.chromaSubsampling,
             cursorOverlayEnabled: cursorOverlaySample == nil ? 0 : 1,
             cursorOverlayVerticallyFlipped: cursorOverlaySample?.isVerticallyFlipped == true ? 1 : 0,
