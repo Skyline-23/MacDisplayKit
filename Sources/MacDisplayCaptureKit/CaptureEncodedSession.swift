@@ -275,18 +275,20 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             let captureSurface = frameSurface.map(MDKCaptureSurface.init(ioSurface:))
             let dirtyRects = MDKDecodeCGRectData(reducedDirtyRectData)
             let sourceUpdateDropCount = UInt64(updateDropCount)
-            Task {
-                guard let deliveredFrame = await replayState.captureFrame(
-                    status: status,
-                    displayTime: displayTime,
-                    frameSurface: captureSurface,
-                    dirtyRects: dirtyRects,
-                    sourceUpdateDropCount: sourceUpdateDropCount
-                ) else {
-                    return
-                }
+            deliveryQueue.async {
+                Task {
+                    guard let deliveredFrame = await replayState.captureFrame(
+                        status: status,
+                        displayTime: displayTime,
+                        frameSurface: captureSurface,
+                        dirtyRects: dirtyRects,
+                        sourceUpdateDropCount: sourceUpdateDropCount
+                    ) else {
+                        return
+                    }
 
-                frameHandler(deliveredFrame)
+                    frameHandler(deliveredFrame)
+                }
             }
         }
     }
