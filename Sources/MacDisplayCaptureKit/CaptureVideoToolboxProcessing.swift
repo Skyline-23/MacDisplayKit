@@ -466,7 +466,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxCodec=\(codec.rawValue)",
             "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
             "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "hybrid-direct-or-metal-staging")",
-            "videoToolboxStagedSourceReleaseMode=\(codec == .proResProxy ? "post-metal-stage" : "post-submit")",
+            "videoToolboxStagedSourceReleaseMode=post-submit",
             "videoToolboxDirectSubmissionFrameCount=\(directSubmissionFrameCount)",
             "videoToolboxStagedSubmissionFrameCount=\(stagedSubmissionFrameCount)",
             "videoToolboxColorConversionMode=\(sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) ? "custom" : "passthrough")",
@@ -787,10 +787,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 return
             }
             self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
-            let releasesSourceAfterMetalStage = self.codec == .proResProxy
-            if releasesSourceAfterMetalStage {
-                releaseSourceFrame()
-            }
             self.submissionQueue.async { [self] in
                 do {
                     try submitToEncoder(
@@ -800,14 +796,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                         presentationTimeStamp: presentationTimeStamp,
                         releasePendingFrame: {}
                     )
-                    if !releasesSourceAfterMetalStage {
-                        releaseSourceFrame()
-                    }
+                    releaseSourceFrame()
                     recordProcessingSuccess(isStaged: true)
                 } catch {
-                    if !releasesSourceAfterMetalStage {
-                        releaseSourceFrame()
-                    }
+                    releaseSourceFrame()
                     let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
                     recordProcessingFailure(errorDescription)
                     releaseStagingSlot(identifier: slotIdentifier)
