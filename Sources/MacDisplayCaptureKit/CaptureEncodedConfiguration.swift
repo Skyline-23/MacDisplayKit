@@ -89,22 +89,6 @@ public struct MDKEncodedCaptureTileLayout: Codable, Equatable, Sendable {
 }
 
 public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
-    enum CodingKeys: String, CodingKey {
-        case displayID
-        case streamConfiguration
-        case codec
-        case preprocessStrategy
-        case targetFrameRate
-        case targetAverageBitRateBitsPerSecond
-        case deliveryMode
-        case capturePixelFormat
-        case encoderInputStrategy
-        case hdrConfiguration
-        case backpressurePolicy
-        case recoveryPolicy
-        case tileLayout
-    }
-
     public let displayID: UInt32
     public let streamConfiguration: MDKSkyLightDisplayStreamConfiguration
     public let codec: MDKVideoEncoderCodec
@@ -118,7 +102,6 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
     public let backpressurePolicy: MDKEncodedCaptureBackpressurePolicy
     public let recoveryPolicy: MDKEncodedCaptureRecoveryPolicy
     public let tileLayout: MDKEncodedCaptureTileLayout
-    var sourceBackendOverride: MDKEncodedCaptureSourceBackend?
 
     public init(
         displayID: UInt32,
@@ -223,10 +206,6 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
     func resolvedSourceBackend(
         using capabilities: MDKPrivateCaptureCapabilities
     ) -> MDKEncodedCaptureSourceBackend {
-        if let sourceBackendOverride {
-            return sourceBackendOverride
-        }
-
         if shouldPreferRawSkyLightDisplayStream(using: capabilities) {
             return .skyLightDisplayStream
         }
@@ -241,21 +220,6 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         }
 
         return .skyLightDisplayStream
-    }
-
-    func privateIOSurfaceFallbackAfterSkyLightStartFailure(
-        capabilities: MDKPrivateCaptureCapabilities,
-        error: Error
-    ) -> MDKEncodedCaptureConfiguration? {
-        guard resolvedSourceBackend(using: capabilities) == .skyLightDisplayStream,
-              capabilities.supportsIOSurfaceDisplayCapture,
-              MDKIsRawSkyLightCreateFailure(error) else {
-            return nil
-        }
-
-        var fallback = self
-        fallback.sourceBackendOverride = .privateDirectIOSurface
-        return fallback
     }
 
     var resolvedPrivateCaptureSurfaceCount: Int {
@@ -371,21 +335,5 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         case (.proResProxy, _):
             return .videoToolboxEncodeProResProxyExperimental
         }
-    }
-}
-
-private func MDKIsRawSkyLightCreateFailure(_ error: Error) -> Bool {
-    let nsError = error as NSError
-    if nsError.domain == "MacDisplayKit.SkyLightDisplayStream", nsError.code == 3 {
-        return true
-    }
-
-    let descriptions = [
-        (error as? LocalizedError)?.errorDescription,
-        nsError.localizedDescription,
-        nsError.userInfo[NSLocalizedDescriptionKey] as? String
-    ]
-    return descriptions.contains { description in
-        description?.contains("SLDisplayStreamCreateWithDispatchQueue returned nil") == true
     }
 }

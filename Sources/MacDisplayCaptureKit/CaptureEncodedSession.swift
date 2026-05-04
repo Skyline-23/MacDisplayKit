@@ -4,7 +4,7 @@ import Darwin
 import Foundation
 import MacDisplayKitObjCShim
 
-enum MDKEncodedCaptureSourceBackend: String, Codable, Equatable, Sendable {
+enum MDKEncodedCaptureSourceBackend: String, Sendable {
     case privateDirectIOSurface = "private-direct-iosurface"
     case skyLightDisplayStream = "skylight-display-stream"
 }
@@ -1102,6 +1102,9 @@ public actor MDKEncodedCaptureSession {
         let latestFrameMailbox = MDKEncodedCaptureLatestFrameMailbox()
         let sourceCadenceTracker = shouldRecordSourceDiagnostics ? MDKEncodedCaptureSourceCadenceTracker() : nil
         let sourceTimingTracker = shouldRecordSourceDiagnostics ? MDKEncodedCaptureSourceTimingTracker() : nil
+        let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
+        let maximumPendingFrameCount = sourcePreparation.recommendedPendingFrameCount
+
         let outputHandler: @Sendable (MDKEncodedFrame) -> Void = { [weak self] encodedFrame in
             guard let self else {
                 return
@@ -1127,95 +1130,55 @@ public actor MDKEncodedCaptureSession {
             }
         }
 
-        func makeRuntime(
-            for activeConfiguration: MDKEncodedCaptureConfiguration,
-            sourcePreparation: MDKEncodedCaptureSourcePreparation
-        ) -> Runtime {
-            let maximumPendingFrameCount = sourcePreparation.recommendedPendingFrameCount
-            let processor = processorFactory(activeConfiguration, outputHandler, failureHandler)
-            let source = sourceFactory(activeConfiguration, sourcePreparation) { [weak self, weak processor] frame in
-                guard let self, let processor else {
-                    return
-                }
-
-                sourceCadenceTracker?.record(displayTime: frame.displayTime)
-                sourceTimingTracker?.record(frame: frame)
-                guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
-                    Task {
-                        let replacedDisplayTime = await latestFrameMailbox.store(frame)
-                        if let replacedDisplayTime {
-                            await self.handleSourceFrameDropped(
-                                sourceDisplayTime: replacedDisplayTime,
-                                runtimeGeneration: currentRuntimeGeneration
-                            )
-                        }
-                    }
-                    return
-                }
-
-                MDKProcessMailboxAwareSourceFrame(
-                    frame,
-                    processor: processor,
-                    pendingFrameTracker: pendingFrameTracker,
-                    latestFrameMailbox: latestFrameMailbox,
-                    failureHandler: failureHandler
-                )
+        let processor = processorFactory(configuration, outputHandler, failureHandler)
+        let source = sourceFactory(configuration, sourcePreparation) { [weak self, weak processor] frame in
+            guard let self, let processor else {
+                return
             }
-            return Runtime(source: source, processor: processor)
+
+            sourceCadenceTracker?.record(displayTime: frame.displayTime)
+            sourceTimingTracker?.record(frame: frame)
+            guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
+                Task {
+                    let replacedDisplayTime = await latestFrameMailbox.store(frame)
+                    if let replacedDisplayTime {
+                        await self.handleSourceFrameDropped(
+                            sourceDisplayTime: replacedDisplayTime,
+                            runtimeGeneration: currentRuntimeGeneration
+                        )
+                    }
+                }
+                return
+            }
+
+            MDKProcessMailboxAwareSourceFrame(
+                frame,
+                processor: processor,
+                pendingFrameTracker: pendingFrameTracker,
+                latestFrameMailbox: latestFrameMailbox,
+                failureHandler: failureHandler
+            )
         }
         self.sourceCadenceTracker = sourceCadenceTracker
         self.sourceTimingTracker = sourceTimingTracker
-
-        let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
-        let primaryRuntime = makeRuntime(for: configuration, sourcePreparation: sourcePreparation)
-        var startedRuntime: Runtime
-        var startedRuntimeDiagnosticNotes = sourcePreparation.diagnosticNotes
-        do {
-            try primaryRuntime.source.start()
-            startedRuntime = primaryRuntime
-        } catch {
-            let capabilities = MDKPrivateCaptureCapabilityProbe.current()
-            guard let fallbackConfiguration = configuration.privateIOSurfaceFallbackAfterSkyLightStartFailure(
-                capabilities: capabilities,
-                error: error
-            ) else {
-                self.sourceCadenceTracker = nil
-                self.sourceTimingTracker = nil
-                statistics = preservedStatistics(
-                    lastErrorDescription: (error as? LocalizedError)?.errorDescription ?? String(describing: error),
-                    isRunning: false
-                )
-                throw error
-            }
-
-            let fallbackPreparation = await Self.makeSourcePreparation(for: fallbackConfiguration)
-            let fallbackRuntime = makeRuntime(
-                for: fallbackConfiguration,
-                sourcePreparation: fallbackPreparation
-            )
-            do {
-                try fallbackRuntime.source.start()
-                startedRuntime = fallbackRuntime
-                startedRuntimeDiagnosticNotes = [
-                    "sourceFallback=private-direct-iosurface-after-skylight-create-nil"
-                ] + fallbackPreparation.diagnosticNotes
-            } catch {
-                self.sourceCadenceTracker = nil
-                self.sourceTimingTracker = nil
-                statistics = preservedStatistics(
-                    lastErrorDescription: (error as? LocalizedError)?.errorDescription ?? String(describing: error),
-                    isRunning: false
-                )
-                throw error
-            }
-        }
-
-        runtimeDiagnosticNotes = startedRuntimeDiagnosticNotes
+        runtimeDiagnosticNotes = sourcePreparation.diagnosticNotes
         if !shouldRecordSourceDiagnostics {
             runtimeDiagnosticNotes.append("sourceHotPathDiagnostics=disabled")
         }
 
-        runtime = startedRuntime
+        do {
+            try source.start()
+        } catch {
+            self.sourceCadenceTracker = nil
+            self.sourceTimingTracker = nil
+            statistics = preservedStatistics(
+                lastErrorDescription: (error as? LocalizedError)?.errorDescription ?? String(describing: error),
+                isRunning: false
+            )
+            throw error
+        }
+
+        runtime = Runtime(source: source, processor: processor)
         statistics = preservedStatistics(
             lastStopStatus: nil,
             isRunning: true,
@@ -1226,8 +1189,8 @@ public actor MDKEncodedCaptureSession {
             .init(
                 kind: .started,
                 message: startupDiagnostics.isEmpty
-                    ? "Encoded capture session started using \(startedRuntime.source.runtimeDescription)."
-                    : "Encoded capture session started using \(startedRuntime.source.runtimeDescription). \(startupDiagnostics)"
+                    ? "Encoded capture session started using \(source.runtimeDescription)."
+                    : "Encoded capture session started using \(source.runtimeDescription). \(startupDiagnostics)"
             )
         )
     }
