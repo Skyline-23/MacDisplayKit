@@ -472,6 +472,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxColorConversionMode=\(sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) ? "custom" : "passthrough")",
             "videoToolboxMaxInflightStagingSlots=\(maxInflightStagingSlots)",
             "videoToolboxSubmittedFrameCount=\(submittedFrameCount)",
+            "videoToolboxStatsQueueMode=async",
             "videoToolboxImmediateReplaySubmissionCount=\(immediateReplaySubmissionCount)",
             "videoToolboxSuppressedImmediateReplayCount=\(suppressedImmediateReplayCount)",
             "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
@@ -864,7 +865,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 frame: frame
             )
         }
-        outputQueue.sync {
+        outputQueue.async { [self] in
             submittedFrameCount += 1
         }
     }
@@ -1578,7 +1579,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     }
 
     private func recordProcessingSuccess(isStaged: Bool) {
-        outputQueue.sync {
+        outputQueue.async { [self] in
             processedFrameCount += 1
             if isStaged {
                 stagedSubmissionFrameCount += 1
@@ -1589,7 +1590,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     }
 
     private func recordProcessingFailure(_ description: String) {
-        outputQueue.sync {
+        outputQueue.async { [self] in
             processingFailureCount += 1
             processingErrorHistogram[description, default: 0] += 1
         }
