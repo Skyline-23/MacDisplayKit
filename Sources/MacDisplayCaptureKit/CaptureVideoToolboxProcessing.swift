@@ -212,7 +212,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     public let encoderInputStrategy: MDKEncodedCaptureEncoderInputStrategy
     private let device: (any MTLDevice)?
     private let commandQueue: (any MTLCommandQueue)?
-    private let commandQueueCapacityMode: String
     private let scaler: MDKMetalBilinearScaler?
     private let colorConverter: MDKMetalBGRAToYCbCrConverter?
     private let maxInflightStagingSlots: Int
@@ -286,21 +285,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.targetFrameRate = max(targetFrameRate, 1)
         self.encoderInputStrategy = encoderInputStrategy
         self.device = device
-        let resolvedMaxInflightStagingSlots = max(maxInflightStagingSlots, 1)
-        self.maxInflightStagingSlots = resolvedMaxInflightStagingSlots
-        self.commandQueue = Self.makeCommandQueue(
-            device: device,
-            codec: codec,
-            maxInflightStagingSlots: resolvedMaxInflightStagingSlots
-        )
-        self.commandQueueCapacityMode = codec == .proResProxy ? "staging-slot-capacity" : "default"
+        self.commandQueue = device?.makeCommandQueue()
         self.scaler = device.map { MDKMetalBilinearScaler(device: $0) }
         if let device {
             do {
-                self.colorConverter = try MDKMetalBGRAToYCbCrConverter(
-                    device: device,
-                    cachePolicy: Self.colorConverterCachePolicy(for: codec)
-                )
+                self.colorConverter = try MDKMetalBGRAToYCbCrConverter(device: device)
                 self.colorConverterInitializationErrorDescription = nil
             } catch {
                 self.colorConverter = nil
@@ -310,39 +299,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             self.colorConverter = nil
             self.colorConverterInitializationErrorDescription = "Metal device unavailable."
         }
+        self.maxInflightStagingSlots = max(maxInflightStagingSlots, 1)
         self.outputHandler = outputHandler
         self.failureHandler = failureHandler
         self.hdrConfiguration = hdrConfiguration?.negotiatedForEncodedDelivery(codec: codec)
         self.targetAverageBitRateBitsPerSecond = targetAverageBitRateBitsPerSecond.flatMap { $0 > 0 ? $0 : nil }
         self.tileMetadata = tileMetadata
         self.encodeQueue.setSpecific(key: encodeQueueSpecificKey, value: encodeQueueSpecificValue)
-    }
-
-    private static func makeCommandQueue(
-        device: (any MTLDevice)?,
-        codec: MDKVideoEncoderCodec,
-        maxInflightStagingSlots: Int
-    ) -> (any MTLCommandQueue)? {
-        guard let device else {
-            return nil
-        }
-        guard codec == .proResProxy else {
-            return device.makeCommandQueue()
-        }
-        return device.makeCommandQueue(maxCommandBufferCount: maxInflightStagingSlots)
-    }
-
-    private static func colorConverterCachePolicy(
-        for codec: MDKVideoEncoderCodec
-    ) -> MDKMetalBGRAToYCbCrPipelineCachePolicy {
-        switch codec {
-        case .hevc:
-            return .localAndPublish
-        case .proResProxy:
-            return .preferShared
-        case .h264:
-            return .local
-        }
     }
 
     deinit {
@@ -503,7 +466,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxCodec=\(codec.rawValue)",
             "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
             "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "hybrid-direct-or-metal-staging")",
-            "videoToolboxCommandQueueCapacityMode=\(commandQueueCapacityMode)",
             "videoToolboxStagedSourceReleaseMode=post-submit",
             "videoToolboxDirectSubmissionFrameCount=\(directSubmissionFrameCount)",
             "videoToolboxStagedSubmissionFrameCount=\(stagedSubmissionFrameCount)",
