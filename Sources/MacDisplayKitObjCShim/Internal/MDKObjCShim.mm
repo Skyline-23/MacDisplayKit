@@ -13412,31 +13412,38 @@ static CGRect MDKCreateCursorDrawRect(
         streamProperties.count > 0 ? (__bridge CFDictionaryRef) streamProperties : nil;
 
     __weak MDKShimSkyLightDisplayStreamSession *weakSelf = self;
-    _stream = createSymbol(
-        static_cast<CGDirectDisplayID>(_displayID),
-        width,
-        height,
-        static_cast<int32_t>(_pixelFormat),
-        streamPropertiesRef,
-        _queue,
-        ^(CGDisplayStreamFrameStatus status,
-          uint64_t displayTime,
-          IOSurfaceRef frameSurface,
-          CGDisplayStreamUpdateRef updateRef) {
-            MDKShimSkyLightDisplayStreamSession *strongSelf = weakSelf;
-            if (strongSelf == nil || strongSelf->_frameHandler == nil) {
-                return;
-            }
+    auto createStream = ^{
+        return createSymbol(
+            static_cast<CGDirectDisplayID>(_displayID),
+            width,
+            height,
+            static_cast<int32_t>(_pixelFormat),
+            streamPropertiesRef,
+            _queue,
+            ^(CGDisplayStreamFrameStatus status,
+              uint64_t displayTime,
+              IOSurfaceRef frameSurface,
+              CGDisplayStreamUpdateRef updateRef) {
+                MDKShimSkyLightDisplayStreamSession *strongSelf = weakSelf;
+                if (strongSelf == nil || strongSelf->_frameHandler == nil) {
+                    return;
+                }
 
-            strongSelf->_frameHandler(
-                status,
-                displayTime,
-                frameSurface,
-                MDKCreateReducedDirtyRectData(updateRef),
-                updateRef != nil ? static_cast<NSUInteger>(CGDisplayStreamUpdateGetDropCount(updateRef)) : 0
-            );
-        }
-    );
+                strongSelf->_frameHandler(
+                    status,
+                    displayTime,
+                    frameSurface,
+                    MDKCreateReducedDirtyRectData(updateRef),
+                    updateRef != nil ? static_cast<NSUInteger>(CGDisplayStreamUpdateGetDropCount(updateRef)) : 0
+                );
+            }
+        );
+    };
+    _stream = createStream();
+    if (_stream == nil) {
+        [NSThread sleepForTimeInterval:0.035];
+        _stream = createStream();
+    }
     if (_stream == nil) {
         if (error != nullptr) {
             *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
