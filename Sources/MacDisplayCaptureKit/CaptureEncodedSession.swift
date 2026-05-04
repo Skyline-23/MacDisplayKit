@@ -294,7 +294,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
     }
 
     func start() throws {
-        try shimSession.start()
+        try startShimSessionWithOneRetry()
         let timer = DispatchSource.makeTimerSource(queue: deliveryQueue)
         let intervalNanoseconds = min(replayIntervalNanoseconds, UInt64(Int.max))
         let leewayNanoseconds = min(max(intervalNanoseconds / 4, 500_000), UInt64(Int.max))
@@ -321,6 +321,19 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         }
         replayTimer = timer
         timer.resume()
+    }
+
+    private func startShimSessionWithOneRetry() throws {
+        do {
+            try shimSession.start()
+        } catch {
+            guard error.localizedDescription.contains("SLDisplayStreamCreateWithDispatchQueue returned nil") else {
+                throw error
+            }
+
+            Thread.sleep(forTimeInterval: 0.035)
+            try shimSession.start()
+        }
     }
 
     func stop() -> Int32 {
