@@ -787,7 +787,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 return
             }
             self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
-            self.submissionQueue.async { [self] in
+            let submitStagedFrame: @Sendable () -> Void = { [self] in
                 do {
                     try submitToEncoder(
                         imageBuffer: stagedPixelBuffer.pixelBuffer,
@@ -806,6 +806,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     failureHandler?(errorDescription)
                 }
                 stagingSubmissionGroup.leave()
+            }
+            if shouldSubmitStagedFramesFromMetalCallback {
+                submitStagedFrame()
+            } else {
+                self.submissionQueue.async(execute: submitStagedFrame)
             }
         }
         commandBuffer.commit()
@@ -1229,6 +1234,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             codec == .hevc &&
             hdrConfiguration?.transferFunction == .smpteSt2084PQ
         )
+    }
+
+    private var shouldSubmitStagedFramesFromMetalCallback: Bool {
+        codec == .hevc &&
+        hdrConfiguration?.transferFunction == .smpteSt2084PQ
     }
 
     private func resolvedAverageBitRate(
