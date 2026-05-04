@@ -472,6 +472,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxColorConversionMode=\(sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) ? "custom" : "passthrough")",
             "videoToolboxMaxInflightStagingSlots=\(maxInflightStagingSlots)",
             "videoToolboxSubmittedFrameCount=\(submittedFrameCount)",
+            "videoToolboxSubmittedFrameAccounting=async",
             "videoToolboxImmediateReplaySubmissionCount=\(immediateReplaySubmissionCount)",
             "videoToolboxSuppressedImmediateReplayCount=\(suppressedImmediateReplayCount)",
             "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
@@ -864,7 +865,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 frame: frame
             )
         }
-        outputQueue.sync {
+        outputQueue.async { [self] in
             submittedFrameCount += 1
         }
     }
