@@ -213,7 +213,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let device: (any MTLDevice)?
     private let commandQueue: (any MTLCommandQueue)?
     private let scaler: MDKMetalBilinearScaler?
-    private var colorConverter: MDKMetalBGRAToYCbCrConverter?
+    private let colorConverter: MDKMetalBGRAToYCbCrConverter?
     private let maxInflightStagingSlots: Int
     private let outputHandler: (@Sendable (MDKEncodedFrame) -> Void)?
     private let failureHandler: (@Sendable (String) -> Void)?
@@ -250,7 +250,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var sessionConfigurationNotes: [String] = []
     private var directSubmissionFrameCount: UInt64 = 0
     private var stagedSubmissionFrameCount: UInt64 = 0
-    private var colorConverterInitializationErrorDescription: String?
+    private let colorConverterInitializationErrorDescription: String?
     private let outputDrainGroup = DispatchGroup()
     private let stagingSubmissionGroup = DispatchGroup()
     private let encodeQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode")
@@ -287,7 +287,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.device = device
         self.commandQueue = device?.makeCommandQueue()
         self.scaler = device.map { MDKMetalBilinearScaler(device: $0) }
-        if let device, codec != .proResProxy {
+        if let device {
             do {
                 self.colorConverter = try MDKMetalBGRAToYCbCrConverter(device: device)
                 self.colorConverterInitializationErrorDescription = nil
@@ -295,9 +295,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 self.colorConverter = nil
                 self.colorConverterInitializationErrorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
             }
-        } else if device != nil {
-            self.colorConverter = nil
-            self.colorConverterInitializationErrorDescription = nil
         } else {
             self.colorConverter = nil
             self.colorConverterInitializationErrorDescription = "Metal device unavailable."
@@ -672,18 +669,16 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let presentationTimeStamp = CMTime(value: frameIndex, timescale: Int32(targetFrameRate))
         frameIndex += 1
         stagingSubmissionGroup.enter()
-        func loadColorConverter() throws -> MDKMetalBGRAToYCbCrConverter {
-            do {
-                return try ensureColorConverter()
-            } catch {
-                stagingSubmissionGroup.leave()
-                releaseStagingSlot(identifier: slotIdentifier)
-                throw error
-            }
-        }
 
         if frame.pixelFormat != targetPixelFormat {
-            let colorConverter = try loadColorConverter()
+            guard let colorConverter else {
+                stagingSubmissionGroup.leave()
+                releaseStagingSlot(identifier: slotIdentifier)
+                throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
+                    sourcePixelFormat: frame.pixelFormat,
+                    targetPixelFormat: targetPixelFormat
+                )
+            }
             if !sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) {
                 sessionConfigurationNotes.append(
                     String(
@@ -720,7 +715,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 destinationWidth: outputDimensions.x,
                 destinationHeight: outputDimensions.y
             ), let cursorTexture {
-                let colorConverter = try loadColorConverter()
+                guard let colorConverter else {
+                    stagingSubmissionGroup.leave()
+                    releaseStagingSlot(identifier: slotIdentifier)
+                    throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
+                        sourcePixelFormat: frame.pixelFormat,
+                        targetPixelFormat: targetPixelFormat
+                    )
+                }
                 try colorConverter.overlayCursorOnBGRA(
                     commandBuffer: commandBuffer,
                     destinationTexture: slot.textures[0],
@@ -753,7 +755,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             blitEncoder.endEncoding()
             if let cursorOverlaySample = frame.cursorOverlaySample,
                let cursorTexture {
-                let colorConverter = try loadColorConverter()
+                guard let colorConverter else {
+                    stagingSubmissionGroup.leave()
+                    releaseStagingSlot(identifier: slotIdentifier)
+                    throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
+                        sourcePixelFormat: frame.pixelFormat,
+                        targetPixelFormat: targetPixelFormat
+                    )
+                }
                 try colorConverter.overlayCursorOnBGRA(
                     commandBuffer: commandBuffer,
                     destinationTexture: slot.textures[0],
@@ -777,7 +786,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 self.stagingSubmissionGroup.leave()
                 return
             }
-            let metalStageCompletedAt = ProcessInfo.processInfo.systemUptime
+            self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
             self.submissionQueue.async { [self] in
                 do {
                     try submitToEncoder(
@@ -798,27 +807,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 }
                 stagingSubmissionGroup.leave()
             }
-            self.recordTiming(.metalStage, startedAt: metalStageStartedAt, endedAt: metalStageCompletedAt)
         }
         commandBuffer.commit()
-    }
-
-    private func ensureColorConverter() throws -> MDKMetalBGRAToYCbCrConverter {
-        if let colorConverter {
-            return colorConverter
-        }
-        guard let device else {
-            throw MDKVideoToolboxProcessingError.metalDeviceUnavailable
-        }
-        do {
-            let colorConverter = try MDKMetalBGRAToYCbCrConverter(device: device)
-            self.colorConverter = colorConverter
-            colorConverterInitializationErrorDescription = nil
-            return colorConverter
-        } catch {
-            colorConverterInitializationErrorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-            throw error
-        }
     }
 
     private func submitToEncoder(
