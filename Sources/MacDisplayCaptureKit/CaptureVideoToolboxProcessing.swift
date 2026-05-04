@@ -668,6 +668,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
         let presentationTimeStamp = CMTime(value: frameIndex, timescale: Int32(targetFrameRate))
         frameIndex += 1
+        let forceKeyFrame = consumeImmediateKeyFrameRequest()
         stagingSubmissionGroup.enter()
 
         if frame.pixelFormat != targetPixelFormat {
@@ -794,6 +795,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                         frame: frame,
                         slotIdentifier: slotIdentifier,
                         presentationTimeStamp: presentationTimeStamp,
+                        forceKeyFrame: forceKeyFrame,
                         releasePendingFrame: {}
                     )
                     releaseSourceFrame()
@@ -816,6 +818,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         frame: MDKCaptureFrame,
         slotIdentifier: Int?,
         presentationTimeStamp: CMTime? = nil,
+        forceKeyFrame: Bool? = nil,
         releasePendingFrame: @escaping @Sendable () -> Void = {}
     ) throws {
         guard let compressionSession else {
@@ -847,7 +850,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             imageBuffer: imageBuffer,
             presentationTimeStamp: resolvedPresentationTimeStamp,
             duration: .invalid,
-            frameProperties: makeFrameProperties(forceKeyFrame: consumeImmediateKeyFrameRequest()),
+            frameProperties: makeFrameProperties(forceKeyFrame: forceKeyFrame ?? consumeImmediateKeyFrameRequest()),
             sourceFrameRefcon: submissionToken.toOpaque(),
             infoFlagsOut: nil
         )

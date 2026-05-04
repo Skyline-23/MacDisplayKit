@@ -294,7 +294,16 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
     }
 
     func start() throws {
-        try shimSession.start()
+        do {
+            try shimSession.start()
+        } catch {
+            let description = (error as NSError).localizedDescription
+            guard description.contains("SLDisplayStreamCreateWithDispatchQueue returned nil.") else {
+                throw error
+            }
+            Thread.sleep(forTimeInterval: 0.035)
+            try shimSession.start()
+        }
         let timer = DispatchSource.makeTimerSource(queue: deliveryQueue)
         let intervalNanoseconds = min(replayIntervalNanoseconds, UInt64(Int.max))
         let leewayNanoseconds = min(max(intervalNanoseconds / 4, 500_000), UInt64(Int.max))
