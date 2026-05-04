@@ -13438,6 +13438,40 @@ static CGRect MDKCreateCursorDrawRect(
         }
     );
     if (_stream == nil) {
+        size_t nativeWidth = 0;
+        size_t nativeHeight = 0;
+        if (MDKResolveDisplayModeSize(_displayID, &nativeWidth, &nativeHeight) &&
+            nativeWidth > 0 &&
+            nativeHeight > 0 &&
+            (nativeWidth != width || nativeHeight != height)) {
+            _stream = createSymbol(
+                static_cast<CGDirectDisplayID>(_displayID),
+                nativeWidth,
+                nativeHeight,
+                static_cast<int32_t>(_pixelFormat),
+                streamPropertiesRef,
+                _queue,
+                ^(CGDisplayStreamFrameStatus status,
+                  uint64_t displayTime,
+                  IOSurfaceRef frameSurface,
+                  CGDisplayStreamUpdateRef updateRef) {
+                    MDKShimSkyLightDisplayStreamSession *strongSelf = weakSelf;
+                    if (strongSelf == nil || strongSelf->_frameHandler == nil) {
+                        return;
+                    }
+
+                    strongSelf->_frameHandler(
+                        status,
+                        displayTime,
+                        frameSurface,
+                        MDKCreateReducedDirtyRectData(updateRef),
+                        updateRef != nil ? static_cast<NSUInteger>(CGDisplayStreamUpdateGetDropCount(updateRef)) : 0
+                    );
+                }
+            );
+        }
+    }
+    if (_stream == nil) {
         if (error != nullptr) {
             *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
                                          code:3
@@ -13653,6 +13687,48 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
             [displayTimes addObject:@(displayTime)];
         }
     );
+    if (stream == nil) {
+        size_t nativeWidth = 0;
+        size_t nativeHeight = 0;
+        if (MDKResolveDisplayModeSize(displayID, &nativeWidth, &nativeHeight) &&
+            nativeWidth > 0 &&
+            nativeHeight > 0 &&
+            (nativeWidth != width || nativeHeight != height)) {
+            stream = createSymbol(
+                static_cast<CGDirectDisplayID>(displayID),
+                nativeWidth,
+                nativeHeight,
+                static_cast<int32_t>(requestedPixelFormat),
+                streamPropertiesRef,
+                queue,
+                ^(CGDisplayStreamFrameStatus status,
+                  uint64_t displayTime,
+                  IOSurfaceRef frameSurface,
+                  CGDisplayStreamUpdateRef updateRef) {
+                    callbackCount += 1;
+                    NSString *statusName = MDKDescribeDisplayStreamFrameStatus(status);
+                    frameStatusHistogram[statusName] = @([frameStatusHistogram[statusName] integerValue] + 1);
+
+                    if (status != kCGDisplayStreamFrameStatusFrameComplete || frameSurface == nil) {
+                        return;
+                    }
+
+                    completeFrameCount += 1;
+                    sawSurface = YES;
+                    if (surfaceWidth == 0) {
+                        surfaceWidth = IOSurfaceGetWidth(frameSurface);
+                    }
+                    if (surfaceHeight == 0) {
+                        surfaceHeight = IOSurfaceGetHeight(frameSurface);
+                    }
+                    if (surfacePixelFormat == 0) {
+                        surfacePixelFormat = IOSurfaceGetPixelFormat(frameSurface);
+                    }
+                    [displayTimes addObject:@(displayTime)];
+                }
+            );
+        }
+    }
     if (stream == nil) {
         if (error != nullptr) {
             *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
