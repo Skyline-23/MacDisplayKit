@@ -864,7 +864,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 frame: frame
             )
         }
-        outputQueue.sync {
+        outputQueue.async { [self] in
             submittedFrameCount += 1
         }
     }
