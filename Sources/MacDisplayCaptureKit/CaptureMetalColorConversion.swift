@@ -78,58 +78,6 @@ private struct MDKMetalYCbCrCoefficientSet {
     let crCoefficients: SIMD4<Float>
 }
 
-private struct MDKMetalBGRAToYCbCrPipelineSet: @unchecked Sendable {
-    let luma: any MTLComputePipelineState
-    let chroma: any MTLComputePipelineState
-    let bgraCursorOverlay: any MTLComputePipelineState
-}
-
-private final class MDKMetalBGRAToYCbCrPipelineCache: @unchecked Sendable {
-    static let shared = MDKMetalBGRAToYCbCrPipelineCache()
-
-    private let queue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.metal-color-conversion.pipeline-cache")
-    private var entries: [UInt64: MDKMetalBGRAToYCbCrPipelineSet] = [:]
-
-    func pipelines(
-        for device: any MTLDevice,
-        shaderSource: String
-    ) throws -> MDKMetalBGRAToYCbCrPipelineSet {
-        try queue.sync {
-            let key = device.registryID
-            if let entry = entries[key] {
-                return entry
-            }
-
-            let library: any MTLLibrary
-            do {
-                library = try device.makeLibrary(source: shaderSource, options: nil)
-            } catch {
-                throw MDKMetalColorConversionError.libraryCreationFailed(String(describing: error))
-            }
-
-            guard let lumaFunction = library.makeFunction(name: "bgraToYCbCrLuma"),
-                  let chromaFunction = library.makeFunction(name: "bgraToYCbCrChroma"),
-                  let bgraCursorOverlayFunction = library.makeFunction(name: "overlayCursorOnBGRA") else {
-                throw MDKMetalColorConversionError.functionMissing(
-                    "bgraToYCbCrLuma/bgraToYCbCrChroma/overlayCursorOnBGRA"
-                )
-            }
-
-            do {
-                let entry = MDKMetalBGRAToYCbCrPipelineSet(
-                    luma: try device.makeComputePipelineState(function: lumaFunction),
-                    chroma: try device.makeComputePipelineState(function: chromaFunction),
-                    bgraCursorOverlay: try device.makeComputePipelineState(function: bgraCursorOverlayFunction)
-                )
-                entries[key] = entry
-                return entry
-            } catch {
-                throw MDKMetalColorConversionError.pipelineCreationFailed(String(describing: error))
-            }
-        }
-    }
-}
-
 final class MDKMetalBGRAToYCbCrConverter {
     private let device: any MTLDevice
     private let lumaPipeline: any MTLComputePipelineState
@@ -140,13 +88,28 @@ final class MDKMetalBGRAToYCbCrConverter {
     init(device: any MTLDevice) throws {
         self.device = device
 
-        let pipelines = try MDKMetalBGRAToYCbCrPipelineCache.shared.pipelines(
-            for: device,
-            shaderSource: Self.shaderSource
-        )
-        lumaPipeline = pipelines.luma
-        chromaPipeline = pipelines.chroma
-        bgraCursorOverlayPipeline = pipelines.bgraCursorOverlay
+        let library: any MTLLibrary
+        do {
+            library = try device.makeLibrary(source: Self.shaderSource, options: nil)
+        } catch {
+            throw MDKMetalColorConversionError.libraryCreationFailed(String(describing: error))
+        }
+
+        guard let lumaFunction = library.makeFunction(name: "bgraToYCbCrLuma"),
+              let chromaFunction = library.makeFunction(name: "bgraToYCbCrChroma"),
+              let bgraCursorOverlayFunction = library.makeFunction(name: "overlayCursorOnBGRA") else {
+            throw MDKMetalColorConversionError.functionMissing(
+                "bgraToYCbCrLuma/bgraToYCbCrChroma/overlayCursorOnBGRA"
+            )
+        }
+
+        do {
+            lumaPipeline = try device.makeComputePipelineState(function: lumaFunction)
+            chromaPipeline = try device.makeComputePipelineState(function: chromaFunction)
+            bgraCursorOverlayPipeline = try device.makeComputePipelineState(function: bgraCursorOverlayFunction)
+        } catch {
+            throw MDKMetalColorConversionError.pipelineCreationFailed(String(describing: error))
+        }
 
         let transparentTextureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm,
