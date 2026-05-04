@@ -69,6 +69,7 @@ private final class MDKVideoToolboxSubmissionToken {
     let submittedAt: TimeInterval
     let sourceSequenceNumber: UInt64
     let sourceDisplayTime: UInt64
+    let expectsKeyFrame: Bool
     private let releasePendingFrame: @Sendable () -> Void
 
     init(
@@ -76,12 +77,14 @@ private final class MDKVideoToolboxSubmissionToken {
         submittedAt: TimeInterval,
         sourceSequenceNumber: UInt64,
         sourceDisplayTime: UInt64,
+        expectsKeyFrame: Bool,
         releasePendingFrame: @escaping @Sendable () -> Void
     ) {
         self.slotIdentifier = slotIdentifier
         self.submittedAt = submittedAt
         self.sourceSequenceNumber = sourceSequenceNumber
         self.sourceDisplayTime = sourceDisplayTime
+        self.expectsKeyFrame = expectsKeyFrame
         self.releasePendingFrame = releasePendingFrame
     }
 
@@ -575,6 +578,15 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         needsScaling: Bool,
         hasCursorOverlay: Bool
     ) -> Bool {
+        if canSubmitDirectProResBGRA(
+            sourcePixelFormat: sourcePixelFormat,
+            targetPixelFormat: targetPixelFormat,
+            needsScaling: needsScaling,
+            hasCursorOverlay: hasCursorOverlay
+        ) {
+            return false
+        }
+
         if codec.requiresDetachedSubmissionSurface(
             sourcePixelFormat: sourcePixelFormat,
             targetPixelFormat: targetPixelFormat,
@@ -606,6 +618,19 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
     }
 
+    private func canSubmitDirectProResBGRA(
+        sourcePixelFormat: UInt32,
+        targetPixelFormat: UInt32,
+        needsScaling: Bool,
+        hasCursorOverlay: Bool
+    ) -> Bool {
+        codec == .proResProxy &&
+            !needsScaling &&
+            !hasCursorOverlay &&
+            sourcePixelFormat == kCVPixelFormatType_32BGRA &&
+            targetPixelFormat == kCVPixelFormatType_32BGRA
+    }
+
     private func encodeDirect(
         frame: MDKCaptureFrame,
         releaseSourceFrame: @escaping @Sendable () -> Void
@@ -615,13 +640,25 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         let imageBuffer = try wrappedPixelBuffer(for: frame, surface: surface)
+        let releaseSourceAfterOutput =
+            codec == .proResProxy &&
+            frame.pixelFormat == kCVPixelFormatType_32BGRA &&
+            frame.cursorOverlaySample == nil
+        let releaseAfterEncode: @Sendable () -> Void
+        if releaseSourceAfterOutput {
+            releaseAfterEncode = releaseSourceFrame
+        } else {
+            releaseAfterEncode = {}
+        }
         try submitToEncoder(
             imageBuffer: imageBuffer,
             frame: frame,
             slotIdentifier: nil,
-            releasePendingFrame: {}
+            releasePendingFrame: releaseAfterEncode
         )
-        releaseSourceFrame()
+        if !releaseSourceAfterOutput {
+            releaseSourceFrame()
+        }
         recordProcessingSuccess(isStaged: false)
     }
 
@@ -829,12 +866,18 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             frameIndex += 1
             return timestamp
         }()
+        let forceKeyFrame = consumeImmediateKeyFrameRequest()
+        let expectsKeyFrame =
+            forceKeyFrame ||
+            resolvedPresentationTimeStamp.value == 0 ||
+            (targetFrameRate > 0 && resolvedPresentationTimeStamp.value % CMTimeValue(targetFrameRate) == 0)
         let submissionToken = Unmanaged.passRetained(
             MDKVideoToolboxSubmissionToken(
                 slotIdentifier: slotIdentifier,
                 submittedAt: ProcessInfo.processInfo.systemUptime,
                 sourceSequenceNumber: frame.sequenceNumber,
                 sourceDisplayTime: frame.displayTime,
+                expectsKeyFrame: expectsKeyFrame,
                 releasePendingFrame: releasePendingFrame
             )
         )
@@ -847,7 +890,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             imageBuffer: imageBuffer,
             presentationTimeStamp: resolvedPresentationTimeStamp,
             duration: .invalid,
-            frameProperties: makeFrameProperties(forceKeyFrame: consumeImmediateKeyFrameRequest()),
+            frameProperties: makeFrameProperties(forceKeyFrame: forceKeyFrame),
             sourceFrameRefcon: submissionToken.toOpaque(),
             infoFlagsOut: nil
         )
@@ -1606,11 +1649,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             max((callbackReceivedAt - $0.submittedAt) * 1000.0, 0)
         }
         let resolvedSampleBuffer = sampleBuffer.map { sampleBuffer in
-            guard let hdrConfiguration else {
+            guard codec == .hevc,
+                  let hdrConfiguration else {
                 return sampleBuffer
             }
             let isKeyFrame: Bool
-            if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
+            if let expectsKeyFrame = submissionToken?.expectsKeyFrame {
+                isKeyFrame = expectsKeyFrame
+            } else if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
                 as? [[CFString: Any]],
                let firstAttachment = attachments.first {
                 let notSync = firstAttachment[kCMSampleAttachmentKey_NotSync] as? Bool ?? false
