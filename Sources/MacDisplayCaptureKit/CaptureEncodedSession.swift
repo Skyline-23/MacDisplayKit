@@ -1093,16 +1093,15 @@ public actor MDKEncodedCaptureSession {
         runtimeGeneration &+= 1
         let currentRuntimeGeneration = runtimeGeneration
         let callbackOnlyDelivery = configuration.deliveryMode == .callbackOnly && callbacks != nil
-        let suppressSourceTimingDiagnostics =
+        let shouldRecordSourceDiagnostics = !(
             configuration.codec == .hevc &&
             callbackOnlyDelivery &&
             configuration.resolvedSkyLightProcessingMode != nil
-
+        )
         let pendingFrameTracker = MDKEncodedCapturePendingFrameTracker()
         let latestFrameMailbox = MDKEncodedCaptureLatestFrameMailbox()
-        let sourceCadenceTracker = MDKEncodedCaptureSourceCadenceTracker()
-        let sourceTimingTracker =
-            suppressSourceTimingDiagnostics ? nil : MDKEncodedCaptureSourceTimingTracker()
+        let sourceCadenceTracker = shouldRecordSourceDiagnostics ? MDKEncodedCaptureSourceCadenceTracker() : nil
+        let sourceTimingTracker = shouldRecordSourceDiagnostics ? MDKEncodedCaptureSourceTimingTracker() : nil
         let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
         let maximumPendingFrameCount = sourcePreparation.recommendedPendingFrameCount
 
@@ -1137,7 +1136,7 @@ public actor MDKEncodedCaptureSession {
                 return
             }
 
-            sourceCadenceTracker.record(displayTime: frame.displayTime)
+            sourceCadenceTracker?.record(displayTime: frame.displayTime)
             sourceTimingTracker?.record(frame: frame)
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
@@ -1163,8 +1162,8 @@ public actor MDKEncodedCaptureSession {
         self.sourceCadenceTracker = sourceCadenceTracker
         self.sourceTimingTracker = sourceTimingTracker
         runtimeDiagnosticNotes = sourcePreparation.diagnosticNotes
-        if suppressSourceTimingDiagnostics {
-            runtimeDiagnosticNotes.append("sourceHotPathDiagnostics=cadence-only")
+        if !shouldRecordSourceDiagnostics {
+            runtimeDiagnosticNotes.append("sourceHotPathDiagnostics=disabled")
         }
 
         do {
