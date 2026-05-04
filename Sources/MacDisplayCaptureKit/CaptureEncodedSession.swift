@@ -998,14 +998,6 @@ public actor MDKEncodedCaptureSession {
         return min(max(effectiveQueueDepth * 3, 10), 16)
     }
 
-    private static func shouldPrimeInitialKeyFrame(
-        for configuration: MDKEncodedCaptureConfiguration
-    ) -> Bool {
-        configuration.codec == .hevc &&
-        configuration.deliveryMode == .callbackOnly &&
-        configuration.resolvedEncodedHDRConfiguration?.transferFunction == .smpteSt2084PQ
-    }
-
     public func frames() -> AsyncThrowingStream<MDKEncodedFrame, Error> {
         makeFrameStream()
     }
@@ -1139,9 +1131,6 @@ public actor MDKEncodedCaptureSession {
         }
 
         let processor = processorFactory(configuration, outputHandler, failureHandler)
-        if Self.shouldPrimeInitialKeyFrame(for: configuration) {
-            processor.requestImmediateKeyFrame()
-        }
         let source = sourceFactory(configuration, sourcePreparation) { [weak self, weak processor] frame in
             guard let self, let processor else {
                 return
