@@ -1094,6 +1094,7 @@ public actor MDKEncodedCaptureSession {
         let currentRuntimeGeneration = runtimeGeneration
         let callbackOnlyDelivery = configuration.deliveryMode == .callbackOnly && callbacks != nil
         let shouldRecordSourceDiagnostics = !(
+            configuration.codec == .hevc &&
             callbackOnlyDelivery &&
             configuration.resolvedSkyLightProcessingMode != nil
         )
