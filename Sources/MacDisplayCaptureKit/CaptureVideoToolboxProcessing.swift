@@ -388,6 +388,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             if let compressionSession {
                 VTCompressionSessionCompleteFrames(compressionSession, untilPresentationTimeStamp: .invalid)
             }
+            refreshSessionDiagnosticsIfNeeded()
             let outputDrainWaitStatus = outputDrainGroup.wait(timeout: .now() + 1.5)
             let outputSummary = outputQueue.sync {
                 (
@@ -1188,25 +1189,36 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
         sessionConfigurationNotes.append("videoToolboxHighRefreshLowLatencyMode=\(isHighRefreshLowLatency ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxLowLatencyRateControl=\(shouldEnableLowLatencyRateControl ? "enabled" : "disabled")")
-        usingHardwareAcceleratedEncoder = copyBooleanSessionProperty(
-            session,
-            key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder
-        )
-        encoderPixelBufferPoolIsShared = copyBooleanSessionProperty(
-            session,
-            key: kVTCompressionPropertyKey_PixelBufferPoolIsShared
-        )
         encoderPixelBufferAttributes = copyDictionarySessionProperty(
             session,
             key: kVTCompressionPropertyKey_VideoEncoderPixelBufferAttributes
         )
+        usingHardwareAcceleratedEncoder = nil
+        encoderPixelBufferPoolIsShared = nil
+        recommendedParallelizationLimit = nil
+    }
+
+    private func refreshSessionDiagnosticsIfNeeded() {
+        guard let compressionSession,
+              usingHardwareAcceleratedEncoder == nil,
+              encoderPixelBufferPoolIsShared == nil,
+              recommendedParallelizationLimit == nil else {
+            return
+        }
+
+        usingHardwareAcceleratedEncoder = copyBooleanSessionProperty(
+            compressionSession,
+            key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder
+        )
+        encoderPixelBufferPoolIsShared = copyBooleanSessionProperty(
+            compressionSession,
+            key: kVTCompressionPropertyKey_PixelBufferPoolIsShared
+        )
         if #available(macOS 14.0, *) {
             recommendedParallelizationLimit = copyIntegerSessionProperty(
-                session,
+                compressionSession,
                 key: kVTCompressionPropertyKey_RecommendedParallelizationLimit
             )
-        } else {
-            recommendedParallelizationLimit = nil
         }
     }
 
