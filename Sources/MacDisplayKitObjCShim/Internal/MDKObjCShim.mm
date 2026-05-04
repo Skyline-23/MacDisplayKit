@@ -12692,58 +12692,6 @@ static BOOL MDKPopulateSkyLightDisplayStreamProperties(
     return propertyCount > 0;
 }
 
-using MDKSLDisplayStreamCreateWithDispatchQueueFn = CGDisplayStreamRef (*)(
-    CGDirectDisplayID,
-    size_t,
-    size_t,
-    int32_t,
-    CFDictionaryRef _Nullable,
-    dispatch_queue_t,
-    CGDisplayStreamFrameAvailableHandler
-);
-
-static CGDisplayStreamRef _Nullable MDKCreateSkyLightDisplayStreamAllowingDefaultProperties(
-    MDKSLDisplayStreamCreateWithDispatchQueueFn createSymbol,
-    CGDirectDisplayID displayID,
-    size_t width,
-    size_t height,
-    int32_t pixelFormat,
-    CFDictionaryRef _Nullable streamProperties,
-    dispatch_queue_t queue,
-    CGDisplayStreamFrameAvailableHandler frameHandler,
-    BOOL * _Nullable usedDefaultProperties
-) {
-    if (usedDefaultProperties != nullptr) {
-        *usedDefaultProperties = NO;
-    }
-
-    CGDisplayStreamRef stream = createSymbol(
-        displayID,
-        width,
-        height,
-        pixelFormat,
-        streamProperties,
-        queue,
-        frameHandler
-    );
-    if (stream != nil || streamProperties == nil) {
-        return stream;
-    }
-
-    if (usedDefaultProperties != nullptr) {
-        *usedDefaultProperties = YES;
-    }
-    return createSymbol(
-        displayID,
-        width,
-        height,
-        pixelFormat,
-        nil,
-        queue,
-        frameHandler
-    );
-}
-
 static CGImageRef _Nullable MDKCopyCurrentSystemCursorImage(CGPoint * _Nullable hotSpotOut, CGSize * _Nullable logicalSizeOut) {
     __block CGImageRef cursorImage = nil;
     __block CGPoint hotSpot = CGPointZero;
@@ -13464,9 +13412,7 @@ static CGRect MDKCreateCursorDrawRect(
         streamProperties.count > 0 ? (__bridge CFDictionaryRef) streamProperties : nil;
 
     __weak MDKShimSkyLightDisplayStreamSession *weakSelf = self;
-    BOOL usedDefaultProperties = NO;
-    _stream = MDKCreateSkyLightDisplayStreamAllowingDefaultProperties(
-        createSymbol,
+    _stream = createSymbol(
         static_cast<CGDirectDisplayID>(_displayID),
         width,
         height,
@@ -13489,8 +13435,7 @@ static CGRect MDKCreateCursorDrawRect(
                 MDKCreateReducedDirtyRectData(updateRef),
                 updateRef != nil ? static_cast<NSUInteger>(CGDisplayStreamUpdateGetDropCount(updateRef)) : 0
             );
-        },
-        &usedDefaultProperties
+        }
     );
     if (_stream == nil) {
         if (error != nullptr) {
@@ -13633,9 +13578,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
         ? static_cast<OSType>(pixelFormat)
         : kCVPixelFormatType_32BGRA;
 
-    BOOL usedDefaultProperties = NO;
-    CGDisplayStreamRef stream = MDKCreateSkyLightDisplayStreamAllowingDefaultProperties(
-        createSymbol,
+    CGDisplayStreamRef stream = createSymbol(
         static_cast<CGDirectDisplayID>(displayID),
         width,
         height,
@@ -13708,8 +13651,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
                 dropCountMax = std::max(dropCountMax, droppedFrames);
             }
             [displayTimes addObject:@(displayTime)];
-        },
-        &usedDefaultProperties
+        }
     );
     if (stream == nil) {
         if (error != nullptr) {
