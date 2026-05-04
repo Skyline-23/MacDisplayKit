@@ -538,6 +538,44 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertNil(configuration.resolvedSkyLightDisplayStreamYCbCrMatrix)
     }
 
+    func testRawSkyLightCreateFailureFallsBackWithAlignedPrivateSourceConfiguration() throws {
+        let configuration = MDKEncodedCaptureConfiguration.panelNative(
+            displayID: 7,
+            codec: .hevc,
+            hdrConfiguration: .hdr10()
+        )
+        let capabilities = MDKPrivateCaptureCapabilities(
+            desktopCaptureAvailable: false,
+            displayIOSurfaceCaptureAvailable: false,
+            displayIOSurfaceCaptureWithOptionsAvailable: true,
+            displayIOSurfaceProxyCaptureAvailable: false,
+            displayStreamProxyAvailable: false,
+            rawSkyLightDisplayStreamAvailable: true,
+            extendedRangeOptionAvailable: true
+        )
+        let createFailure = NSError(
+            domain: "MacDisplayKit.SkyLightDisplayStream",
+            code: 3,
+            userInfo: [
+                NSLocalizedDescriptionKey: "SLDisplayStreamCreateWithDispatchQueue returned nil."
+            ]
+        )
+
+        let fallback = try XCTUnwrap(
+            configuration.privateIOSurfaceFallbackAfterSkyLightStartFailure(
+                capabilities: capabilities,
+                error: createFailure
+            )
+        )
+
+        XCTAssertEqual(fallback.resolvedSourceBackend(using: capabilities), .privateDirectIOSurface)
+        XCTAssertEqual(fallback.resolvedEncoderInputStrategy(using: capabilities), .yuv420v10)
+        XCTAssertEqual(
+            fallback.resolvedEncodedHDRConfiguration(using: capabilities)?.transferFunction,
+            .smpteSt2084PQ
+        )
+    }
+
     func testRawSkyLightEncodedCaptureLeavesStreamMatrixUnsetForSDR() {
         let configuration = MDKEncodedCaptureConfiguration.panelNative(
             displayID: 7,
