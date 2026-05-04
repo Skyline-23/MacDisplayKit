@@ -858,6 +858,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             releasePendingFrame()
             throw MDKVideoToolboxProcessingError.encodeFailed(status: status)
         }
+        if shouldCompleteLowLatencyFramesAfterSubmission {
+            VTCompressionSessionCompleteFrames(
+                compressionSession,
+                untilPresentationTimeStamp: resolvedPresentationTimeStamp
+            )
+        }
         if frame.origin == .fresh {
             lastFreshReplayState = MDKVideoToolboxReplayState(
                 imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
@@ -867,6 +873,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         outputQueue.sync {
             submittedFrameCount += 1
         }
+    }
+
+    private var shouldCompleteLowLatencyFramesAfterSubmission: Bool {
+        codec == .hevc &&
+            hdrConfiguration?.transferFunction == .smpteSt2084PQ
     }
 
     private func replayLastSubmittedFrameAsKeyFrameIfPossible() {
