@@ -78,84 +78,38 @@ private struct MDKMetalYCbCrCoefficientSet {
     let crCoefficients: SIMD4<Float>
 }
 
-private struct MDKMetalBGRAToYCbCrPipelineSet: @unchecked Sendable {
-    let luma: any MTLComputePipelineState
-    let chroma: any MTLComputePipelineState
-    let combinedUnscaled420: any MTLComputePipelineState
-    let bgraCursorOverlay: any MTLComputePipelineState
-}
-
-enum MDKMetalBGRAToYCbCrPipelineCachePolicy {
-    case localAndPublish
-    case preferShared
-}
-
-private final class MDKMetalBGRAToYCbCrPipelineCache: @unchecked Sendable {
-    static let shared = MDKMetalBGRAToYCbCrPipelineCache()
-
-    private let queue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.metal-color-conversion.pipeline-cache")
-    private var entries: [UInt64: MDKMetalBGRAToYCbCrPipelineSet] = [:]
-
-    func pipelines(
-        for device: any MTLDevice,
-        make: () throws -> MDKMetalBGRAToYCbCrPipelineSet
-    ) throws -> MDKMetalBGRAToYCbCrPipelineSet {
-        let key = device.registryID
-        if let cached = queue.sync(execute: { entries[key] }) {
-            return cached
-        }
-
-        let made = try make()
-        return queue.sync {
-            if let cached = entries[key] {
-                return cached
-            }
-            entries[key] = made
-            return made
-        }
-    }
-
-    func publishIfAbsent(
-        _ pipelines: MDKMetalBGRAToYCbCrPipelineSet,
-        for device: any MTLDevice
-    ) {
-        let key = device.registryID
-        queue.sync {
-            if entries[key] == nil {
-                entries[key] = pipelines
-            }
-        }
-    }
-}
-
 final class MDKMetalBGRAToYCbCrConverter {
     private let device: any MTLDevice
     private let lumaPipeline: any MTLComputePipelineState
     private let chromaPipeline: any MTLComputePipelineState
-    private let combinedUnscaled420Pipeline: any MTLComputePipelineState
     private let bgraCursorOverlayPipeline: any MTLComputePipelineState
     private let transparentCursorTexture: any MTLTexture
 
-    init(
-        device: any MTLDevice,
-        pipelineCachePolicy: MDKMetalBGRAToYCbCrPipelineCachePolicy = .localAndPublish
-    ) throws {
+    init(device: any MTLDevice) throws {
         self.device = device
 
-        let pipelines: MDKMetalBGRAToYCbCrPipelineSet
-        switch pipelineCachePolicy {
-        case .localAndPublish:
-            pipelines = try Self.makePipelineSet(device: device)
-            MDKMetalBGRAToYCbCrPipelineCache.shared.publishIfAbsent(pipelines, for: device)
-        case .preferShared:
-            pipelines = try MDKMetalBGRAToYCbCrPipelineCache.shared.pipelines(for: device) {
-                try Self.makePipelineSet(device: device)
-            }
+        let library: any MTLLibrary
+        do {
+            library = try device.makeLibrary(source: Self.shaderSource, options: nil)
+        } catch {
+            throw MDKMetalColorConversionError.libraryCreationFailed(String(describing: error))
         }
-        lumaPipeline = pipelines.luma
-        chromaPipeline = pipelines.chroma
-        combinedUnscaled420Pipeline = pipelines.combinedUnscaled420
-        bgraCursorOverlayPipeline = pipelines.bgraCursorOverlay
+
+        guard let lumaFunction = library.makeFunction(name: "bgraToYCbCrLuma"),
+              let chromaFunction = library.makeFunction(name: "bgraToYCbCrChroma"),
+              let bgraCursorOverlayFunction = library.makeFunction(name: "overlayCursorOnBGRA") else {
+            throw MDKMetalColorConversionError.functionMissing(
+                "bgraToYCbCrLuma/bgraToYCbCrChroma/overlayCursorOnBGRA"
+            )
+        }
+
+        do {
+            lumaPipeline = try device.makeComputePipelineState(function: lumaFunction)
+            chromaPipeline = try device.makeComputePipelineState(function: chromaFunction)
+            bgraCursorOverlayPipeline = try device.makeComputePipelineState(function: bgraCursorOverlayFunction)
+        } catch {
+            throw MDKMetalColorConversionError.pipelineCreationFailed(String(describing: error))
+        }
 
         let transparentTextureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm,
@@ -176,35 +130,6 @@ final class MDKMetalBGRAToYCbCrConverter {
             bytesPerRow: MemoryLayout<UInt32>.size
         )
         self.transparentCursorTexture = transparentCursorTexture
-    }
-
-    private static func makePipelineSet(device: any MTLDevice) throws -> MDKMetalBGRAToYCbCrPipelineSet {
-        let library: any MTLLibrary
-        do {
-            library = try device.makeLibrary(source: Self.shaderSource, options: nil)
-        } catch {
-            throw MDKMetalColorConversionError.libraryCreationFailed(String(describing: error))
-        }
-
-        guard let lumaFunction = library.makeFunction(name: "bgraToYCbCrLuma"),
-              let chromaFunction = library.makeFunction(name: "bgraToYCbCrChroma"),
-              let combinedUnscaled420Function = library.makeFunction(name: "bgraToYCbCrCombinedUnscaled420"),
-              let bgraCursorOverlayFunction = library.makeFunction(name: "overlayCursorOnBGRA") else {
-            throw MDKMetalColorConversionError.functionMissing(
-                "bgraToYCbCrLuma/bgraToYCbCrChroma/bgraToYCbCrCombinedUnscaled420/overlayCursorOnBGRA"
-            )
-        }
-
-        do {
-            return MDKMetalBGRAToYCbCrPipelineSet(
-                luma: try device.makeComputePipelineState(function: lumaFunction),
-                chroma: try device.makeComputePipelineState(function: chromaFunction),
-                combinedUnscaled420: try device.makeComputePipelineState(function: combinedUnscaled420Function),
-                bgraCursorOverlay: try device.makeComputePipelineState(function: bgraCursorOverlayFunction)
-            )
-        } catch {
-            throw MDKMetalColorConversionError.pipelineCreationFailed(String(describing: error))
-        }
     }
 
     func encode(
@@ -264,27 +189,6 @@ final class MDKMetalBGRAToYCbCrConverter {
             length: MemoryLayout<MDKMetalYCbCrConversionParameters>.stride,
             index: 0
         )
-
-        let canUseCombinedUnscaled420Path =
-            cursorOverlaySample == nil &&
-            target.chromaSubsampling.x == 2 &&
-            target.chromaSubsampling.y == 2 &&
-            sourceTextures[0].width == destinationTextures[0].width &&
-            sourceTextures[0].height == destinationTextures[0].height
-        if canUseCombinedUnscaled420Path {
-            computeEncoder.setTexture(sourceTextures[0], index: 0)
-            computeEncoder.setTexture(destinationTextures[0], index: 1)
-            computeEncoder.setTexture(destinationTextures[1], index: 2)
-            computeEncoder.setComputePipelineState(combinedUnscaled420Pipeline)
-            dispatch(
-                encoder: computeEncoder,
-                pipeline: combinedUnscaled420Pipeline,
-                width: destinationTextures[1].width,
-                height: destinationTextures[1].height
-            )
-            computeEncoder.endEncoding()
-            return
-        }
 
         computeEncoder.setTexture(sourceTextures[0], index: 0)
         computeEncoder.setTexture(destinationTextures[0], index: 1)
@@ -620,14 +524,6 @@ final class MDKMetalBGRAToYCbCrConverter {
         );
     }
 
-    inline float3 readRGB(
-        texture2d<float, access::read> sourceTexture,
-        uint2 pixel
-    ) {
-        uint2 boundedPixel = min(pixel, uint2(sourceTexture.get_width() - 1, sourceTexture.get_height() - 1));
-        return sourceTexture.read(boundedPixel).rgb;
-    }
-
     inline float4 sampleCursor(
         texture2d<float, access::sample> cursorTexture,
         sampler linearSampler,
@@ -739,47 +635,6 @@ final class MDKMetalBGRAToYCbCrConverter {
             float2(1.0)
         );
         destinationTexture.write(float4(limitedUV.x, limitedUV.y, 0.0, 1.0), gid);
-    }
-
-    kernel void bgraToYCbCrCombinedUnscaled420(
-        texture2d<float, access::read> sourceTexture [[texture(0)]],
-        texture2d<float, access::write> lumaTexture [[texture(1)]],
-        texture2d<float, access::write> chromaTexture [[texture(2)]],
-        constant ConversionParameters &parameters [[buffer(0)]],
-        uint2 gid [[thread_position_in_grid]]
-    ) {
-        if (gid.x >= chromaTexture.get_width() || gid.y >= chromaTexture.get_height()) {
-            return;
-        }
-
-        uint2 basePixel = gid * uint2(2, 2);
-        float3 accumulatedRGB = float3(0.0);
-        uint sampleCount = 0;
-        for (uint offsetY = 0; offsetY < 2; ++offsetY) {
-            for (uint offsetX = 0; offsetX < 2; ++offsetX) {
-                uint2 lumaPixel = basePixel + uint2(offsetX, offsetY);
-                if (lumaPixel.x >= lumaTexture.get_width() || lumaPixel.y >= lumaTexture.get_height()) {
-                    continue;
-                }
-
-                float3 rgb = transformRGB(readRGB(sourceTexture, lumaPixel), parameters);
-                float y = dot(float4(rgb, 1.0), parameters.yCoefficients);
-                float limitedY = clamp((y * parameters.lumaScale) + parameters.lumaOffset, 0.0, 1.0);
-                lumaTexture.write(limitedY, lumaPixel);
-                accumulatedRGB += rgb;
-                sampleCount += 1;
-            }
-        }
-        accumulatedRGB *= 1.0 / max(float(sampleCount), 1.0);
-
-        float cb = dot(float4(accumulatedRGB, 1.0), parameters.cbCoefficients);
-        float cr = dot(float4(accumulatedRGB, 1.0), parameters.crCoefficients);
-        float2 limitedUV = clamp(
-            (float2(cb, cr) * parameters.chromaScale) + parameters.chromaOffset,
-            float2(0.0),
-            float2(1.0)
-        );
-        chromaTexture.write(float4(limitedUV.x, limitedUV.y, 0.0, 1.0), gid);
     }
 
     kernel void overlayCursorOnBGRA(
