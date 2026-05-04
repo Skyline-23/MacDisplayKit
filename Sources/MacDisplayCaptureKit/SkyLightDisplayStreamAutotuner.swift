@@ -10,6 +10,7 @@ actor MDKSkyLightDisplayStreamAutotuner {
 
     private static let defaultBenchmarkSampleDuration: TimeInterval = 0.35
     private static let highRefreshBenchmarkSampleDuration: TimeInterval = 0.75
+    private static let highRefreshTargetFrameRateFloor = 100
     private static let highRefreshDisplayRefreshRateFloor = 100.0
     private static let highRefreshGuardrailMinimumOutputFrameRate = 48.0
 
@@ -282,8 +283,8 @@ actor MDKSkyLightDisplayStreamAutotuner {
         targetFrameRate: Int,
         displayRefreshRate: Double?
     ) -> Bool {
-        _ = targetFrameRate
-        return (displayRefreshRate ?? 0) >= highRefreshDisplayRefreshRateFloor
+        targetFrameRate >= highRefreshTargetFrameRateFloor ||
+            (displayRefreshRate ?? 0) >= highRefreshDisplayRefreshRateFloor
     }
 
     private static func highRefreshGuardrailScore(
