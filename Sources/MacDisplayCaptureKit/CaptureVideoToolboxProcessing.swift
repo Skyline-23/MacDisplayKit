@@ -213,7 +213,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let device: (any MTLDevice)?
     private let commandQueue: (any MTLCommandQueue)?
     private let scaler: MDKMetalBilinearScaler?
-    private let colorConverter: MDKMetalBGRAToYCbCrConverter?
+    private var colorConverter: MDKMetalBGRAToYCbCrConverter?
     private let maxInflightStagingSlots: Int
     private let outputHandler: (@Sendable (MDKEncodedFrame) -> Void)?
     private let failureHandler: (@Sendable (String) -> Void)?
@@ -237,6 +237,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var processingFailureCount: UInt64 = 0
     private var processingErrorHistogram: [String: Int] = [:]
     private let outputQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.output")
+    private let outputDeliveryQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.output-delivery")
     private var outputCallbackCount: UInt64 = 0
     private var completedOutputFrameCount: UInt64 = 0
     private var outputCallbackStatusHistogram: [String: Int] = [:]
@@ -250,7 +251,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var sessionConfigurationNotes: [String] = []
     private var directSubmissionFrameCount: UInt64 = 0
     private var stagedSubmissionFrameCount: UInt64 = 0
-    private let colorConverterInitializationErrorDescription: String?
+    private var colorConverterInitializationErrorDescription: String?
     private let outputDrainGroup = DispatchGroup()
     private let stagingSubmissionGroup = DispatchGroup()
     private let encodeQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode")
@@ -287,7 +288,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.device = device
         self.commandQueue = device?.makeCommandQueue()
         self.scaler = device.map { MDKMetalBilinearScaler(device: $0) }
-        if let device {
+        if let device, codec != .proResProxy {
             do {
                 self.colorConverter = try MDKMetalBGRAToYCbCrConverter(device: device)
                 self.colorConverterInitializationErrorDescription = nil
@@ -295,6 +296,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 self.colorConverter = nil
                 self.colorConverterInitializationErrorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
             }
+        } else if device != nil {
+            self.colorConverter = nil
+            self.colorConverterInitializationErrorDescription = nil
         } else {
             self.colorConverter = nil
             self.colorConverterInitializationErrorDescription = "Metal device unavailable."
@@ -463,6 +467,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         var notes = [
             "videoToolboxSubmitMode=sync-submit-queue",
             "videoToolboxOutputCallback=non-nil",
+            "videoToolboxOutputDeliveryMode=\(shouldDecoupleOutputDelivery ? "codec-decoupled" : "stats-queue")",
             "videoToolboxCodec=\(codec.rawValue)",
             "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
             "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "hybrid-direct-or-metal-staging")",
@@ -669,16 +674,18 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let presentationTimeStamp = CMTime(value: frameIndex, timescale: Int32(targetFrameRate))
         frameIndex += 1
         stagingSubmissionGroup.enter()
-
-        if frame.pixelFormat != targetPixelFormat {
-            guard let colorConverter else {
+        func loadColorConverter() throws -> MDKMetalBGRAToYCbCrConverter {
+            do {
+                return try ensureColorConverter()
+            } catch {
                 stagingSubmissionGroup.leave()
                 releaseStagingSlot(identifier: slotIdentifier)
-                throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
-                    sourcePixelFormat: frame.pixelFormat,
-                    targetPixelFormat: targetPixelFormat
-                )
+                throw error
             }
+        }
+
+        if frame.pixelFormat != targetPixelFormat {
+            let colorConverter = try loadColorConverter()
             if !sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) {
                 sessionConfigurationNotes.append(
                     String(
@@ -715,14 +722,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 destinationWidth: outputDimensions.x,
                 destinationHeight: outputDimensions.y
             ), let cursorTexture {
-                guard let colorConverter else {
-                    stagingSubmissionGroup.leave()
-                    releaseStagingSlot(identifier: slotIdentifier)
-                    throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
-                        sourcePixelFormat: frame.pixelFormat,
-                        targetPixelFormat: targetPixelFormat
-                    )
-                }
+                let colorConverter = try loadColorConverter()
                 try colorConverter.overlayCursorOnBGRA(
                     commandBuffer: commandBuffer,
                     destinationTexture: slot.textures[0],
@@ -755,14 +755,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             blitEncoder.endEncoding()
             if let cursorOverlaySample = frame.cursorOverlaySample,
                let cursorTexture {
-                guard let colorConverter else {
-                    stagingSubmissionGroup.leave()
-                    releaseStagingSlot(identifier: slotIdentifier)
-                    throw MDKVideoToolboxProcessingError.conversionRequiresMetal(
-                        sourcePixelFormat: frame.pixelFormat,
-                        targetPixelFormat: targetPixelFormat
-                    )
-                }
+                let colorConverter = try loadColorConverter()
                 try colorConverter.overlayCursorOnBGRA(
                     commandBuffer: commandBuffer,
                     destinationTexture: slot.textures[0],
@@ -809,6 +802,24 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         commandBuffer.commit()
+    }
+
+    private func ensureColorConverter() throws -> MDKMetalBGRAToYCbCrConverter {
+        if let colorConverter {
+            return colorConverter
+        }
+        guard let device else {
+            throw MDKVideoToolboxProcessingError.metalDeviceUnavailable
+        }
+        do {
+            let colorConverter = try MDKMetalBGRAToYCbCrConverter(device: device)
+            self.colorConverter = colorConverter
+            colorConverterInitializationErrorDescription = nil
+            return colorConverter
+        } catch {
+            colorConverterInitializationErrorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            throw error
+        }
     }
 
     private func submitToEncoder(
@@ -1649,6 +1660,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         submissionToken?.markCompleted()
+        if shouldDecoupleOutputDelivery, let encodedFrame, outputCompleted {
+            outputDeliveryQueue.async { [outputHandler] in
+                outputHandler?(encodedFrame)
+            }
+        }
         outputQueue.async { [self] in
             outputCallbackCount += 1
             outputCallbackStatusHistogram[describe(status: status), default: 0] += 1
@@ -1668,13 +1684,17 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             if outputCompleted {
                 completedOutputFrameCount += 1
             }
-            if let encodedFrame, outputCompleted {
+            if let encodedFrame, outputCompleted, !shouldDecoupleOutputDelivery {
                 outputHandler?(encodedFrame)
             } else if status != noErr {
                 failureHandler?("VT output callback failed (\(describe(status: status))).")
             }
             outputDrainGroup.leave()
         }
+    }
+
+    private var shouldDecoupleOutputDelivery: Bool {
+        codec == .proResProxy
     }
 
     private func describe(status: OSStatus) -> String {
