@@ -662,7 +662,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let stagedPixelBuffer = MDKVideoToolboxSendablePixelBuffer(pixelBuffer: slot.pixelBuffer)
         let metalStageStartedAt = ProcessInfo.processInfo.systemUptime
 
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+        guard let commandBuffer = commandQueue.makeCommandBufferWithUnretainedReferences() ??
+            commandQueue.makeCommandBuffer() else {
             releaseStagingSlot(identifier: slotIdentifier)
             throw MDKVideoToolboxProcessingError.commandBufferUnavailable
         }
@@ -1001,7 +1002,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             codec == .hevc &&
             isHighRefreshLowLatency &&
             hdrConfiguration?.transferFunction == .smpteSt2084PQ
-        let allowsTemporalCompression = codec != .proResProxy
+        let allowsTemporalCompression = codec != .proResProxy && !isHighRefreshHDRHEVC
         let expectedFrameRateHint = targetFrameRate
         let maximumRealTimeFrameRateHint =
             (codec == .hevc && isHighRefreshHDRHEVC && !shouldEnableLowLatencyRateControl)
