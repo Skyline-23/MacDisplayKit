@@ -1606,7 +1606,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             max((callbackReceivedAt - $0.submittedAt) * 1000.0, 0)
         }
         let resolvedSampleBuffer = sampleBuffer.map { sampleBuffer in
-            guard let hdrConfiguration else {
+            guard codec == .hevc,
+                  let hdrConfiguration else {
                 return sampleBuffer
             }
             let isKeyFrame: Bool
