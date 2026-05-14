@@ -686,7 +686,7 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         let completedOutputFrameCounts = summaries.compactMap(\.completedOutputFrameCount)
         var notes = [
             "videoToolboxEncodedTileStreamLaneCount=\(lanes.count)",
-            "videoToolboxEncodedTileStreamPartition=horizontal-columns-ctu64",
+            "videoToolboxEncodedTileStreamPartition=horizontal-columns",
             "videoToolboxEncodedTileStreamOutputMode=independent"
         ]
         notes += summaries.flatMap(\.notes)
@@ -728,15 +728,13 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
 
         var regions: [CGRect] = []
         regions.reserveCapacity(tileCount)
-        let alignment = 64
         var x = 0
         for tileIndex in 0..<tileCount {
             let remainingTiles = tileCount - tileIndex
             let remainingWidth = max(width - x, 1)
             var tileWidth = remainingWidth / remainingTiles
             if tileIndex < tileCount - 1 {
-                let alignedWidth = (tileWidth / alignment) * alignment
-                tileWidth = max(alignedWidth, alignment)
+                tileWidth = max((tileWidth / 2) * 2, 2)
             } else {
                 tileWidth = remainingWidth
             }
