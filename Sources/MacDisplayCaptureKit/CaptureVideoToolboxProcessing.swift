@@ -224,6 +224,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let targetAverageBitRateBitsPerSecond: Int?
     private let tileMetadata: MDKEncodedFrameTileMetadata
     private let sourceRegion: CGRect?
+    private let maxFrameDelayCountOverride: Int?
 
     private var compressionSession: VTCompressionSession?
     private var activeDimensions: SIMD2<Int>?
@@ -283,7 +284,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         hdrConfiguration: MDKVideoHDRConfiguration? = nil,
         targetAverageBitRateBitsPerSecond: Int? = nil,
         tileMetadata: MDKEncodedFrameTileMetadata = .singleFrame,
-        sourceRegion: CGRect? = nil
+        sourceRegion: CGRect? = nil,
+        maxFrameDelayCountOverride: Int? = nil
     ) {
         self.codec = codec
         self.preprocessStrategy = preprocessStrategy
@@ -311,6 +313,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.targetAverageBitRateBitsPerSecond = targetAverageBitRateBitsPerSecond.flatMap { $0 > 0 ? $0 : nil }
         self.tileMetadata = tileMetadata
         self.sourceRegion = sourceRegion
+        self.maxFrameDelayCountOverride = maxFrameDelayCountOverride
         self.encodeQueue.setSpecific(key: encodeQueueSpecificKey, value: encodeQueueSpecificValue)
     }
 
@@ -1080,7 +1083,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             (codec == .hevc && isHighRefreshLowLatency && !shouldEnableLowLatencyRateControl)
             ? 0
             : nil
-        let maxFrameDelayCount = MDKVideoToolboxLatencyPolicy.maxFrameDelayCount(
+        let maxFrameDelayCount = maxFrameDelayCountOverride ?? MDKVideoToolboxLatencyPolicy.maxFrameDelayCount(
             codec: codec,
             targetFrameRate: targetFrameRate
         )
