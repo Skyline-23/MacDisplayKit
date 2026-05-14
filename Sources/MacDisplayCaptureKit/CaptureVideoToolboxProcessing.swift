@@ -220,7 +220,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let hdrConfiguration: MDKVideoHDRConfiguration?
     private let targetAverageBitRateBitsPerSecond: Int?
     private let tileMetadata: MDKEncodedFrameTileMetadata
-    private let sourceRegion: CGRect?
 
     private var compressionSession: VTCompressionSession?
     private var activeDimensions: SIMD2<Int>?
@@ -279,8 +278,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         failureHandler: (@Sendable (String) -> Void)? = nil,
         hdrConfiguration: MDKVideoHDRConfiguration? = nil,
         targetAverageBitRateBitsPerSecond: Int? = nil,
-        tileMetadata: MDKEncodedFrameTileMetadata = .singleFrame,
-        sourceRegion: CGRect? = nil
+        tileMetadata: MDKEncodedFrameTileMetadata = .singleFrame
     ) {
         self.codec = codec
         self.preprocessStrategy = preprocessStrategy
@@ -307,7 +305,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.hdrConfiguration = hdrConfiguration?.negotiatedForEncodedDelivery(codec: codec)
         self.targetAverageBitRateBitsPerSecond = targetAverageBitRateBitsPerSecond.flatMap { $0 > 0 ? $0 : nil }
         self.tileMetadata = tileMetadata
-        self.sourceRegion = sourceRegion
         self.encodeQueue.setSpecific(key: encodeQueueSpecificKey, value: encodeQueueSpecificValue)
     }
 
@@ -529,12 +526,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             hdrConfiguration: hdrConfiguration,
             strategy: encoderInputStrategy
         )
-        let region = effectiveSourceRegion(for: frame)
-        let processingWidth = max(Int(region.width.rounded(.down)), 1)
-        let processingHeight = max(Int(region.height.rounded(.down)), 1)
         let outputDimensions = preprocessStrategy.outputDimensions(
-            sourceWidth: processingWidth,
-            sourceHeight: processingHeight,
+            sourceWidth: frame.width,
+            sourceHeight: frame.height,
             pixelFormat: targetPixelFormat
         )
         try ensureCompressionSession(
@@ -544,7 +538,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         )
 
         let needsPixelFormatConversion = frame.pixelFormat != targetPixelFormat
-        let needsScaling = outputDimensions.x != processingWidth || outputDimensions.y != processingHeight
+        let needsScaling = outputDimensions.x != frame.width || outputDimensions.y != frame.height
 
         let hasCursorOverlay = frame.cursorOverlaySample != nil
         let requiresDetachedSubmissionSurface = shouldUseDetachedSubmissionSurface(
@@ -654,8 +648,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             device: device
         )
         let outputDimensions = preprocessStrategy.outputDimensions(
-            sourceWidth: max(Int(effectiveSourceRegion(for: frame).width.rounded(.down)), 1),
-            sourceHeight: max(Int(effectiveSourceRegion(for: frame).height.rounded(.down)), 1),
+            sourceWidth: frame.width,
+            sourceHeight: frame.height,
             pixelFormat: targetPixelFormat
         )
         let slot = try acquireStagingSlot(
@@ -699,7 +693,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 sourceTextures: sourceTextures,
                 destinationTextures: slot.textures,
                 destinationPixelFormat: targetPixelFormat,
-                sourceRegion: effectiveSourceRegion(for: frame),
                 hdrConfiguration: hdrConfiguration,
                 cursorTexture: cursorTexture,
                 cursorOverlaySample: frame.cursorOverlaySample
@@ -746,25 +739,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
 
             for (sourceTexture, destinationTexture) in zip(sourceTextures, slot.textures) {
-                let sourceRegion = effectiveSourceRegion(for: frame)
-                let copyWidth = min(
-                    destinationTexture.width,
-                    max(Int(sourceRegion.width.rounded(.down)), 1)
-                )
-                let copyHeight = min(
-                    destinationTexture.height,
-                    max(Int(sourceRegion.height.rounded(.down)), 1)
-                )
-                let copySize = MTLSize(width: copyWidth, height: copyHeight, depth: 1)
+                let copySize = MTLSize(width: sourceTexture.width, height: sourceTexture.height, depth: 1)
                 blitEncoder.copy(
                     from: sourceTexture,
                     sourceSlice: 0,
                     sourceLevel: 0,
-                    sourceOrigin: MTLOrigin(
-                        x: max(Int(sourceRegion.minX.rounded(.down)), 0),
-                        y: max(Int(sourceRegion.minY.rounded(.down)), 0),
-                        z: 0
-                    ),
+                    sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
                     sourceSize: copySize,
                     to: destinationTexture,
                     destinationSlice: 0,
@@ -829,15 +809,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         commandBuffer.commit()
-    }
-
-    private func effectiveSourceRegion(for frame: MDKCaptureFrame) -> CGRect {
-        let fullFrame = CGRect(x: 0, y: 0, width: frame.width, height: frame.height)
-        guard let sourceRegion else {
-            return fullFrame
-        }
-        let boundedRegion = sourceRegion.intersection(fullFrame)
-        return boundedRegion.isNull || boundedRegion.isEmpty ? fullFrame : boundedRegion
     }
 
     private func submitToEncoder(

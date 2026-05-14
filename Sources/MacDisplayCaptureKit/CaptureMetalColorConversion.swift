@@ -1,4 +1,3 @@
-import CoreGraphics
 import CoreVideo
 import Metal
 import simd
@@ -34,8 +33,6 @@ enum MDKMetalColorConversionError: Error, LocalizedError, Equatable {
 
 private struct MDKMetalYCbCrConversionParameters {
     var sourceSize: SIMD2<UInt32>
-    var sourceOrigin: SIMD2<Float>
-    var sourceSampleSize: SIMD2<Float>
     var destinationLumaSize: SIMD2<UInt32>
     var chromaSubsampling: SIMD2<UInt32>
     var cursorOverlayEnabled: UInt32
@@ -140,7 +137,6 @@ final class MDKMetalBGRAToYCbCrConverter {
         sourceTextures: [MTLTexture],
         destinationTextures: [MTLTexture],
         destinationPixelFormat: UInt32,
-        sourceRegion: CGRect? = nil,
         hdrConfiguration: MDKVideoHDRConfiguration? = nil,
         cursorTexture: MTLTexture? = nil,
         cursorOverlaySample: MDKCursorOverlaySample? = nil
@@ -157,17 +153,6 @@ final class MDKMetalBGRAToYCbCrConverter {
             for: destinationPixelFormat,
             hdrConfiguration: hdrConfiguration
         )
-        let sourceWidth = CGFloat(sourceTextures[0].width)
-        let sourceHeight = CGFloat(sourceTextures[0].height)
-        let boundedSourceRegion = sourceRegion.map {
-            $0.intersection(CGRect(x: 0, y: 0, width: sourceWidth, height: sourceHeight))
-        }.flatMap { $0.isNull || $0.isEmpty ? nil : $0 }
-        let samplingRegion = boundedSourceRegion ?? CGRect(
-            x: 0,
-            y: 0,
-            width: sourceWidth,
-            height: sourceHeight
-        )
         let cursorRect = cursorOverlaySample.map {
             SIMD4(
                 Float($0.rect.minX),
@@ -178,8 +163,6 @@ final class MDKMetalBGRAToYCbCrConverter {
         } ?? SIMD4<Float>(repeating: 0)
         var parameters = MDKMetalYCbCrConversionParameters(
             sourceSize: SIMD2(UInt32(sourceTextures[0].width), UInt32(sourceTextures[0].height)),
-            sourceOrigin: SIMD2(Float(samplingRegion.minX), Float(samplingRegion.minY)),
-            sourceSampleSize: SIMD2(Float(samplingRegion.width), Float(samplingRegion.height)),
             destinationLumaSize: SIMD2(UInt32(destinationTextures[0].width), UInt32(destinationTextures[0].height)),
             chromaSubsampling: target.chromaSubsampling,
             cursorOverlayEnabled: cursorOverlaySample == nil ? 0 : 1,
@@ -498,8 +481,6 @@ final class MDKMetalBGRAToYCbCrConverter {
 
     struct ConversionParameters {
         uint2 sourceSize;
-        float2 sourceOrigin;
-        float2 sourceSampleSize;
         uint2 destinationLumaSize;
         uint2 chromaSubsampling;
         uint cursorOverlayEnabled;
@@ -595,10 +576,9 @@ final class MDKMetalBGRAToYCbCrConverter {
         constexpr sampler linearSampler(coord::normalized, address::clamp_to_edge, filter::linear);
         float2 destinationSize = float2(parameters.destinationLumaSize);
         float2 normalizedCoordinates = (float2(gid) + float2(0.5)) / destinationSize;
-        float2 sourcePixel = parameters.sourceOrigin + (normalizedCoordinates * parameters.sourceSampleSize);
-        float2 sampleCoordinates = sourcePixel / float2(parameters.sourceSize);
+        float2 sourcePixel = normalizedCoordinates * float2(parameters.sourceSize);
         float3 rgb = applyCursorOverlay(
-            sampleRGB(sourceTexture, linearSampler, sampleCoordinates),
+            sampleRGB(sourceTexture, linearSampler, normalizedCoordinates),
             cursorTexture,
             linearSampler,
             sourcePixel,
@@ -633,10 +613,9 @@ final class MDKMetalBGRAToYCbCrConverter {
                 float2 sampleCoordinate = (
                     basePixel + float2(float(offsetX) + 0.5, float(offsetY) + 0.5)
                 ) / lumaSize;
-                float2 sourcePixel = parameters.sourceOrigin + (sampleCoordinate * parameters.sourceSampleSize);
-                float2 sourceCoordinate = sourcePixel / float2(parameters.sourceSize);
+                float2 sourcePixel = sampleCoordinate * float2(parameters.sourceSize);
                 float3 sample = applyCursorOverlay(
-                    sampleRGB(sourceTexture, linearSampler, sourceCoordinate),
+                    sampleRGB(sourceTexture, linearSampler, sampleCoordinate),
                     cursorTexture,
                     linearSampler,
                     sourcePixel,
