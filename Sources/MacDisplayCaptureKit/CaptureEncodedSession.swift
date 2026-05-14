@@ -1222,6 +1222,11 @@ public actor MDKEncodedCaptureSession {
         case .skyLightDisplayStream:
             let tuningSelection = await MDKSkyLightDisplayStreamAutotuner.shared.resolveSelection(for: configuration)
             let queueDepth = tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth
+            let minimumFrameTime = tuningSelection?.candidate.minimumFrameTime ?? 0
+            let showCursor = MDKResolvedSkyLightDisplayStreamShowCursor(
+                requestedShowCursor: configuration.streamConfiguration.resolvedShowCursor,
+                tuningSelection: tuningSelection
+            )
             let recommendedPendingFrameCount = recommendedSkyLightPendingFrameCount(
                 for: configuration,
                 queueDepth: queueDepth
@@ -1236,9 +1241,34 @@ public actor MDKEncodedCaptureSession {
                 configuration.deliveryMode == .callbackOnly
                 ? 3
                 : 1
+            var diagnosticNotes = tuningSelection?.notes ?? []
+            if ProcessInfo.processInfo.environment["MDK_SKYLIGHT_DISPLAY_STREAM_PREFLIGHT_WARMUP"] == "1" {
+                do {
+                    let warmupResult = try MDKSkyLightDisplayStreamBenchmark.run(
+                        displayID: configuration.displayID,
+                        sampleDuration: 0.01,
+                        minimumFrameTime: minimumFrameTime,
+                        queueDepth: queueDepth,
+                        showCursor: showCursor,
+                        outputWidth: configuration.streamConfiguration.resolvedOutputWidth,
+                        outputHeight: configuration.streamConfiguration.resolvedOutputHeight,
+                        pixelFormat: configuration.resolvedCapturePixelFormat
+                    )
+                    diagnosticNotes += [
+                        "skyLightPreflightWarmupStatus=\(warmupResult.status)",
+                        "skyLightPreflightWarmupStopStatus=\(warmupResult.stopStatus)",
+                        "skyLightPreflightWarmupCallbackCount=\(warmupResult.callbackCount)",
+                        "skyLightPreflightWarmupCompleteFrameCount=\(warmupResult.completeFrameCount)",
+                        String(format: "skyLightPreflightWarmupObservedFrameRate=%.3f", warmupResult.observedFrameRate),
+                        "skyLightPreflightWarmupCadence=\(warmupResult.cadenceClassification)"
+                    ]
+                } catch {
+                    diagnosticNotes.append("skyLightPreflightWarmupError=\(error.localizedDescription)")
+                }
+            }
             return MDKEncodedCaptureSourcePreparation(
                 recommendedPendingFrameCount: recommendedPendingFrameCount,
-                diagnosticNotes: (tuningSelection?.notes ?? []) + [
+                diagnosticNotes: diagnosticNotes + [
                     "sourceBackend=\(MDKEncodedCaptureSourceBackend.skyLightDisplayStream.rawValue)",
                     "rawPrivateDisplayStream=true",
                     String(format: "rawPrivateDisplayStreamRequestedPixelFormat=0x%08X", configuration.resolvedCapturePixelFormat),
