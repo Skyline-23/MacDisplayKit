@@ -13578,6 +13578,8 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
     const OSType requestedPixelFormat = pixelFormat != 0
         ? static_cast<OSType>(pixelFormat)
         : kCVPixelFormatType_32BGRA;
+    const BOOL stopAfterFirstCompleteFrame = sampleDuration < 0.0;
+    __block BOOL firstCleanCompleteFrameReached = NO;
 
     CGDisplayStreamRef stream = createSymbol(
         static_cast<CGDirectDisplayID>(displayID),
@@ -13590,6 +13592,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
           uint64_t displayTime,
           IOSurfaceRef frameSurface,
           CGDisplayStreamUpdateRef updateRef) {
+            if (firstCleanCompleteFrameReached) {
+                return;
+            }
             callbackCount += 1;
             NSString *statusName = MDKDescribeDisplayStreamFrameStatus(status);
             frameStatusHistogram[statusName] = @([frameStatusHistogram[statusName] integerValue] + 1);
@@ -13653,6 +13658,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
                 dropCountMax = std::max(dropCountMax, droppedFrames);
             }
             if (droppedFrames == 0) {
+                if (stopAfterFirstCompleteFrame) {
+                    firstCleanCompleteFrameReached = YES;
+                }
                 dispatch_semaphore_signal(firstCompleteFrameSemaphore);
             }
             [displayTimes addObject:@(displayTime)];
@@ -13671,7 +13679,6 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
 
     const CFAbsoluteTime startedAt = CFAbsoluteTimeGetCurrent();
     const CGError startStatus = startSymbol(stream);
-    const BOOL stopAfterFirstCompleteFrame = sampleDuration < 0.0;
     const NSTimeInterval targetDuration = std::max(std::fabs(sampleDuration), 0.001);
     if (stopAfterFirstCompleteFrame) {
         const dispatch_time_t timeout = dispatch_time(

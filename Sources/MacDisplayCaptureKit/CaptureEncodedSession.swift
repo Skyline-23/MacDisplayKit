@@ -609,6 +609,8 @@ private final class MDKSourceReleaseCoordinator: @unchecked Sendable {
 
 private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRuntime, @unchecked Sendable {
     private let lanes: [MDKVideoToolboxEncodingProcessor]
+    private let laneQueues: [DispatchQueue]
+    private let failureHandler: @Sendable (String) -> Void
 
     init(
         configuration: MDKEncodedCaptureConfiguration,
@@ -618,7 +620,11 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         let laneCount = Int(max(configuration.tileLayout.encodedLaneCount, configuration.tileLayout.tileCount, 1))
         let width = configuration.streamConfiguration.resolvedOutputWidth
         let height = configuration.streamConfiguration.resolvedOutputHeight
+        self.failureHandler = failureHandler
         let regions = Self.horizontalTileRegions(width: width, height: height, tileCount: laneCount)
+        self.laneQueues = regions.indices.map { laneIndex in
+            DispatchQueue(label: "com.skyline23.MacDisplayKit.encoded-capture.tile-lane.\(laneIndex)", qos: .userInteractive)
+        }
         self.lanes = regions.enumerated().map { laneIndex, region in
             MDKVideoToolboxEncodingProcessor(
                 codec: configuration.codec,
@@ -649,19 +655,20 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
             count: lanes.count,
             releaseSourceFrame: releaseSourceFrame
         )
-        var scheduledLaneCount = 0
-        do {
-            for lane in lanes {
-                try lane.process(frame: frame) {
+        for (laneIndex, lane) in lanes.enumerated() {
+            let laneQueue = laneQueues[laneIndex]
+            let failureHandler = self.failureHandler
+            laneQueue.async {
+                do {
+                    try lane.process(frame: frame) {
+                        releaseCoordinator.releaseOne()
+                    }
+                } catch {
                     releaseCoordinator.releaseOne()
+                    let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                    failureHandler(description)
                 }
-                scheduledLaneCount += 1
             }
-        } catch {
-            for _ in scheduledLaneCount..<lanes.count {
-                releaseCoordinator.releaseOne()
-            }
-            throw error
         }
     }
 
@@ -670,11 +677,13 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
     }
 
     func finalize() -> MDKCaptureFrameProcessingSummary? {
-        summarize(lanes.compactMap { $0.finalize() })
+        laneQueues.forEach { $0.sync {} }
+        return summarize(lanes.compactMap { $0.finalize() })
     }
 
     func liveSummary() -> MDKCaptureFrameProcessingSummary? {
-        summarize(lanes.compactMap { $0.liveSummary() })
+        laneQueues.forEach { $0.sync {} }
+        return summarize(lanes.compactMap { $0.liveSummary() })
     }
 
     private func summarize(_ summaries: [MDKCaptureFrameProcessingSummary]) -> MDKCaptureFrameProcessingSummary? {
@@ -687,6 +696,7 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         var notes = [
             "videoToolboxEncodedTileStreamLaneCount=\(lanes.count)",
             "videoToolboxEncodedTileStreamPartition=horizontal-columns",
+            "videoToolboxEncodedTileStreamLaneScheduling=parallel-serial-queues",
             "videoToolboxEncodedTileStreamOutputMode=independent"
         ]
         notes += summaries.flatMap(\.notes)
