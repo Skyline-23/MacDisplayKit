@@ -611,7 +611,6 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
     private let laneCount: Int
     private let regions: [CGRect]
     private let tileMetadataByLane: [MDKEncodedFrameTileMetadata]
-    private let maxFrameDelayCountOverride: Int?
     private let processor: MDKVideoToolboxEncodingProcessor
 
     init(
@@ -634,8 +633,6 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         self.laneCount = laneCount
         self.regions = regions
         self.tileMetadataByLane = tileMetadataByLane
-        let maxFrameDelayCountOverride = configuration.codec == .hevc ? 0 : nil
-        self.maxFrameDelayCountOverride = maxFrameDelayCountOverride
         self.processor = MDKVideoToolboxEncodingProcessor(
             codec: configuration.codec,
             preprocessStrategy: configuration.preprocessStrategy,
@@ -647,8 +644,7 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
             hdrConfiguration: configuration.resolvedEncodedHDRConfiguration,
             targetAverageBitRateBitsPerSecond: configuration.targetAverageBitRateBitsPerSecond,
             tileMetadata: tileMetadataByLane.first ?? .singleFrame,
-            sourceRegion: regions.first,
-            maxFrameDelayCountOverride: maxFrameDelayCountOverride
+            sourceRegion: regions.first
         )
     }
 
@@ -705,8 +701,7 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
             "videoToolboxEncodedTileStreamPartition=horizontal-columns",
             "videoToolboxEncodedTileStreamOutputMode=independent",
             "videoToolboxEncodedTileStreamVTSessionMode=single-shared-session",
-            "videoToolboxEncodedTileStreamVTSessionFrameRateHint=tile-record-cadence",
-            "videoToolboxEncodedTileStreamMaxFrameDelayOverride=\(maxFrameDelayCountOverride.map(String.init) ?? "default")"
+            "videoToolboxEncodedTileStreamVTSessionFrameRateHint=tile-record-cadence"
         ]
         notes += summaries.flatMap(\.notes)
 
