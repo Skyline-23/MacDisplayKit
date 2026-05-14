@@ -651,7 +651,7 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         )
         var scheduledLaneCount = 0
         do {
-            for lane in lanes.reversed() {
+            for lane in lanes {
                 try lane.process(frame: frame) {
                     releaseCoordinator.releaseOne()
                 }
@@ -687,7 +687,6 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         var notes = [
             "videoToolboxEncodedTileStreamLaneCount=\(lanes.count)",
             "videoToolboxEncodedTileStreamPartition=horizontal-columns",
-            "videoToolboxEncodedTileStreamLaneScheduling=reverse-enqueue-order",
             "videoToolboxEncodedTileStreamOutputMode=independent"
         ]
         notes += summaries.flatMap(\.notes)
