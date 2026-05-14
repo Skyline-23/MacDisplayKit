@@ -663,6 +663,59 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         await session.stop()
     }
 
+    func testSourceStartupWatchdogOnlyRestartsWhenNoProcessingProgressExists() {
+        let emptyRunningStats = MDKEncodedCaptureSessionStatistics(isRunning: true)
+        let emptySummary = MDKCaptureFrameProcessingSummary(
+            processedFrameCount: 0,
+            processingFailureCount: 0,
+            processingErrorHistogram: [:],
+            outputCallbackCount: 0,
+            completedOutputFrameCount: 0,
+            outputCallbackStatusHistogram: [:],
+            outputCallbackLatencyHistogram: [:],
+            minOutputCallbackLatencyMilliseconds: nil,
+            maxOutputCallbackLatencyMilliseconds: nil,
+            notes: []
+        )
+        let progressedSummary = MDKCaptureFrameProcessingSummary(
+            processedFrameCount: 1,
+            processingFailureCount: 0,
+            processingErrorHistogram: [:],
+            outputCallbackCount: 0,
+            completedOutputFrameCount: 0,
+            outputCallbackStatusHistogram: [:],
+            outputCallbackLatencyHistogram: [:],
+            minOutputCallbackLatencyMilliseconds: nil,
+            maxOutputCallbackLatencyMilliseconds: nil,
+            notes: []
+        )
+
+        XCTAssertTrue(
+            MDKEncodedCaptureSession.shouldRestartForSourceStartupTimeout(
+                statistics: emptyRunningStats,
+                processingSummary: emptySummary
+            )
+        )
+        XCTAssertFalse(
+            MDKEncodedCaptureSession.shouldRestartForSourceStartupTimeout(
+                statistics: emptyRunningStats,
+                processingSummary: progressedSummary
+            )
+        )
+        XCTAssertFalse(
+            MDKEncodedCaptureSession.shouldRestartForSourceStartupTimeout(
+                statistics: MDKEncodedCaptureSessionStatistics(droppedFrameCount: 1, isRunning: true),
+                processingSummary: emptySummary
+            )
+        )
+        XCTAssertFalse(
+            MDKEncodedCaptureSession.shouldRestartForSourceStartupTimeout(
+                statistics: MDKEncodedCaptureSessionStatistics(isRunning: false),
+                processingSummary: nil
+            )
+        )
+    }
+
     func testEncodedFrameHDRValidationReportSurfacesTransferAndMetadataPresence() throws {
         var sampleBuffer: CMSampleBuffer?
         var formatDescription: CMFormatDescription?
