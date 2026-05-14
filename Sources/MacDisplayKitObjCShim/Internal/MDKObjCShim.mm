@@ -13574,6 +13574,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
     __block std::uint64_t reducedDirtyRectCountMax = 0;
     __block std::uint64_t dropCountSum = 0;
     __block std::uint64_t dropCountMax = 0;
+    dispatch_semaphore_t firstCompleteFrameSemaphore = dispatch_semaphore_create(0);
     const OSType requestedPixelFormat = pixelFormat != 0
         ? static_cast<OSType>(pixelFormat)
         : kCVPixelFormatType_32BGRA;
@@ -13598,6 +13599,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
             }
 
             completeFrameCount += 1;
+            dispatch_semaphore_signal(firstCompleteFrameSemaphore);
             sawSurface = YES;
             if (surfaceWidth == 0) {
                 surfaceWidth = IOSurfaceGetWidth(frameSurface);
@@ -13666,8 +13668,17 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
 
     const CFAbsoluteTime startedAt = CFAbsoluteTimeGetCurrent();
     const CGError startStatus = startSymbol(stream);
-    const NSTimeInterval targetDuration = std::max(sampleDuration, 0.001);
-    [NSThread sleepForTimeInterval:targetDuration];
+    const BOOL stopAfterFirstCompleteFrame = sampleDuration < 0.0;
+    const NSTimeInterval targetDuration = std::max(std::fabs(sampleDuration), 0.001);
+    if (stopAfterFirstCompleteFrame) {
+        const dispatch_time_t timeout = dispatch_time(
+            DISPATCH_TIME_NOW,
+            static_cast<int64_t>(targetDuration * static_cast<NSTimeInterval>(NSEC_PER_SEC))
+        );
+        dispatch_semaphore_wait(firstCompleteFrameSemaphore, timeout);
+    } else {
+        [NSThread sleepForTimeInterval:targetDuration];
+    }
     const CGError stopStatus = stopSymbol(stream);
     dispatch_sync(queue, ^{
     });
@@ -13725,6 +13736,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
     [notes addObject:[NSString stringWithFormat:@"resolvedCaptureDimensions=%zux%zu", width, height]];
     if (appliedPropertyCount < 3) {
         [notes addObject:@"One or more CGDisplayStream property keys were unavailable, so the benchmark ran with a reduced property dictionary."];
+    }
+    if (stopAfterFirstCompleteFrame) {
+        [notes addObject:@"warmupMode=first-complete-frame"];
     }
     if (!sawSurface) {
         [notes addObject:@"The stream did not deliver any complete IOSurface-backed frames during the sample window."];
