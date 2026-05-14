@@ -255,6 +255,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let stagingSubmissionGroup = DispatchGroup()
     private let encodeQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode")
     private let submissionQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.submit")
+    private let metricsQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.metrics")
     private let encodeQueueSpecificKey = DispatchSpecificKey<UInt8>()
     private let encodeQueueSpecificValue: UInt8 = 1
     private var forceNextKeyFrame = false
@@ -477,20 +478,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
             "videoToolboxPixelBufferPoolIsShared=\(describeHardwareAcceleration(encoderPixelBufferPoolIsShared))",
             "videoToolboxRecommendedParallelizationLimit=\(recommendedParallelizationLimit.map(String.init) ?? "unknown")",
-            "videoToolboxPixelBufferCacheSize=\(pixelBufferCache.count)",
-            "videoToolboxEncodeQueueWaitSampleCount=\(encodeQueueWaitTiming.sampleCount)",
-            "videoToolboxEncodeQueueWaitAverageMilliseconds=\(formatMilliseconds(encodeQueueWaitTiming.averageMilliseconds))",
-            "videoToolboxEncodeQueueWaitMaxMilliseconds=\(formatMilliseconds(encodeQueueWaitTiming.maxMilliseconds))",
-            "videoToolboxEncodeInvocationSampleCount=\(encodeInvocationTiming.sampleCount)",
-            "videoToolboxEncodeInvocationAverageMilliseconds=\(formatMilliseconds(encodeInvocationTiming.averageMilliseconds))",
-            "videoToolboxEncodeInvocationMaxMilliseconds=\(formatMilliseconds(encodeInvocationTiming.maxMilliseconds))",
-            "videoToolboxMetalStageSampleCount=\(metalStageTiming.sampleCount)",
-            "videoToolboxMetalStageAverageMilliseconds=\(formatMilliseconds(metalStageTiming.averageMilliseconds))",
-            "videoToolboxMetalStageMaxMilliseconds=\(formatMilliseconds(metalStageTiming.maxMilliseconds))",
-            "videoToolboxVTEncodeCallSampleCount=\(vtEncodeCallTiming.sampleCount)",
-            "videoToolboxVTEncodeCallAverageMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.averageMilliseconds))",
-            "videoToolboxVTEncodeCallMaxMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.maxMilliseconds))"
+            "videoToolboxPixelBufferCacheSize=\(pixelBufferCache.count)"
         ]
+        notes += timingRuntimeNotes()
         if includeDrainWaitStatus {
             notes.append("videoToolboxStagingSubmissionWait=\(stagingSubmissionWaitStatus == .success ? "success" : "timeout")")
             notes.append("videoToolboxOutputDrainWait=\(outputDrainWaitStatus == .success ? "success" : "timeout")")
@@ -1563,6 +1553,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             outputCallbackLatencyHistogram = [:]
             minOutputCallbackLatencyMilliseconds = nil
             maxOutputCallbackLatencyMilliseconds = nil
+        }
+        metricsQueue.sync {
             encodeQueueWaitTiming = MDKVideoToolboxTimingAccumulator()
             encodeInvocationTiming = MDKVideoToolboxTimingAccumulator()
             metalStageTiming = MDKVideoToolboxTimingAccumulator()
@@ -1696,7 +1688,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         endedAt: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) {
         let elapsedMilliseconds = (endedAt - startedAt) * 1000.0
-        outputQueue.sync {
+        metricsQueue.async { [self] in
             switch metric {
             case .encodeQueueWait:
                 encodeQueueWaitTiming.record(elapsedMilliseconds)
@@ -1707,6 +1699,26 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             case .vtEncodeCall:
                 vtEncodeCallTiming.record(elapsedMilliseconds)
             }
+        }
+    }
+
+    private func timingRuntimeNotes() -> [String] {
+        metricsQueue.sync {
+            [
+                "videoToolboxTimingMetricsQueue=async-dedicated",
+                "videoToolboxEncodeQueueWaitSampleCount=\(encodeQueueWaitTiming.sampleCount)",
+                "videoToolboxEncodeQueueWaitAverageMilliseconds=\(formatMilliseconds(encodeQueueWaitTiming.averageMilliseconds))",
+                "videoToolboxEncodeQueueWaitMaxMilliseconds=\(formatMilliseconds(encodeQueueWaitTiming.maxMilliseconds))",
+                "videoToolboxEncodeInvocationSampleCount=\(encodeInvocationTiming.sampleCount)",
+                "videoToolboxEncodeInvocationAverageMilliseconds=\(formatMilliseconds(encodeInvocationTiming.averageMilliseconds))",
+                "videoToolboxEncodeInvocationMaxMilliseconds=\(formatMilliseconds(encodeInvocationTiming.maxMilliseconds))",
+                "videoToolboxMetalStageSampleCount=\(metalStageTiming.sampleCount)",
+                "videoToolboxMetalStageAverageMilliseconds=\(formatMilliseconds(metalStageTiming.averageMilliseconds))",
+                "videoToolboxMetalStageMaxMilliseconds=\(formatMilliseconds(metalStageTiming.maxMilliseconds))",
+                "videoToolboxVTEncodeCallSampleCount=\(vtEncodeCallTiming.sampleCount)",
+                "videoToolboxVTEncodeCallAverageMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.averageMilliseconds))",
+                "videoToolboxVTEncodeCallMaxMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.maxMilliseconds))"
+            ]
         }
     }
 
