@@ -609,7 +609,6 @@ private final class MDKSourceReleaseCoordinator: @unchecked Sendable {
 
 private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRuntime, @unchecked Sendable {
     private let lanes: [MDKVideoToolboxEncodingProcessor]
-    private let outputCoordinator: MDKEncodedTileOutputCoordinator
 
     init(
         configuration: MDKEncodedCaptureConfiguration,
@@ -620,8 +619,6 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         let width = configuration.streamConfiguration.resolvedOutputWidth
         let height = configuration.streamConfiguration.resolvedOutputHeight
         let regions = Self.horizontalTileRegions(width: width, height: height, tileCount: laneCount)
-        let outputCoordinator = MDKEncodedTileOutputCoordinator(outputHandler: outputHandler)
-        self.outputCoordinator = outputCoordinator
         self.lanes = regions.enumerated().map { laneIndex, region in
             MDKVideoToolboxEncodingProcessor(
                 codec: configuration.codec,
@@ -629,9 +626,7 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
                 targetFrameRate: configuration.targetFrameRate,
                 encoderInputStrategy: configuration.resolvedEncoderInputStrategy,
                 maxInflightStagingSlots: 128,
-                outputHandler: { [outputCoordinator] frame in
-                    outputCoordinator.handle(frame)
-                },
+                outputHandler: outputHandler,
                 failureHandler: failureHandler,
                 hdrConfiguration: configuration.resolvedEncodedHDRConfiguration,
                 targetAverageBitRateBitsPerSecond: configuration.targetAverageBitRateBitsPerSecond,
@@ -692,7 +687,7 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         var notes = [
             "videoToolboxEncodedTileStreamLaneCount=\(lanes.count)",
             "videoToolboxEncodedTileStreamPartition=horizontal-columns",
-            "videoToolboxEncodedTileStreamOutputMode=paired-group-order"
+            "videoToolboxEncodedTileStreamOutputMode=independent"
         ]
         notes += summaries.flatMap(\.notes)
 
@@ -747,41 +742,6 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
             x += tileWidth
         }
         return regions
-    }
-}
-
-private final class MDKEncodedTileOutputCoordinator: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "com.macdisplaykit.encoded-tile-output-coordinator", qos: .userInteractive)
-    private let outputHandler: @Sendable (MDKEncodedFrame) -> Void
-    private var pendingGroups: [UInt64: [UInt32: MDKEncodedFrame]] = [:]
-
-    init(outputHandler: @escaping @Sendable (MDKEncodedFrame) -> Void) {
-        self.outputHandler = outputHandler
-    }
-
-    func handle(_ frame: MDKEncodedFrame) {
-        let metadata = frame.tileMetadata
-        guard metadata.tileCount > 1 || metadata.encodedLaneCount > 1 else {
-            outputHandler(frame)
-            return
-        }
-
-        queue.async { [self] in
-            let expectedTileCount = Int(max(metadata.tileCount, metadata.encodedLaneCount, 1))
-            var group = pendingGroups[metadata.frameGroupID, default: [:]]
-            group[metadata.tileIndex] = frame
-            guard group.count >= expectedTileCount else {
-                pendingGroups[metadata.frameGroupID] = group
-                return
-            }
-
-            pendingGroups.removeValue(forKey: metadata.frameGroupID)
-            for tileIndex in group.keys.sorted() {
-                if let tileFrame = group[tileIndex] {
-                    outputHandler(tileFrame)
-                }
-            }
-        }
     }
 }
 
