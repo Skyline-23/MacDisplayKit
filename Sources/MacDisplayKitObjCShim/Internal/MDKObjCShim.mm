@@ -13400,14 +13400,17 @@ static CGRect MDKCreateCursorDrawRect(
     }
 
     NSMutableDictionary *streamProperties = [NSMutableDictionary dictionary];
-    MDKPopulateSkyLightDisplayStreamProperties(
-        _minimumFrameTime,
-        _queueDepth,
-        _showCursor,
-        _yCbCrMatrix,
-        streamProperties,
-        nullptr
-    );
+    NSString *propertyProfile = NSProcessInfo.processInfo.environment[@"MDK_SKYLIGHT_DISPLAY_STREAM_PROPERTY_PROFILE"];
+    if (![propertyProfile isEqualToString:@"nil"]) {
+        MDKPopulateSkyLightDisplayStreamProperties(
+            _minimumFrameTime,
+            _queueDepth,
+            _showCursor,
+            _yCbCrMatrix,
+            streamProperties,
+            nullptr
+        );
+    }
     const CFDictionaryRef streamPropertiesRef =
         streamProperties.count > 0 ? (__bridge CFDictionaryRef) streamProperties : nil;
 
