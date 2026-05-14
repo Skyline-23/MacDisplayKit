@@ -227,7 +227,6 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
     private let tuningSelection: MDKSkyLightDisplayStreamAutotuningSelection?
     private let replayState: MDKSkyLightEncodedCaptureReplayState
     private let deliveryQueue: DispatchQueue
-    private let replayTimerQueue: DispatchQueue
     private let frameHandler: @Sendable (MDKCaptureFrame) -> Void
     private let replayIntervalNanoseconds: UInt64
     private let replayIntervalMachTicks: UInt64
@@ -248,22 +247,12 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
     ) {
         let replayState = MDKSkyLightEncodedCaptureReplayState()
         let deliveryQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.encoded-capture.skylight.delivery")
-        let usesDedicatedReplayTimerQueue =
-            configuration.codec == .proResProxy &&
-            configuration.deliveryMode == .callbackOnly
-        let replayTimerQueue = usesDedicatedReplayTimerQueue
-            ? DispatchQueue(
-                label: "com.skyline23.MacDisplayKit.encoded-capture.skylight.replay-timer",
-                qos: .userInteractive
-            )
-            : deliveryQueue
         let replayIntervalNanoseconds = UInt64(
             max((1.0 / Double(max(configuration.targetFrameRate, 1))) * 1_000_000_000.0, 1_000_000.0)
         )
         self.tuningSelection = tuningSelection
         self.replayState = replayState
         self.deliveryQueue = deliveryQueue
-        self.replayTimerQueue = replayTimerQueue
         self.frameHandler = frameHandler
         self.replayIntervalNanoseconds = replayIntervalNanoseconds
         self.replayIntervalMachTicks = max(MDKMachAbsoluteTicksForNanoseconds(replayIntervalNanoseconds), 1)
@@ -306,7 +295,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
 
     func start() throws {
         try shimSession.start()
-        let timer = DispatchSource.makeTimerSource(queue: replayTimerQueue)
+        let timer = DispatchSource.makeTimerSource(queue: deliveryQueue)
         let intervalNanoseconds = min(replayIntervalNanoseconds, UInt64(Int.max))
         let leewayNanoseconds = min(max(intervalNanoseconds / 4, 500_000), UInt64(Int.max))
         timer.schedule(
@@ -1142,11 +1131,6 @@ public actor MDKEncodedCaptureSession {
                 configuration.resolvedSkyLightProcessingMode != nil
                 ? "callback-low-latency"
                 : "default"
-            let replayTimerPolicy =
-                configuration.codec == .proResProxy &&
-                configuration.deliveryMode == .callbackOnly
-                ? "dedicated-source-timer-queue"
-                : "delivery-queue"
             return MDKEncodedCaptureSourcePreparation(
                 recommendedPendingFrameCount: recommendedPendingFrameCount,
                 diagnosticNotes: (tuningSelection?.notes ?? []) + [
@@ -1159,7 +1143,6 @@ public actor MDKEncodedCaptureSession {
                         format: "skyLightSyntheticIdleReplayIntervalMilliseconds=%.3f",
                         1000.0 / Double(max(configuration.targetFrameRate, 1))
                     ),
-                    "skyLightSyntheticIdleReplayTimerPolicy=\(replayTimerPolicy)",
                     "skyLightPendingPolicy=\(pendingPolicy)",
                     "skyLightRecommendedPendingFrameCount=\(recommendedPendingFrameCount)"
                 ],
