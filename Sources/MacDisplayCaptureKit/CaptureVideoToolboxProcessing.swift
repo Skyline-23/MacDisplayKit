@@ -820,6 +820,16 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 )
             }
         }
+        let callbackGatesTileSourceRelease = {
+            let metadata = tileMetadataOverride ?? tileMetadata
+            return metadata.tileCount > 1 || metadata.encodedLaneCount > 1
+        }()
+        let callbackReleaseSourceFrame: @Sendable () -> Void
+        if callbackGatesTileSourceRelease {
+            callbackReleaseSourceFrame = releaseSourceFrame
+        } else {
+            callbackReleaseSourceFrame = {}
+        }
         commandBuffer.addCompletedHandler { [weak self] commandBuffer in
             guard let self else {
                 releaseSourceFrame()
@@ -843,9 +853,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                         slotIdentifier: slotIdentifier,
                         presentationTimeStamp: presentationTimeStamp,
                         tileMetadataOverride: tileMetadataOverride,
-                        releasePendingFrame: {}
+                        releasePendingFrame: callbackReleaseSourceFrame
                     )
-                    releaseSourceFrame()
+                    if !callbackGatesTileSourceRelease {
+                        releaseSourceFrame()
+                    }
                     recordProcessingSuccess(isStaged: true)
                 } catch {
                     releaseSourceFrame()
