@@ -13578,7 +13578,6 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
     const OSType requestedPixelFormat = pixelFormat != 0
         ? static_cast<OSType>(pixelFormat)
         : kCVPixelFormatType_32BGRA;
-    const BOOL stopAfterFirstCompleteFrame = sampleDuration < 0.0;
 
     CGDisplayStreamRef stream = createSymbol(
         static_cast<CGDirectDisplayID>(displayID),
@@ -13611,17 +13610,6 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
                 surfacePixelFormat = IOSurfaceGetPixelFormat(frameSurface);
             }
             std::uint64_t droppedFrames = 0;
-            if (updateRef != nil) {
-                droppedFrames = static_cast<std::uint64_t>(
-                    CGDisplayStreamUpdateGetDropCount(updateRef)
-                );
-            }
-            if (stopAfterFirstCompleteFrame && droppedFrames == 0) {
-                dropCountSum += droppedFrames;
-                dropCountMax = std::max(dropCountMax, droppedFrames);
-                dispatch_semaphore_signal(firstCompleteFrameSemaphore);
-                return;
-            }
             if (updateRef != nil) {
                 size_t reducedDirtyRectCount = 0;
                 const CGRect *reducedDirtyRects = CGDisplayStreamUpdateGetRects(
@@ -13658,6 +13646,9 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
                     static_cast<std::uint64_t>(reducedDirtyRectCount)
                 );
 
+                droppedFrames = static_cast<std::uint64_t>(
+                    CGDisplayStreamUpdateGetDropCount(updateRef)
+                );
                 dropCountSum += droppedFrames;
                 dropCountMax = std::max(dropCountMax, droppedFrames);
             }
@@ -13680,6 +13671,7 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
 
     const CFAbsoluteTime startedAt = CFAbsoluteTimeGetCurrent();
     const CGError startStatus = startSymbol(stream);
+    const BOOL stopAfterFirstCompleteFrame = sampleDuration < 0.0;
     const NSTimeInterval targetDuration = std::max(std::fabs(sampleDuration), 0.001);
     if (stopAfterFirstCompleteFrame) {
         const dispatch_time_t timeout = dispatch_time(
