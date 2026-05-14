@@ -539,10 +539,21 @@ private final class MDKEncodedCapturePendingFrameTracker: @unchecked Sendable {
 private actor MDKEncodedCaptureLatestFrameMailbox {
     private var latestFrame: MDKCaptureFrame?
 
-    func store(_ frame: MDKCaptureFrame) -> UInt64? {
-        let replacedDisplayTime = latestFrame?.displayTime
+    func store(_ frame: MDKCaptureFrame, preservingFreshFrameOverReplay: Bool = false) -> UInt64? {
+        let replacedFrame = latestFrame
+        if preservingFreshFrameOverReplay,
+           replacedFrame?.origin == .fresh,
+           frame.origin != .fresh {
+            return nil
+        }
+
         latestFrame = frame
-        return replacedDisplayTime
+        if preservingFreshFrameOverReplay,
+           replacedFrame?.origin != .fresh {
+            return nil
+        }
+
+        return replacedFrame?.displayTime
     }
 
     func take() -> MDKCaptureFrame? {
@@ -1379,6 +1390,11 @@ public actor MDKEncodedCaptureSession {
         let sourceTimingTracker = shouldRecordSourceDiagnostics ? MDKEncodedCaptureSourceTimingTracker() : nil
         let sourcePreparation = await Self.makeSourcePreparation(for: configuration)
         let maximumPendingFrameCount = sourcePreparation.recommendedPendingFrameCount
+        let preservesFreshTileMailbox =
+            configuration.codec == .hevc &&
+            callbackOnlyDelivery &&
+            !configuration.tileLayout.isSingleFrame &&
+            configuration.resolvedSkyLightProcessingMode != nil
 
         let outputHandler: @Sendable (MDKEncodedFrame) -> Void = { [weak self] encodedFrame in
             guard let self else {
@@ -1415,7 +1431,10 @@ public actor MDKEncodedCaptureSession {
             sourceTimingTracker?.record(frame: frame)
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
-                    let replacedDisplayTime = await latestFrameMailbox.store(frame)
+                    let replacedDisplayTime = await latestFrameMailbox.store(
+                        frame,
+                        preservingFreshFrameOverReplay: preservesFreshTileMailbox
+                    )
                     if let replacedDisplayTime {
                         await self.handleSourceFrameDropped(
                             sourceDisplayTime: replacedDisplayTime,
@@ -1439,6 +1458,9 @@ public actor MDKEncodedCaptureSession {
         runtimeDiagnosticNotes = sourcePreparation.diagnosticNotes
         if !shouldRecordSourceDiagnostics {
             runtimeDiagnosticNotes.append("sourceHotPathDiagnostics=disabled")
+        }
+        if preservesFreshTileMailbox {
+            runtimeDiagnosticNotes.append("sourceMailboxTileReplayPolicy=preserve-fresh")
         }
 
         do {
