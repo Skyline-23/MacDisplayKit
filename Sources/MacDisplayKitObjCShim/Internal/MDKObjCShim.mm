@@ -27,7 +27,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 #import "../LegacyRuntime/Capture/av_audio.h"
@@ -13356,6 +13359,10 @@ static CGRect MDKCreateCursorDrawRect(
         return YES;
     }
 
+    const char *lifecycleDiagnostics = std::getenv("MDK_SKYLIGHT_DISPLAY_STREAM_LIFECYCLE_DIAGNOSTICS");
+    const BOOL emitLifecycleDiagnostics =
+        lifecycleDiagnostics != nullptr && std::strcmp(lifecycleDiagnostics, "1") == 0;
+
     using MDKSLDisplayStreamCreateWithDispatchQueueFn = CGDisplayStreamRef (*)(
         CGDirectDisplayID,
         size_t,
@@ -13373,6 +13380,17 @@ static CGRect MDKCreateCursorDrawRect(
     auto startSymbol = reinterpret_cast<MDKSLDisplayStreamStartFn>(
         MDKLookupCaptureSymbol("SLDisplayStreamStart")
     );
+    if (emitLifecycleDiagnostics) {
+        std::printf(
+            "AUTORESEARCH_RUNTIME_PROBE_RAW_SKYLIGHT_CREATE_SYMBOL_PRESENT=%d\n",
+            createSymbol != nullptr ? 1 : 0
+        );
+        std::printf(
+            "AUTORESEARCH_RUNTIME_PROBE_RAW_SKYLIGHT_START_SYMBOL_PRESENT=%d\n",
+            startSymbol != nullptr ? 1 : 0
+        );
+        std::fflush(stdout);
+    }
     if (createSymbol == nullptr || startSymbol == nullptr) {
         if (error != nullptr) {
             *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
@@ -13400,16 +13418,30 @@ static CGRect MDKCreateCursorDrawRect(
     }
 
     NSMutableDictionary *streamProperties = [NSMutableDictionary dictionary];
+    NSUInteger appliedPropertyCount = 0;
     MDKPopulateSkyLightDisplayStreamProperties(
         _minimumFrameTime,
         _queueDepth,
         _showCursor,
         _yCbCrMatrix,
         streamProperties,
-        nullptr
+        &appliedPropertyCount
     );
     const CFDictionaryRef streamPropertiesRef =
         streamProperties.count > 0 ? (__bridge CFDictionaryRef) streamProperties : nil;
+    if (emitLifecycleDiagnostics) {
+        std::printf("AUTORESEARCH_RUNTIME_PROBE_RAW_SKYLIGHT_OUTPUT_WIDTH=%zu\n", width);
+        std::printf("AUTORESEARCH_RUNTIME_PROBE_RAW_SKYLIGHT_OUTPUT_HEIGHT=%zu\n", height);
+        std::printf(
+            "AUTORESEARCH_RUNTIME_PROBE_RAW_SKYLIGHT_REQUESTED_PIXEL_FORMAT=0x%08X\n",
+            static_cast<unsigned int>(_pixelFormat)
+        );
+        std::printf(
+            "AUTORESEARCH_RUNTIME_PROBE_RAW_SKYLIGHT_PROPERTY_COUNT=%llu\n",
+            static_cast<unsigned long long>(appliedPropertyCount)
+        );
+        std::fflush(stdout);
+    }
 
     __weak MDKShimSkyLightDisplayStreamSession *weakSelf = self;
     _stream = createSymbol(
@@ -13437,6 +13469,13 @@ static CGRect MDKCreateCursorDrawRect(
             );
         }
     );
+    if (emitLifecycleDiagnostics) {
+        std::printf(
+            "AUTORESEARCH_RUNTIME_PROBE_RAW_SKYLIGHT_CREATE_RETURNED_STREAM=%d\n",
+            _stream != nil ? 1 : 0
+        );
+        std::fflush(stdout);
+    }
     if (_stream == nil) {
         if (error != nullptr) {
             *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
@@ -13449,6 +13488,14 @@ static CGRect MDKCreateCursorDrawRect(
     }
 
     const CGError startStatus = startSymbol(_stream);
+    if (emitLifecycleDiagnostics) {
+        std::printf(
+            "AUTORESEARCH_RUNTIME_PROBE_RAW_SKYLIGHT_START_STATUS=%d\n",
+            static_cast<int>(startStatus)
+        );
+        std::printf("AUTORESEARCH_RUNTIME_PROBE_RAW_SKYLIGHT_START_FUNCTION=SLDisplayStreamStart\n");
+        std::fflush(stdout);
+    }
     _running = (startStatus == kCGErrorSuccess);
     if (!_running && error != nullptr) {
         *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
