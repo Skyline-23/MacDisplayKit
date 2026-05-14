@@ -27,7 +27,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 #import "../LegacyRuntime/Capture/av_audio.h"
@@ -13342,7 +13344,12 @@ static CGRect MDKCreateCursorDrawRect(
     _pixelFormat = pixelFormat;
     _yCbCrMatrix = [yCbCrMatrix copy];
     _frameHandler = [frameHandler copy];
-    _queue = dispatch_queue_create("com.skyline23.MacDisplayKit.skylight.displaystream.session", DISPATCH_QUEUE_SERIAL);
+    const char *mainQueueOverride = std::getenv("MDK_SKYLIGHT_DISPLAY_STREAM_MAIN_QUEUE");
+    if (mainQueueOverride != nullptr && std::strcmp(mainQueueOverride, "1") == 0) {
+        _queue = dispatch_get_main_queue();
+    } else {
+        _queue = dispatch_queue_create("com.skyline23.MacDisplayKit.skylight.displaystream.session", DISPATCH_QUEUE_SERIAL);
+    }
     return self;
 }
 
