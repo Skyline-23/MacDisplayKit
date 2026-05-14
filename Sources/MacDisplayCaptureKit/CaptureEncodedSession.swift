@@ -1241,8 +1241,10 @@ public actor MDKEncodedCaptureSession {
                 queueDepth: queueDepth
             )
             let pendingPolicy =
-                configuration.deliveryMode == .callbackOnly &&
-                configuration.resolvedSkyLightProcessingMode != nil
+                usesSharedHEVCTileSession(configuration)
+                ? "callback-low-latency-hevc-tile-window"
+                : configuration.deliveryMode == .callbackOnly &&
+                  configuration.resolvedSkyLightProcessingMode != nil
                 ? "callback-low-latency"
                 : "default"
             let replayCatchUpFrameLimit =
@@ -1281,10 +1283,20 @@ public actor MDKEncodedCaptureSession {
             configuration.resolvedSkyLightProcessingMode != nil
 
         if usesLowLatencyCallbackEncode {
+            if usesSharedHEVCTileSession(configuration) {
+                return 12
+            }
             return 16
         }
 
         return min(max(effectiveQueueDepth * 3, 10), 16)
+    }
+
+    private static func usesSharedHEVCTileSession(_ configuration: MDKEncodedCaptureConfiguration) -> Bool {
+        configuration.codec == .hevc &&
+        configuration.deliveryMode == .callbackOnly &&
+        configuration.resolvedSkyLightProcessingMode != nil &&
+        !configuration.tileLayout.isSingleFrame
     }
 
     public func frames() -> AsyncThrowingStream<MDKEncodedFrame, Error> {
