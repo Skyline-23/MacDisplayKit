@@ -649,9 +649,10 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
             count: lanes.count,
             releaseSourceFrame: releaseSourceFrame
         )
+        let orderedLanes = processingOrder(for: frame)
         var scheduledLaneCount = 0
         do {
-            for lane in lanes {
+            for lane in orderedLanes {
                 try lane.process(frame: frame) {
                     releaseCoordinator.releaseOne()
                 }
@@ -667,6 +668,19 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
 
     func requestImmediateKeyFrame() {
         lanes.forEach { $0.requestImmediateKeyFrame() }
+    }
+
+    private func processingOrder(for frame: MDKCaptureFrame) -> [MDKVideoToolboxEncodingProcessor] {
+        guard lanes.count > 1 else {
+            return lanes
+        }
+
+        let startIndex = Int(frame.sequenceNumber % UInt64(lanes.count))
+        guard startIndex != 0 else {
+            return lanes
+        }
+
+        return Array(lanes[startIndex...]) + Array(lanes[..<startIndex])
     }
 
     func finalize() -> MDKCaptureFrameProcessingSummary? {
@@ -687,6 +701,7 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         var notes = [
             "videoToolboxEncodedTileStreamLaneCount=\(lanes.count)",
             "videoToolboxEncodedTileStreamPartition=horizontal-columns",
+            "videoToolboxEncodedTileStreamLaneScheduling=rotating",
             "videoToolboxEncodedTileStreamOutputMode=independent"
         ]
         notes += summaries.flatMap(\.notes)
