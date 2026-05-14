@@ -206,10 +206,6 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
     func resolvedSourceBackend(
         using capabilities: MDKPrivateCaptureCapabilities
     ) -> MDKEncodedCaptureSourceBackend {
-        if ProcessInfo.processInfo.environment["MDK_FORCE_ENCODED_CGDISPLAYSTREAM_SOURCE"] == "1" {
-            return .cgDisplayStream
-        }
-
         if shouldPreferRawSkyLightDisplayStream(using: capabilities) {
             return .skyLightDisplayStream
         }
@@ -302,8 +298,6 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         }
 
         switch resolvedSourceBackend(using: capabilities) {
-        case .cgDisplayStream:
-            return .auto
         case .privateDirectIOSurface:
             switch codec {
             case .h264:

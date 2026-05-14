@@ -5,7 +5,6 @@ import Foundation
 import MacDisplayKitObjCShim
 
 enum MDKEncodedCaptureSourceBackend: String, Sendable {
-    case cgDisplayStream = "cg-display-stream"
     case privateDirectIOSurface = "private-direct-iosurface"
     case skyLightDisplayStream = "skylight-display-stream"
 }
@@ -427,47 +426,6 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         replayTimer?.cancel()
         replayTimer = nil
         return shimSession.stop()
-    }
-}
-
-private final class MDKCGDisplayStreamEncodedCaptureSourceRuntime: MDKEncodedCaptureSourceRuntime, @unchecked Sendable {
-    private let configuration: MDKEncodedCaptureConfiguration
-    private let frameHandler: @Sendable (MDKCaptureFrame) -> Void
-    private var captureSession: MDKCaptureSession?
-
-    var runtimeDescription: String {
-        MDKEncodedCaptureSourceBackend.cgDisplayStream.rawValue
-    }
-
-    init(
-        configuration: MDKEncodedCaptureConfiguration,
-        frameHandler: @escaping @Sendable (MDKCaptureFrame) -> Void
-    ) {
-        self.configuration = configuration
-        self.frameHandler = frameHandler
-    }
-
-    func start() throws {
-        let dynamicRangeMode: MDKDynamicRangeMode =
-            configuration.resolvedEncodedHDRConfiguration == nil ? .sdr : .hdrCanonical
-        let captureConfiguration = MDKCaptureConfiguration(
-            displayID: configuration.displayID,
-            width: configuration.streamConfiguration.resolvedOutputWidth,
-            height: configuration.streamConfiguration.resolvedOutputHeight,
-            frameRate: configuration.targetFrameRate,
-            pixelFormat: configuration.resolvedCapturePixelFormat,
-            backend: .cgDisplayStream,
-            dynamicRangeMode: dynamicRangeMode
-        )
-        let captureSession = try MDKCaptureSessionFactory.makeSession(configuration: captureConfiguration)
-        try captureSession.start(frameHandler: frameHandler)
-        self.captureSession = captureSession
-    }
-
-    func stop() -> Int32 {
-        captureSession?.stop()
-        captureSession = nil
-        return 0
     }
 }
 
@@ -1189,11 +1147,6 @@ public actor MDKEncodedCaptureSession {
         self.configuration = configuration
         self.sourceFactory = { configuration, preparation, frameHandler in
             switch configuration.resolvedSourceBackend {
-            case .cgDisplayStream:
-                return MDKCGDisplayStreamEncodedCaptureSourceRuntime(
-                    configuration: configuration,
-                    frameHandler: frameHandler
-                )
             case .privateDirectIOSurface:
                 return MDKPrivateDirectIOSurfaceEncodedCaptureSourceRuntime(
                     configuration: configuration,
@@ -1245,16 +1198,6 @@ public actor MDKEncodedCaptureSession {
         for configuration: MDKEncodedCaptureConfiguration
     ) async -> MDKEncodedCaptureSourcePreparation {
         switch configuration.resolvedSourceBackend {
-        case .cgDisplayStream:
-            return MDKEncodedCaptureSourcePreparation(
-                recommendedPendingFrameCount: 16,
-                diagnosticNotes: [
-                    "sourceBackend=\(MDKEncodedCaptureSourceBackend.cgDisplayStream.rawValue)",
-                    "rawPrivateDisplayStream=false",
-                    "publicCGDisplayStreamFallback=true"
-                ],
-                skyLightTuningSelection: nil
-            )
         case .privateDirectIOSurface:
             let requestsExtendedRange = configuration.resolvedEncodedHDRConfiguration.map {
                 $0.transferFunction != .ituR709
