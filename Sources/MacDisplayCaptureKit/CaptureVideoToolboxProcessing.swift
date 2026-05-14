@@ -69,6 +69,7 @@ private final class MDKVideoToolboxSubmissionToken {
     let submittedAt: TimeInterval
     let sourceSequenceNumber: UInt64
     let sourceDisplayTime: UInt64
+    let expectsKeyFrame: Bool
     private let releasePendingFrame: @Sendable () -> Void
 
     init(
@@ -76,12 +77,14 @@ private final class MDKVideoToolboxSubmissionToken {
         submittedAt: TimeInterval,
         sourceSequenceNumber: UInt64,
         sourceDisplayTime: UInt64,
+        expectsKeyFrame: Bool,
         releasePendingFrame: @escaping @Sendable () -> Void
     ) {
         self.slotIdentifier = slotIdentifier
         self.submittedAt = submittedAt
         self.sourceSequenceNumber = sourceSequenceNumber
         self.sourceDisplayTime = sourceDisplayTime
+        self.expectsKeyFrame = expectsKeyFrame
         self.releasePendingFrame = releasePendingFrame
     }
 
@@ -824,17 +827,27 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
         hdrConfiguration?.apply(to: imageBuffer)
 
-        let resolvedPresentationTimeStamp = presentationTimeStamp ?? {
-            let timestamp = CMTime(value: frameIndex, timescale: Int32(targetFrameRate))
+        let frameOrdinal: Int64
+        let resolvedPresentationTimeStamp: CMTime
+        if let presentationTimeStamp {
+            frameOrdinal = presentationTimeStamp.value
+            resolvedPresentationTimeStamp = presentationTimeStamp
+        } else {
+            frameOrdinal = frameIndex
+            let timestamp = CMTime(value: frameOrdinal, timescale: Int32(targetFrameRate))
             frameIndex += 1
-            return timestamp
-        }()
+            resolvedPresentationTimeStamp = timestamp
+        }
+        let forceKeyFrame = consumeImmediateKeyFrameRequest()
+        let expectsKeyFrame = forceKeyFrame ||
+            (codec == .hevc && frameOrdinal % Int64(max(targetFrameRate, 1)) == 0)
         let submissionToken = Unmanaged.passRetained(
             MDKVideoToolboxSubmissionToken(
                 slotIdentifier: slotIdentifier,
                 submittedAt: ProcessInfo.processInfo.systemUptime,
                 sourceSequenceNumber: frame.sequenceNumber,
                 sourceDisplayTime: frame.displayTime,
+                expectsKeyFrame: expectsKeyFrame,
                 releasePendingFrame: releasePendingFrame
             )
         )
@@ -846,8 +859,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             compressionSession,
             imageBuffer: imageBuffer,
             presentationTimeStamp: resolvedPresentationTimeStamp,
-            duration: .invalid,
-            frameProperties: makeFrameProperties(forceKeyFrame: consumeImmediateKeyFrameRequest()),
+            duration: CMTime(value: 1, timescale: Int32(targetFrameRate)),
+            frameProperties: makeFrameProperties(forceKeyFrame: forceKeyFrame),
             sourceFrameRefcon: submissionToken.toOpaque(),
             infoFlagsOut: nil
         )
@@ -1607,6 +1620,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
         let resolvedSampleBuffer = sampleBuffer.map { sampleBuffer in
             guard let hdrConfiguration else {
+                return sampleBuffer
+            }
+            guard codec == .hevc else {
+                return sampleBuffer
+            }
+            guard submissionToken?.expectsKeyFrame != false else {
                 return sampleBuffer
             }
             let isKeyFrame: Bool
