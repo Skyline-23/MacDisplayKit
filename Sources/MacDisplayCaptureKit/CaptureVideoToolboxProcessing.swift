@@ -1020,6 +1020,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             codec: codec,
             targetFrameRate: targetFrameRate
         )
+        let maxKeyFrameInterval = isHighRefreshHDRHEVC ? targetFrameRate * 2 : targetFrameRate
+        let maxKeyFrameIntervalDuration = isHighRefreshHDRHEVC ? 2.0 : 1.0
 
         setSessionProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue, label: "RealTime")
         setSessionProperty(session, key: kVTCompressionPropertyKey_ProgressiveScan, value: kCFBooleanTrue, label: "ProgressiveScan")
@@ -1068,8 +1070,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 label: "VBVInitialDelayPercentage"
             )
         }
-        setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: targetFrameRate), label: "MaxKeyFrameInterval")
-        setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: NSNumber(value: 1.0), label: "MaxKeyFrameIntervalDuration")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: maxKeyFrameInterval), label: "MaxKeyFrameInterval")
+        setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: NSNumber(value: maxKeyFrameIntervalDuration), label: "MaxKeyFrameIntervalDuration")
         if pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
             pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange {
             setSessionProperty(
@@ -1148,6 +1150,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         sessionConfigurationNotes.append("videoToolboxHighRefreshHDRLowLatencyMode=\(isHighRefreshHDRHEVC ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxAllowTemporalCompression=\(allowsTemporalCompression ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxConfiguredMaxFrameDelayCount=\(maxFrameDelayCount)")
+        sessionConfigurationNotes.append("videoToolboxConfiguredMaxKeyFrameInterval=\(maxKeyFrameInterval)")
+        sessionConfigurationNotes.append("videoToolboxConfiguredMaxKeyFrameIntervalDuration=\(maxKeyFrameIntervalDuration)")
         if let vbvBufferDurationSeconds {
             sessionConfigurationNotes.append("videoToolboxConfiguredVBVBufferDurationSeconds=\(vbvBufferDurationSeconds)")
         } else {
