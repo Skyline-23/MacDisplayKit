@@ -618,7 +618,7 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         let laneCount = Int(max(configuration.tileLayout.encodedLaneCount, configuration.tileLayout.tileCount, 1))
         let width = configuration.streamConfiguration.resolvedOutputWidth
         let height = configuration.streamConfiguration.resolvedOutputHeight
-        let regions = Self.verticalTileRegions(width: width, height: height, tileCount: laneCount)
+        let regions = Self.horizontalTileRegions(width: width, height: height, tileCount: laneCount)
         self.lanes = regions.enumerated().map { laneIndex, region in
             MDKVideoToolboxEncodingProcessor(
                 codec: configuration.codec,
@@ -686,6 +686,7 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         let completedOutputFrameCounts = summaries.compactMap(\.completedOutputFrameCount)
         var notes = [
             "videoToolboxEncodedTileStreamLaneCount=\(lanes.count)",
+            "videoToolboxEncodedTileStreamPartition=horizontal-columns",
             "videoToolboxEncodedTileStreamOutputMode=independent"
         ]
         notes += summaries.flatMap(\.notes)
@@ -720,25 +721,25 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         return mergeHistograms(compact)
     }
 
-    private static func verticalTileRegions(width: Int, height: Int, tileCount: Int) -> [CGRect] {
+    private static func horizontalTileRegions(width: Int, height: Int, tileCount: Int) -> [CGRect] {
         guard tileCount > 1, width > 0, height > 0 else {
             return [CGRect(x: 0, y: 0, width: width, height: height)]
         }
 
         var regions: [CGRect] = []
         regions.reserveCapacity(tileCount)
-        var y = 0
+        var x = 0
         for tileIndex in 0..<tileCount {
             let remainingTiles = tileCount - tileIndex
-            let remainingHeight = max(height - y, 1)
-            var tileHeight = remainingHeight / remainingTiles
+            let remainingWidth = max(width - x, 1)
+            var tileWidth = remainingWidth / remainingTiles
             if tileIndex < tileCount - 1 {
-                tileHeight = max((tileHeight / 2) * 2, 2)
+                tileWidth = max((tileWidth / 2) * 2, 2)
             } else {
-                tileHeight = remainingHeight
+                tileWidth = remainingWidth
             }
-            regions.append(CGRect(x: 0, y: y, width: width, height: tileHeight))
-            y += tileHeight
+            regions.append(CGRect(x: x, y: 0, width: tileWidth, height: height))
+            x += tileWidth
         }
         return regions
     }
