@@ -1248,7 +1248,7 @@ public actor MDKEncodedCaptureSession {
                         displayID: configuration.displayID,
                         sampleDuration: -0.05,
                         minimumFrameTime: minimumFrameTime,
-                        queueDepth: 1,
+                        queueDepth: queueDepth,
                         showCursor: showCursor,
                         outputWidth: configuration.streamConfiguration.resolvedOutputWidth,
                         outputHeight: configuration.streamConfiguration.resolvedOutputHeight,
