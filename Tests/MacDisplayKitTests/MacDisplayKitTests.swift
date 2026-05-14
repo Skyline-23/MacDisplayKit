@@ -76,6 +76,13 @@ final class MacDisplayKitTests: XCTestCase {
             MDKVideoEncoderCodec.hevc.defaultProfileLevel(for: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
             kVTProfileLevel_HEVC_Main_AutoLevel
         )
+        XCTAssertEqual(
+            MDKVideoEncoderCodec.hevc.defaultProfileLevel(
+                for: kCVPixelFormatType_32BGRA,
+                hdrConfiguration: .hdr10()
+            ),
+            kVTProfileLevel_HEVC_Main10_AutoLevel
+        )
     }
 
     func testSkyLightIdleCallbacksReplayTheLastFrameSurface() {
@@ -207,6 +214,14 @@ final class MacDisplayKitTests: XCTestCase {
                 strategy: .yuv420v10
             ),
             kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        )
+        XCTAssertEqual(
+            MDKVideoEncoderCodec.hevc.preferredInputPixelFormat(
+                for: kCVPixelFormatType_32BGRA,
+                hdrConfiguration: .hdr10(),
+                strategy: .yuv420v10
+            ),
+            kCVPixelFormatType_32BGRA
         )
         XCTAssertEqual(
             MDKVideoEncoderCodec.hevc.preferredInputPixelFormat(
