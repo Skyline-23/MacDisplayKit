@@ -689,6 +689,7 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
             "videoToolboxEncodedTileStreamPartition=horizontal-columns",
             "videoToolboxEncodedTileStreamOutputMode=independent"
         ]
+        notes += Self.tileLaneDiagnosticNotes(from: summaries)
         notes += summaries.flatMap(\.notes)
 
         return MDKCaptureFrameProcessingSummary(
@@ -703,6 +704,60 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
             maxOutputCallbackLatencyMilliseconds: summaries.compactMap(\.maxOutputCallbackLatencyMilliseconds).max(),
             notes: notes
         )
+    }
+
+    private static func tileLaneDiagnosticNotes(from summaries: [MDKCaptureFrameProcessingSummary]) -> [String] {
+        var notes: [String] = []
+        for (laneIndex, summary) in summaries.enumerated() {
+            let prefix = "videoToolboxTileLane\(laneIndex)"
+            notes.append("\(prefix)ProcessedFrameCount=\(summary.processedFrameCount)")
+            if let outputCallbackCount = summary.outputCallbackCount {
+                notes.append("\(prefix)OutputCallbackCount=\(outputCallbackCount)")
+            }
+            if let completedOutputFrameCount = summary.completedOutputFrameCount {
+                notes.append("\(prefix)CompletedOutputFrameCount=\(completedOutputFrameCount)")
+            }
+            if let minOutputCallbackLatencyMilliseconds = summary.minOutputCallbackLatencyMilliseconds {
+                notes.append(
+                    String(
+                        format: "\(prefix)MinOutputCallbackLatencyMilliseconds=%.3f",
+                        minOutputCallbackLatencyMilliseconds
+                    )
+                )
+            }
+            if let maxOutputCallbackLatencyMilliseconds = summary.maxOutputCallbackLatencyMilliseconds {
+                notes.append(
+                    String(
+                        format: "\(prefix)MaxOutputCallbackLatencyMilliseconds=%.3f",
+                        maxOutputCallbackLatencyMilliseconds
+                    )
+                )
+            }
+
+            let laneNoteKeys = [
+                "videoToolboxStagedSubmissionFrameCount": "StagedSubmissionFrameCount",
+                "videoToolboxSubmittedFrameCount": "SubmittedFrameCount",
+                "videoToolboxEncodeQueueWaitAverageMilliseconds": "EncodeQueueWaitAverageMilliseconds",
+                "videoToolboxEncodeQueueWaitMaxMilliseconds": "EncodeQueueWaitMaxMilliseconds",
+                "videoToolboxEncodeInvocationAverageMilliseconds": "EncodeInvocationAverageMilliseconds",
+                "videoToolboxEncodeInvocationMaxMilliseconds": "EncodeInvocationMaxMilliseconds",
+                "videoToolboxMetalStageAverageMilliseconds": "MetalStageAverageMilliseconds",
+                "videoToolboxMetalStageMaxMilliseconds": "MetalStageMaxMilliseconds",
+                "videoToolboxVTEncodeCallAverageMilliseconds": "VTEncodeCallAverageMilliseconds",
+                "videoToolboxVTEncodeCallMaxMilliseconds": "VTEncodeCallMaxMilliseconds"
+            ]
+            for (sourceKey, outputSuffix) in laneNoteKeys {
+                if let value = noteValue(for: sourceKey, in: summary.notes) {
+                    notes.append("\(prefix)\(outputSuffix)=\(value)")
+                }
+            }
+        }
+        return notes
+    }
+
+    private static func noteValue(for key: String, in notes: [String]) -> String? {
+        let prefix = "\(key)="
+        return notes.first { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) }
     }
 
     private func mergeHistograms(_ histograms: [[String: Int]]) -> [String: Int] {
