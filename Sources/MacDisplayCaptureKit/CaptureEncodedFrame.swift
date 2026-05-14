@@ -132,6 +132,19 @@ public final class MDKEncodedFrame: @unchecked Sendable {
         hdrValidationReport.isHDRSignaled
     }
 
+    public var formatDescriptionSignalsHDR: Bool {
+        let extensions = formatDescriptionExtensions
+        let colorPrimaries = extensions[kCMFormatDescriptionExtension_ColorPrimaries as String] as? String
+        let transferFunction = extensions[kCMFormatDescriptionExtension_TransferFunction as String] as? String
+        let isWideGamut = colorPrimaries == (kCMFormatDescriptionColorPrimaries_ITU_R_2020 as String) ||
+            colorPrimaries == (kCMFormatDescriptionColorPrimaries_P3_D65 as String)
+        let isPQ = transferFunction == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String)
+        let isHLG = transferFunction == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String)
+        return (isWideGamut && (isPQ || isHLG)) ||
+            extensions[kCMFormatDescriptionExtension_MasteringDisplayColorVolume as String] != nil ||
+            extensions[kCMFormatDescriptionExtension_ContentLightLevelInfo as String] != nil
+    }
+
     public var hdrValidationReport: MDKEncodedFrameHDRValidationReport {
         let extensions = formatDescriptionExtensions
         let colorPrimaries = extensions[kCMFormatDescriptionExtension_ColorPrimaries as String] as? String
