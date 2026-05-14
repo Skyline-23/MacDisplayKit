@@ -608,7 +608,10 @@ private final class MDKSourceReleaseCoordinator: @unchecked Sendable {
 }
 
 private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRuntime, @unchecked Sendable {
-    private let lanes: [MDKVideoToolboxEncodingProcessor]
+    private let laneCount: Int
+    private let regions: [CGRect]
+    private let tileMetadataByLane: [MDKEncodedFrameTileMetadata]
+    private let processor: MDKVideoToolboxEncodingProcessor
 
     init(
         configuration: MDKEncodedCaptureConfiguration,
@@ -619,26 +622,30 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         let width = configuration.streamConfiguration.resolvedOutputWidth
         let height = configuration.streamConfiguration.resolvedOutputHeight
         let regions = Self.horizontalTileRegions(width: width, height: height, tileCount: laneCount)
-        self.lanes = regions.enumerated().map { laneIndex, region in
-            MDKVideoToolboxEncodingProcessor(
-                codec: configuration.codec,
-                preprocessStrategy: configuration.preprocessStrategy,
-                targetFrameRate: configuration.targetFrameRate,
-                encoderInputStrategy: configuration.resolvedEncoderInputStrategy,
-                maxInflightStagingSlots: 128,
-                outputHandler: outputHandler,
-                failureHandler: failureHandler,
-                hdrConfiguration: configuration.resolvedEncodedHDRConfiguration,
-                targetAverageBitRateBitsPerSecond: configuration.targetAverageBitRateBitsPerSecond,
-                tileMetadata: configuration.tileLayout.metadata(
-                    frameGroupID: 0,
-                    tileIndex: UInt32(laneIndex),
-                    encodedLaneIndex: UInt32(laneIndex),
-                    tileRegion: region
-                ),
-                sourceRegion: region
+        let tileMetadataByLane = regions.enumerated().map { laneIndex, region in
+            configuration.tileLayout.metadata(
+                frameGroupID: 0,
+                tileIndex: UInt32(laneIndex),
+                encodedLaneIndex: UInt32(laneIndex),
+                tileRegion: region
             )
         }
+        self.laneCount = laneCount
+        self.regions = regions
+        self.tileMetadataByLane = tileMetadataByLane
+        self.processor = MDKVideoToolboxEncodingProcessor(
+            codec: configuration.codec,
+            preprocessStrategy: configuration.preprocessStrategy,
+            targetFrameRate: configuration.targetFrameRate * laneCount,
+            encoderInputStrategy: configuration.resolvedEncoderInputStrategy,
+            maxInflightStagingSlots: 128,
+            outputHandler: outputHandler,
+            failureHandler: failureHandler,
+            hdrConfiguration: configuration.resolvedEncodedHDRConfiguration,
+            targetAverageBitRateBitsPerSecond: configuration.targetAverageBitRateBitsPerSecond,
+            tileMetadata: tileMetadataByLane.first ?? .singleFrame,
+            sourceRegion: regions.first
+        )
     }
 
     func process(
@@ -646,19 +653,24 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         releaseSourceFrame: @escaping @Sendable () -> Void
     ) throws {
         let releaseCoordinator = MDKSourceReleaseCoordinator(
-            count: lanes.count,
+            count: regions.count,
             releaseSourceFrame: releaseSourceFrame
         )
         var scheduledLaneCount = 0
         do {
-            for lane in lanes {
-                try lane.process(frame: frame) {
-                    releaseCoordinator.releaseOne()
-                }
+            for laneIndex in regions.indices {
+                try processor.process(
+                    frame: frame,
+                    releaseSourceFrame: {
+                        releaseCoordinator.releaseOne()
+                    },
+                    sourceRegionOverride: regions[laneIndex],
+                    tileMetadataOverride: tileMetadataByLane[laneIndex]
+                )
                 scheduledLaneCount += 1
             }
         } catch {
-            for _ in scheduledLaneCount..<lanes.count {
+            for _ in scheduledLaneCount..<regions.count {
                 releaseCoordinator.releaseOne()
             }
             throw error
@@ -666,15 +678,15 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
     }
 
     func requestImmediateKeyFrame() {
-        lanes.forEach { $0.requestImmediateKeyFrame() }
+        processor.requestImmediateKeyFrame()
     }
 
     func finalize() -> MDKCaptureFrameProcessingSummary? {
-        summarize(lanes.compactMap { $0.finalize() })
+        summarize([processor.finalize()].compactMap { $0 })
     }
 
     func liveSummary() -> MDKCaptureFrameProcessingSummary? {
-        summarize(lanes.compactMap { $0.liveSummary() })
+        summarize([processor.liveSummary()].compactMap { $0 })
     }
 
     private func summarize(_ summaries: [MDKCaptureFrameProcessingSummary]) -> MDKCaptureFrameProcessingSummary? {
@@ -685,9 +697,11 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         let outputCallbackCounts = summaries.compactMap(\.outputCallbackCount)
         let completedOutputFrameCounts = summaries.compactMap(\.completedOutputFrameCount)
         var notes = [
-            "videoToolboxEncodedTileStreamLaneCount=\(lanes.count)",
+            "videoToolboxEncodedTileStreamLaneCount=\(laneCount)",
             "videoToolboxEncodedTileStreamPartition=horizontal-columns",
-            "videoToolboxEncodedTileStreamOutputMode=independent"
+            "videoToolboxEncodedTileStreamOutputMode=independent",
+            "videoToolboxEncodedTileStreamVTSessionMode=single-shared-session",
+            "videoToolboxEncodedTileStreamVTSessionFrameRateHint=tile-record-cadence"
         ]
         notes += summaries.flatMap(\.notes)
 
@@ -1222,6 +1236,11 @@ public actor MDKEncodedCaptureSession {
         case .skyLightDisplayStream:
             let tuningSelection = await MDKSkyLightDisplayStreamAutotuner.shared.resolveSelection(for: configuration)
             let queueDepth = tuningSelection?.candidate.queueDepth ?? configuration.streamConfiguration.resolvedQueueDepth
+            let minimumFrameTime = tuningSelection?.candidate.minimumFrameTime ?? 0
+            let showCursor = MDKResolvedSkyLightDisplayStreamShowCursor(
+                requestedShowCursor: configuration.streamConfiguration.resolvedShowCursor,
+                tuningSelection: tuningSelection
+            )
             let recommendedPendingFrameCount = recommendedSkyLightPendingFrameCount(
                 for: configuration,
                 queueDepth: queueDepth
@@ -1236,9 +1255,34 @@ public actor MDKEncodedCaptureSession {
                 configuration.deliveryMode == .callbackOnly
                 ? 3
                 : 1
+            var diagnosticNotes = tuningSelection?.notes ?? []
+            if ProcessInfo.processInfo.environment["MDK_SKYLIGHT_DISPLAY_STREAM_PREFLIGHT_WARMUP"] == "1" {
+                do {
+                    let warmupResult = try MDKSkyLightDisplayStreamBenchmark.run(
+                        displayID: configuration.displayID,
+                        sampleDuration: 0.01,
+                        minimumFrameTime: minimumFrameTime,
+                        queueDepth: queueDepth,
+                        showCursor: showCursor,
+                        outputWidth: configuration.streamConfiguration.resolvedOutputWidth,
+                        outputHeight: configuration.streamConfiguration.resolvedOutputHeight,
+                        pixelFormat: configuration.resolvedCapturePixelFormat
+                    )
+                    diagnosticNotes += [
+                        "skyLightPreflightWarmupStatus=\(warmupResult.status)",
+                        "skyLightPreflightWarmupStopStatus=\(warmupResult.stopStatus)",
+                        "skyLightPreflightWarmupCallbackCount=\(warmupResult.callbackCount)",
+                        "skyLightPreflightWarmupCompleteFrameCount=\(warmupResult.completeFrameCount)",
+                        String(format: "skyLightPreflightWarmupObservedFrameRate=%.3f", warmupResult.observedFrameRate),
+                        "skyLightPreflightWarmupCadence=\(warmupResult.cadenceClassification)"
+                    ]
+                } catch {
+                    diagnosticNotes.append("skyLightPreflightWarmupError=\(error.localizedDescription)")
+                }
+            }
             return MDKEncodedCaptureSourcePreparation(
                 recommendedPendingFrameCount: recommendedPendingFrameCount,
-                diagnosticNotes: (tuningSelection?.notes ?? []) + [
+                diagnosticNotes: diagnosticNotes + [
                     "sourceBackend=\(MDKEncodedCaptureSourceBackend.skyLightDisplayStream.rawValue)",
                     "rawPrivateDisplayStream=true",
                     String(format: "rawPrivateDisplayStreamRequestedPixelFormat=0x%08X", configuration.resolvedCapturePixelFormat),
