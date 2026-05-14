@@ -339,11 +339,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         self.replayIntervalNanoseconds = replayIntervalNanoseconds
         self.replayIntervalMachTicks = max(MDKMachAbsoluteTicksForNanoseconds(replayIntervalNanoseconds), 1)
         self.replayCatchUpFrameLimit =
-            configuration.deliveryMode == .callbackOnly &&
-            configuration.tileLayout.encodedLaneCount > 1 &&
-            configuration.codec == .hevc
-            ? 2
-            : configuration.codec == .proResProxy &&
+            configuration.codec == .proResProxy &&
             configuration.deliveryMode == .callbackOnly
             ? 3
             : 1
@@ -1236,11 +1232,7 @@ public actor MDKEncodedCaptureSession {
                 ? "callback-low-latency"
                 : "default"
             let replayCatchUpFrameLimit =
-                configuration.deliveryMode == .callbackOnly &&
-                configuration.tileLayout.encodedLaneCount > 1 &&
-                configuration.codec == .hevc
-                ? 2
-                : configuration.codec == .proResProxy &&
+                configuration.codec == .proResProxy &&
                 configuration.deliveryMode == .callbackOnly
                 ? 3
                 : 1
