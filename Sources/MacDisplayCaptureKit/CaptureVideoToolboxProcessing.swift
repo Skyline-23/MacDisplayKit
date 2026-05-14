@@ -118,26 +118,6 @@ private struct MDKVideoToolboxTimingAccumulator {
     }
 }
 
-private struct MDKVideoToolboxPendingFrameAccumulator {
-    var sampleCount: UInt64 = 0
-    var totalCount: UInt64 = 0
-    var maxCount: Int = 0
-
-    mutating func record(_ count: Int) {
-        let boundedCount = max(count, 0)
-        sampleCount += 1
-        totalCount += UInt64(boundedCount)
-        maxCount = max(maxCount, boundedCount)
-    }
-
-    var averageCount: Double {
-        guard sampleCount > 0 else {
-            return 0
-        }
-        return Double(totalCount) / Double(sampleCount)
-    }
-}
-
 private enum MDKVideoToolboxTimingMetric {
     case encodeQueueWait
     case encodeInvocation
@@ -287,8 +267,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var encodeInvocationTiming = MDKVideoToolboxTimingAccumulator()
     private var metalStageTiming = MDKVideoToolboxTimingAccumulator()
     private var vtEncodeCallTiming = MDKVideoToolboxTimingAccumulator()
-    private var vtPendingBeforeEncode = MDKVideoToolboxPendingFrameAccumulator()
-    private var vtPendingAfterEncode = MDKVideoToolboxPendingFrameAccumulator()
 
     public init(
         codec: MDKVideoEncoderCodec = .hevc,
@@ -514,14 +492,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxMetalStageMaxMilliseconds=\(formatMilliseconds(metalStageTiming.maxMilliseconds))",
             "videoToolboxVTEncodeCallSampleCount=\(vtEncodeCallTiming.sampleCount)",
             "videoToolboxVTEncodeCallAverageMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.averageMilliseconds))",
-            "videoToolboxVTEncodeCallMaxMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.maxMilliseconds))",
-            "videoToolboxVTPendingFrameSampleStride=8",
-            "videoToolboxVTPendingBeforeEncodeSampleCount=\(vtPendingBeforeEncode.sampleCount)",
-            "videoToolboxVTPendingBeforeEncodeAverage=\(formatCount(vtPendingBeforeEncode.averageCount))",
-            "videoToolboxVTPendingBeforeEncodeMax=\(vtPendingBeforeEncode.maxCount)",
-            "videoToolboxVTPendingAfterEncodeSampleCount=\(vtPendingAfterEncode.sampleCount)",
-            "videoToolboxVTPendingAfterEncodeAverage=\(formatCount(vtPendingAfterEncode.averageCount))",
-            "videoToolboxVTPendingAfterEncodeMax=\(vtPendingAfterEncode.maxCount)"
+            "videoToolboxVTEncodeCallMaxMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.maxMilliseconds))"
         ]
         if includeDrainWaitStatus {
             notes.append("videoToolboxStagingSubmissionWait=\(stagingSubmissionWaitStatus == .success ? "success" : "timeout")")
@@ -887,13 +858,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             frameIndex += 1
             return timestamp
         }()
-        let shouldSamplePendingFrames = resolvedPresentationTimeStamp.value % 8 == 0
-        let pendingFramesBeforeEncode = shouldSamplePendingFrames
-            ? copyIntegerSessionProperty(
-                compressionSession,
-                key: kVTCompressionPropertyKey_NumberOfPendingFrames
-            )
-            : nil
         let submissionToken = Unmanaged.passRetained(
             MDKVideoToolboxSubmissionToken(
                 slotIdentifier: slotIdentifier,
@@ -917,16 +881,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             infoFlagsOut: nil
         )
         recordTiming(.vtEncodeCall, startedAt: vtEncodeCallStartedAt)
-        let pendingFramesAfterEncode = shouldSamplePendingFrames
-            ? copyIntegerSessionProperty(
-                compressionSession,
-                key: kVTCompressionPropertyKey_NumberOfPendingFrames
-            )
-            : nil
-        recordPendingFrameDepth(
-            beforeEncode: pendingFramesBeforeEncode,
-            afterEncode: pendingFramesAfterEncode
-        )
         guard status == noErr else {
             outputDrainGroup.leave()
             submissionToken.release()
@@ -1642,8 +1596,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             encodeInvocationTiming = MDKVideoToolboxTimingAccumulator()
             metalStageTiming = MDKVideoToolboxTimingAccumulator()
             vtEncodeCallTiming = MDKVideoToolboxTimingAccumulator()
-            vtPendingBeforeEncode = MDKVideoToolboxPendingFrameAccumulator()
-            vtPendingAfterEncode = MDKVideoToolboxPendingFrameAccumulator()
         }
         lastFreshReplayState = nil
         lastImmediateRecoveryReplayDisplayTime = nil
@@ -1767,10 +1719,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         String(format: "%.3f", milliseconds)
     }
 
-    private func formatCount(_ count: Double) -> String {
-        String(format: "%.3f", count)
-    }
-
     private func recordTiming(
         _ metric: MDKVideoToolboxTimingMetric,
         startedAt: TimeInterval,
@@ -1787,24 +1735,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 metalStageTiming.record(elapsedMilliseconds)
             case .vtEncodeCall:
                 vtEncodeCallTiming.record(elapsedMilliseconds)
-            }
-        }
-    }
-
-    private func recordPendingFrameDepth(
-        beforeEncode: Int?,
-        afterEncode: Int?
-    ) {
-        guard beforeEncode != nil || afterEncode != nil else {
-            return
-        }
-
-        outputQueue.sync {
-            if let beforeEncode {
-                vtPendingBeforeEncode.record(beforeEncode)
-            }
-            if let afterEncode {
-                vtPendingAfterEncode.record(afterEncode)
             }
         }
     }
