@@ -13408,6 +13408,26 @@ static CGRect MDKCreateCursorDrawRect(
         streamProperties,
         nullptr
     );
+    if (getenv("MDK_SKYLIGHT_DISPLAY_STREAM_RECT_PROPERTIES") != nullptr) {
+        const CGRect displayBounds = CGDisplayBounds(static_cast<CGDirectDisplayID>(_displayID));
+        const CGFloat sourceWidth = std::max(CGRectGetWidth(displayBounds), static_cast<CGFloat>(1.0));
+        const CGFloat sourceHeight = std::max(CGRectGetHeight(displayBounds), static_cast<CGFloat>(1.0));
+        if (CFStringRef sourceRectKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamSourceRect")) {
+            streamProperties[(__bridge NSString *) sourceRectKey] =
+                (__bridge_transfer NSDictionary *) CGRectCreateDictionaryRepresentation(
+                    CGRectMake(0.0, 0.0, sourceWidth, sourceHeight)
+                );
+        }
+        if (CFStringRef destinationRectKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamDestinationRect")) {
+            streamProperties[(__bridge NSString *) destinationRectKey] =
+                (__bridge_transfer NSDictionary *) CGRectCreateDictionaryRepresentation(
+                    CGRectMake(0.0, 0.0, static_cast<CGFloat>(width), static_cast<CGFloat>(height))
+                );
+        }
+        if (CFStringRef preserveAspectRatioKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamPreserveAspectRatio")) {
+            streamProperties[(__bridge NSString *) preserveAspectRatioKey] = @NO;
+        }
+    }
     const CFDictionaryRef streamPropertiesRef =
         streamProperties.count > 0 ? (__bridge CFDictionaryRef) streamProperties : nil;
 
