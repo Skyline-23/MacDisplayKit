@@ -28,7 +28,6 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
-#include <memory>
 #include <vector>
 
 #import "../LegacyRuntime/Capture/av_audio.h"
@@ -13559,10 +13558,6 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
         "com.skyline23.MacDisplayKit.skylight.displaystream.benchmark",
         DISPATCH_QUEUE_SERIAL
     );
-    dispatch_queue_t stopQueue = dispatch_queue_create(
-        "com.skyline23.MacDisplayKit.skylight.displaystream.benchmark.stop",
-        DISPATCH_QUEUE_SERIAL
-    );
 
     __block NSMutableArray<NSNumber *> *displayTimes = [NSMutableArray array];
     __block NSMutableDictionary<NSString *, NSNumber *> *frameStatusHistogram = [NSMutableDictionary dictionary];
@@ -13580,15 +13575,11 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
     __block std::uint64_t dropCountSum = 0;
     __block std::uint64_t dropCountMax = 0;
     dispatch_semaphore_t firstCompleteFrameSemaphore = dispatch_semaphore_create(0);
-    const BOOL stopAfterFirstCompleteFrame = sampleDuration < 0.0;
-    auto callbackStopRequested = std::make_shared<std::atomic_bool>(false);
-    __block CGError callbackStopStatus = kCGErrorSuccess;
     const OSType requestedPixelFormat = pixelFormat != 0
         ? static_cast<OSType>(pixelFormat)
         : kCVPixelFormatType_32BGRA;
 
-    __block CGDisplayStreamRef stream = nil;
-    stream = createSymbol(
+    CGDisplayStreamRef stream = createSymbol(
         static_cast<CGDirectDisplayID>(displayID),
         width,
         height,
@@ -13661,20 +13652,10 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
                 dropCountSum += droppedFrames;
                 dropCountMax = std::max(dropCountMax, droppedFrames);
             }
-            [displayTimes addObject:@(displayTime)];
             if (droppedFrames == 0) {
-                if (stopAfterFirstCompleteFrame && !callbackStopRequested->exchange(true)) {
-                    CGDisplayStreamRef streamToStop = stream;
-                    if (streamToStop != nil) {
-                        CFRetain(streamToStop);
-                        dispatch_async(stopQueue, ^{
-                            callbackStopStatus = stopSymbol(streamToStop);
-                            CFRelease(streamToStop);
-                        });
-                    }
-                }
                 dispatch_semaphore_signal(firstCompleteFrameSemaphore);
             }
+            [displayTimes addObject:@(displayTime)];
         }
     );
     if (stream == nil) {
@@ -13690,25 +13671,18 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
 
     const CFAbsoluteTime startedAt = CFAbsoluteTimeGetCurrent();
     const CGError startStatus = startSymbol(stream);
+    const BOOL stopAfterFirstCompleteFrame = sampleDuration < 0.0;
     const NSTimeInterval targetDuration = std::max(std::fabs(sampleDuration), 0.001);
-    long warmupWaitStatus = 0;
     if (stopAfterFirstCompleteFrame) {
         const dispatch_time_t timeout = dispatch_time(
             DISPATCH_TIME_NOW,
             static_cast<int64_t>(targetDuration * static_cast<NSTimeInterval>(NSEC_PER_SEC))
         );
-        warmupWaitStatus = dispatch_semaphore_wait(firstCompleteFrameSemaphore, timeout);
+        dispatch_semaphore_wait(firstCompleteFrameSemaphore, timeout);
     } else {
         [NSThread sleepForTimeInterval:targetDuration];
     }
-    CGError stopStatus = kCGErrorSuccess;
-    if (stopAfterFirstCompleteFrame && warmupWaitStatus == 0 && callbackStopRequested->load()) {
-        dispatch_sync(stopQueue, ^{
-        });
-        stopStatus = callbackStopStatus;
-    } else {
-        stopStatus = stopSymbol(stream);
-    }
+    const CGError stopStatus = stopSymbol(stream);
     dispatch_sync(queue, ^{
     });
     const NSTimeInterval elapsed = std::max(CFAbsoluteTimeGetCurrent() - startedAt, 0.0);
@@ -13768,9 +13742,6 @@ static NSDictionary<NSString *, id> * _Nullable MDKCreateSkyLightDisplayStreamBe
     }
     if (stopAfterFirstCompleteFrame) {
         [notes addObject:@"warmupMode=first-clean-complete-frame"];
-        [notes addObject:callbackStopRequested->load()
-            ? @"warmupStopMode=callback-async-stop"
-            : @"warmupStopMode=caller-stop"];
     }
     if (!sawSurface) {
         [notes addObject:@"The stream did not deliver any complete IOSurface-backed frames during the sample window."];
