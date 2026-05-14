@@ -13400,30 +13400,14 @@ static CGRect MDKCreateCursorDrawRect(
     }
 
     NSMutableDictionary *streamProperties = [NSMutableDictionary dictionary];
-    NSString *propertyProfile = NSProcessInfo.processInfo.environment[@"MDK_SKYLIGHT_DISPLAY_STREAM_PROPERTY_PROFILE"];
-    if ([propertyProfile isEqualToString:@"rectless-minimal"]) {
-        if (CFStringRef minimumFrameTimeKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamMinimumFrameTime")) {
-            streamProperties[(__bridge NSString *) minimumFrameTimeKey] = @0;
-        }
-        if (CFStringRef queueDepthKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamQueueDepth")) {
-            streamProperties[(__bridge NSString *) queueDepthKey] = @3;
-        }
-        if (CFStringRef showCursorKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamShowCursor")) {
-            streamProperties[(__bridge NSString *) showCursorKey] = @NO;
-        }
-        if (CFStringRef preserveAspectRatioKey = MDKCopyCoreGraphicsDisplayStreamKey("kCGDisplayStreamPreserveAspectRatio")) {
-            streamProperties[(__bridge NSString *) preserveAspectRatioKey] = @NO;
-        }
-    } else {
-        MDKPopulateSkyLightDisplayStreamProperties(
-            _minimumFrameTime,
-            _queueDepth,
-            _showCursor,
-            _yCbCrMatrix,
-            streamProperties,
-            nullptr
-        );
-    }
+    MDKPopulateSkyLightDisplayStreamProperties(
+        _minimumFrameTime,
+        _queueDepth,
+        _showCursor,
+        _yCbCrMatrix,
+        streamProperties,
+        nullptr
+    );
     const CFDictionaryRef streamPropertiesRef =
         streamProperties.count > 0 ? (__bridge CFDictionaryRef) streamProperties : nil;
 
