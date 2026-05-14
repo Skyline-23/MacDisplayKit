@@ -608,10 +608,7 @@ private final class MDKSourceReleaseCoordinator: @unchecked Sendable {
 }
 
 private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRuntime, @unchecked Sendable {
-    private let laneCount: Int
-    private let regions: [CGRect]
-    private let tileMetadataByLane: [MDKEncodedFrameTileMetadata]
-    private let processor: MDKVideoToolboxEncodingProcessor
+    private let lanes: [MDKVideoToolboxEncodingProcessor]
 
     init(
         configuration: MDKEncodedCaptureConfiguration,
@@ -622,30 +619,26 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         let width = configuration.streamConfiguration.resolvedOutputWidth
         let height = configuration.streamConfiguration.resolvedOutputHeight
         let regions = Self.horizontalTileRegions(width: width, height: height, tileCount: laneCount)
-        let tileMetadataByLane = regions.enumerated().map { laneIndex, region in
-            configuration.tileLayout.metadata(
-                frameGroupID: 0,
-                tileIndex: UInt32(laneIndex),
-                encodedLaneIndex: UInt32(laneIndex),
-                tileRegion: region
+        self.lanes = regions.enumerated().map { laneIndex, region in
+            MDKVideoToolboxEncodingProcessor(
+                codec: configuration.codec,
+                preprocessStrategy: configuration.preprocessStrategy,
+                targetFrameRate: configuration.targetFrameRate,
+                encoderInputStrategy: configuration.resolvedEncoderInputStrategy,
+                maxInflightStagingSlots: 128,
+                outputHandler: outputHandler,
+                failureHandler: failureHandler,
+                hdrConfiguration: configuration.resolvedEncodedHDRConfiguration,
+                targetAverageBitRateBitsPerSecond: configuration.targetAverageBitRateBitsPerSecond,
+                tileMetadata: configuration.tileLayout.metadata(
+                    frameGroupID: 0,
+                    tileIndex: UInt32(laneIndex),
+                    encodedLaneIndex: UInt32(laneIndex),
+                    tileRegion: region
+                ),
+                sourceRegion: region
             )
         }
-        self.laneCount = laneCount
-        self.regions = regions
-        self.tileMetadataByLane = tileMetadataByLane
-        self.processor = MDKVideoToolboxEncodingProcessor(
-            codec: configuration.codec,
-            preprocessStrategy: configuration.preprocessStrategy,
-            targetFrameRate: configuration.targetFrameRate * laneCount,
-            encoderInputStrategy: configuration.resolvedEncoderInputStrategy,
-            maxInflightStagingSlots: 128,
-            outputHandler: outputHandler,
-            failureHandler: failureHandler,
-            hdrConfiguration: configuration.resolvedEncodedHDRConfiguration,
-            targetAverageBitRateBitsPerSecond: configuration.targetAverageBitRateBitsPerSecond,
-            tileMetadata: tileMetadataByLane.first ?? .singleFrame,
-            sourceRegion: regions.first
-        )
     }
 
     func process(
@@ -653,30 +646,19 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         releaseSourceFrame: @escaping @Sendable () -> Void
     ) throws {
         let releaseCoordinator = MDKSourceReleaseCoordinator(
-            count: regions.count,
+            count: lanes.count,
             releaseSourceFrame: releaseSourceFrame
         )
         var scheduledLaneCount = 0
-        let laneOrder: [Int]
-        if regions.count > 1 && (frame.sequenceNumber & 1) == 1 {
-            laneOrder = Array(regions.indices.reversed())
-        } else {
-            laneOrder = Array(regions.indices)
-        }
         do {
-            for laneIndex in laneOrder {
-                try processor.process(
-                    frame: frame,
-                    releaseSourceFrame: {
-                        releaseCoordinator.releaseOne()
-                    },
-                    sourceRegionOverride: regions[laneIndex],
-                    tileMetadataOverride: tileMetadataByLane[laneIndex]
-                )
+            for lane in lanes {
+                try lane.process(frame: frame) {
+                    releaseCoordinator.releaseOne()
+                }
                 scheduledLaneCount += 1
             }
         } catch {
-            for _ in scheduledLaneCount..<regions.count {
+            for _ in scheduledLaneCount..<lanes.count {
                 releaseCoordinator.releaseOne()
             }
             throw error
@@ -684,15 +666,15 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
     }
 
     func requestImmediateKeyFrame() {
-        processor.requestImmediateKeyFrame()
+        lanes.forEach { $0.requestImmediateKeyFrame() }
     }
 
     func finalize() -> MDKCaptureFrameProcessingSummary? {
-        summarize([processor.finalize()].compactMap { $0 })
+        summarize(lanes.compactMap { $0.finalize() })
     }
 
     func liveSummary() -> MDKCaptureFrameProcessingSummary? {
-        summarize([processor.liveSummary()].compactMap { $0 })
+        summarize(lanes.compactMap { $0.liveSummary() })
     }
 
     private func summarize(_ summaries: [MDKCaptureFrameProcessingSummary]) -> MDKCaptureFrameProcessingSummary? {
@@ -703,12 +685,9 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         let outputCallbackCounts = summaries.compactMap(\.outputCallbackCount)
         let completedOutputFrameCounts = summaries.compactMap(\.completedOutputFrameCount)
         var notes = [
-            "videoToolboxEncodedTileStreamLaneCount=\(laneCount)",
+            "videoToolboxEncodedTileStreamLaneCount=\(lanes.count)",
             "videoToolboxEncodedTileStreamPartition=horizontal-columns",
-            "videoToolboxEncodedTileStreamOutputMode=independent",
-            "videoToolboxEncodedTileStreamVTSessionMode=single-shared-session",
-            "videoToolboxEncodedTileStreamVTSessionFrameRateHint=tile-record-cadence",
-            "videoToolboxEncodedTileStreamSubmissionOrder=alternating-source-sequence"
+            "videoToolboxEncodedTileStreamOutputMode=independent"
         ]
         notes += summaries.flatMap(\.notes)
 
