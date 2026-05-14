@@ -636,9 +636,7 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
                     encodedLaneIndex: UInt32(laneIndex),
                     tileRegion: region
                 ),
-                sourceRegion: region,
-                presentationTimeScaleMultiplier: Int32(max(laneCount, 1)),
-                presentationTimePhaseTicks: Int64(laneIndex)
+                sourceRegion: region
             )
         }
     }
@@ -689,8 +687,7 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         var notes = [
             "videoToolboxEncodedTileStreamLaneCount=\(lanes.count)",
             "videoToolboxEncodedTileStreamPartition=horizontal-columns",
-            "videoToolboxEncodedTileStreamOutputMode=independent",
-            "videoToolboxEncodedTileStreamPresentationPhase=lane-index"
+            "videoToolboxEncodedTileStreamOutputMode=independent"
         ]
         notes += summaries.flatMap(\.notes)
 

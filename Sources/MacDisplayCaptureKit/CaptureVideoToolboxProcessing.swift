@@ -221,8 +221,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let targetAverageBitRateBitsPerSecond: Int?
     private let tileMetadata: MDKEncodedFrameTileMetadata
     private let sourceRegion: CGRect?
-    private let presentationTimeScaleMultiplier: Int32
-    private let presentationTimePhaseTicks: Int64
 
     private var compressionSession: VTCompressionSession?
     private var activeDimensions: SIMD2<Int>?
@@ -282,9 +280,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         hdrConfiguration: MDKVideoHDRConfiguration? = nil,
         targetAverageBitRateBitsPerSecond: Int? = nil,
         tileMetadata: MDKEncodedFrameTileMetadata = .singleFrame,
-        sourceRegion: CGRect? = nil,
-        presentationTimeScaleMultiplier: Int32 = 1,
-        presentationTimePhaseTicks: Int64 = 0
+        sourceRegion: CGRect? = nil
     ) {
         self.codec = codec
         self.preprocessStrategy = preprocessStrategy
@@ -312,8 +308,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.targetAverageBitRateBitsPerSecond = targetAverageBitRateBitsPerSecond.flatMap { $0 > 0 ? $0 : nil }
         self.tileMetadata = tileMetadata
         self.sourceRegion = sourceRegion
-        self.presentationTimeScaleMultiplier = max(presentationTimeScaleMultiplier, 1)
-        self.presentationTimePhaseTicks = max(presentationTimePhaseTicks, 0)
         self.encodeQueue.setSpecific(key: encodeQueueSpecificKey, value: encodeQueueSpecificValue)
     }
 
@@ -483,8 +477,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxSubmittedFrameCount=\(submittedFrameCount)",
             "videoToolboxImmediateReplaySubmissionCount=\(immediateReplaySubmissionCount)",
             "videoToolboxSuppressedImmediateReplayCount=\(suppressedImmediateReplayCount)",
-            "videoToolboxPresentationTimeScaleMultiplier=\(presentationTimeScaleMultiplier)",
-            "videoToolboxPresentationTimePhaseTicks=\(presentationTimePhaseTicks)",
             "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
             "videoToolboxPixelBufferPoolIsShared=\(describeHardwareAcceleration(encoderPixelBufferPoolIsShared))",
             "videoToolboxRecommendedParallelizationLimit=\(recommendedParallelizationLimit.map(String.init) ?? "unknown")",
@@ -680,7 +672,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             releaseStagingSlot(identifier: slotIdentifier)
             throw MDKVideoToolboxProcessingError.commandBufferUnavailable
         }
-        let presentationTimeStamp = nextPresentationTimeStamp()
+        let presentationTimeStamp = CMTime(value: frameIndex, timescale: Int32(targetFrameRate))
+        frameIndex += 1
         stagingSubmissionGroup.enter()
 
         if frame.pixelFormat != targetPixelFormat {
@@ -861,7 +854,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         hdrConfiguration?.apply(to: imageBuffer)
 
         let resolvedPresentationTimeStamp = presentationTimeStamp ?? {
-            nextPresentationTimeStamp()
+            let timestamp = CMTime(value: frameIndex, timescale: Int32(targetFrameRate))
+            frameIndex += 1
+            return timestamp
         }()
         let submissionToken = Unmanaged.passRetained(
             MDKVideoToolboxSubmissionToken(
@@ -948,14 +943,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             recordProcessingFailure(errorDescription)
             failureHandler?(errorDescription)
         }
-    }
-
-    private func nextPresentationTimeStamp() -> CMTime {
-        let scaleMultiplier = max(presentationTimeScaleMultiplier, 1)
-        let timescale = max(Int32(targetFrameRate) * scaleMultiplier, 1)
-        let value = (frameIndex * Int64(scaleMultiplier)) + presentationTimePhaseTicks
-        frameIndex += 1
-        return CMTime(value: value, timescale: timescale)
     }
 
     private func shouldSuppressImmediateReplayForPendingFrames() -> Bool {
