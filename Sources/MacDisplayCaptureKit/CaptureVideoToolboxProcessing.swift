@@ -69,7 +69,6 @@ private final class MDKVideoToolboxSubmissionToken {
     let submittedAt: TimeInterval
     let sourceSequenceNumber: UInt64
     let sourceDisplayTime: UInt64
-    let tileMetadata: MDKEncodedFrameTileMetadata
     private let releasePendingFrame: @Sendable () -> Void
 
     init(
@@ -77,14 +76,12 @@ private final class MDKVideoToolboxSubmissionToken {
         submittedAt: TimeInterval,
         sourceSequenceNumber: UInt64,
         sourceDisplayTime: UInt64,
-        tileMetadata: MDKEncodedFrameTileMetadata,
         releasePendingFrame: @escaping @Sendable () -> Void
     ) {
         self.slotIdentifier = slotIdentifier
         self.submittedAt = submittedAt
         self.sourceSequenceNumber = sourceSequenceNumber
         self.sourceDisplayTime = sourceDisplayTime
-        self.tileMetadata = tileMetadata
         self.releasePendingFrame = releasePendingFrame
     }
 
@@ -224,7 +221,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let targetAverageBitRateBitsPerSecond: Int?
     private let tileMetadata: MDKEncodedFrameTileMetadata
     private let sourceRegion: CGRect?
-    private let maxPendingSubmissionCount: Int?
 
     private var compressionSession: VTCompressionSession?
     private var activeDimensions: SIMD2<Int>?
@@ -271,10 +267,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var encodeInvocationTiming = MDKVideoToolboxTimingAccumulator()
     private var metalStageTiming = MDKVideoToolboxTimingAccumulator()
     private var vtEncodeCallTiming = MDKVideoToolboxTimingAccumulator()
-    private var pendingSubmissionThrottleCount: UInt64 = 0
-    private var pendingSubmissionThrottleTimeoutCount: UInt64 = 0
-    private var pendingSubmissionThrottleTotalWaitMilliseconds: Double = 0
-    private var pendingSubmissionThrottleMaxWaitMilliseconds: Double = 0
 
     public init(
         codec: MDKVideoEncoderCodec = .hevc,
@@ -288,8 +280,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         hdrConfiguration: MDKVideoHDRConfiguration? = nil,
         targetAverageBitRateBitsPerSecond: Int? = nil,
         tileMetadata: MDKEncodedFrameTileMetadata = .singleFrame,
-        sourceRegion: CGRect? = nil,
-        maxPendingSubmissionCount: Int? = nil
+        sourceRegion: CGRect? = nil
     ) {
         self.codec = codec
         self.preprocessStrategy = preprocessStrategy
@@ -317,7 +308,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.targetAverageBitRateBitsPerSecond = targetAverageBitRateBitsPerSecond.flatMap { $0 > 0 ? $0 : nil }
         self.tileMetadata = tileMetadata
         self.sourceRegion = sourceRegion
-        self.maxPendingSubmissionCount = maxPendingSubmissionCount.flatMap { $0 > 0 ? $0 : nil }
         self.encodeQueue.setSpecific(key: encodeQueueSpecificKey, value: encodeQueueSpecificValue)
     }
 
@@ -351,20 +341,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         frame: MDKCaptureFrame,
         releaseSourceFrame: @escaping @Sendable () -> Void
     ) throws {
-        try process(
-            frame: frame,
-            releaseSourceFrame: releaseSourceFrame,
-            sourceRegionOverride: nil,
-            tileMetadataOverride: nil
-        )
-    }
-
-    func process(
-        frame: MDKCaptureFrame,
-        releaseSourceFrame: @escaping @Sendable () -> Void,
-        sourceRegionOverride: CGRect?,
-        tileMetadataOverride: MDKEncodedFrameTileMetadata?
-    ) throws {
         let processRequestedAt = ProcessInfo.processInfo.systemUptime
         guard let surface = frame.surface else {
             throw MDKVideoToolboxProcessingError.surfaceUnavailable
@@ -389,9 +365,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             do {
                 try encode(
                     frame: retainedFrame,
-                    releaseSourceFrame: releaseSourceFrame,
-                    sourceRegionOverride: sourceRegionOverride,
-                    tileMetadataOverride: tileMetadataOverride
+                    releaseSourceFrame: releaseSourceFrame
                 )
             } catch {
                 let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
@@ -518,12 +492,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxMetalStageMaxMilliseconds=\(formatMilliseconds(metalStageTiming.maxMilliseconds))",
             "videoToolboxVTEncodeCallSampleCount=\(vtEncodeCallTiming.sampleCount)",
             "videoToolboxVTEncodeCallAverageMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.averageMilliseconds))",
-            "videoToolboxVTEncodeCallMaxMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.maxMilliseconds))",
-            "videoToolboxPendingSubmissionCap=\(maxPendingSubmissionCount.map(String.init) ?? "none")",
-            "videoToolboxPendingSubmissionThrottleCount=\(pendingSubmissionThrottleCount)",
-            "videoToolboxPendingSubmissionThrottleTimeoutCount=\(pendingSubmissionThrottleTimeoutCount)",
-            "videoToolboxPendingSubmissionThrottleAverageWaitMilliseconds=\(formatMilliseconds(pendingSubmissionThrottleCount == 0 ? 0 : pendingSubmissionThrottleTotalWaitMilliseconds / Double(pendingSubmissionThrottleCount)))",
-            "videoToolboxPendingSubmissionThrottleMaxWaitMilliseconds=\(formatMilliseconds(pendingSubmissionThrottleMaxWaitMilliseconds))"
+            "videoToolboxVTEncodeCallMaxMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.maxMilliseconds))"
         ]
         if includeDrainWaitStatus {
             notes.append("videoToolboxStagingSubmissionWait=\(stagingSubmissionWaitStatus == .success ? "success" : "timeout")")
@@ -536,9 +505,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
     private func encode(
         frame: MDKCaptureFrame,
-        releaseSourceFrame: @escaping @Sendable () -> Void,
-        sourceRegionOverride: CGRect?,
-        tileMetadataOverride: MDKEncodedFrameTileMetadata?
+        releaseSourceFrame: @escaping @Sendable () -> Void
     ) throws {
         if !sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxSourcePixelFormat=") }) {
             sessionConfigurationNotes.append(
@@ -562,7 +529,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             hdrConfiguration: hdrConfiguration,
             strategy: encoderInputStrategy
         )
-        let region = effectiveSourceRegion(for: frame, overriding: sourceRegionOverride)
+        let region = effectiveSourceRegion(for: frame)
         let processingWidth = max(Int(region.width.rounded(.down)), 1)
         let processingHeight = max(Int(region.height.rounded(.down)), 1)
         let outputDimensions = preprocessStrategy.outputDimensions(
@@ -592,9 +559,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 frame: frame,
                 targetPixelFormat: targetPixelFormat,
                 commandQueue: commandQueue,
-                releaseSourceFrame: releaseSourceFrame,
-                sourceRegionOverride: sourceRegionOverride,
-                tileMetadataOverride: tileMetadataOverride
+                releaseSourceFrame: releaseSourceFrame
             )
         } else {
             guard !needsPixelFormatConversion && !needsScaling else {
@@ -605,8 +570,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
             try encodeDirect(
                 frame: frame,
-                releaseSourceFrame: releaseSourceFrame,
-                tileMetadataOverride: tileMetadataOverride
+                releaseSourceFrame: releaseSourceFrame
             )
         }
     }
@@ -650,8 +614,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
 
     private func encodeDirect(
         frame: MDKCaptureFrame,
-        releaseSourceFrame: @escaping @Sendable () -> Void,
-        tileMetadataOverride: MDKEncodedFrameTileMetadata?
+        releaseSourceFrame: @escaping @Sendable () -> Void
     ) throws {
         guard let surface = frame.surface else {
             throw MDKVideoToolboxProcessingError.surfaceUnavailable
@@ -662,7 +625,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             imageBuffer: imageBuffer,
             frame: frame,
             slotIdentifier: nil,
-            tileMetadataOverride: tileMetadataOverride,
             releasePendingFrame: {}
         )
         releaseSourceFrame()
@@ -673,9 +635,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         frame: MDKCaptureFrame,
         targetPixelFormat: UInt32,
         commandQueue: any MTLCommandQueue,
-        releaseSourceFrame: @escaping @Sendable () -> Void,
-        sourceRegionOverride: CGRect?,
-        tileMetadataOverride: MDKEncodedFrameTileMetadata?
+        releaseSourceFrame: @escaping @Sendable () -> Void
     ) throws {
         guard let device else {
             throw MDKVideoToolboxProcessingError.metalDeviceUnavailable
@@ -683,8 +643,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         guard let surface = frame.surface else {
             throw MDKVideoToolboxProcessingError.surfaceUnavailable
         }
-
-        waitForPendingSubmissionCapacity()
 
         let sourceTextures = try makeSourceTextures(
             for: frame,
@@ -696,8 +654,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             device: device
         )
         let outputDimensions = preprocessStrategy.outputDimensions(
-            sourceWidth: max(Int(effectiveSourceRegion(for: frame, overriding: sourceRegionOverride).width.rounded(.down)), 1),
-            sourceHeight: max(Int(effectiveSourceRegion(for: frame, overriding: sourceRegionOverride).height.rounded(.down)), 1),
+            sourceWidth: max(Int(effectiveSourceRegion(for: frame).width.rounded(.down)), 1),
+            sourceHeight: max(Int(effectiveSourceRegion(for: frame).height.rounded(.down)), 1),
             pixelFormat: targetPixelFormat
         )
         let slot = try acquireStagingSlot(
@@ -741,7 +699,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 sourceTextures: sourceTextures,
                 destinationTextures: slot.textures,
                 destinationPixelFormat: targetPixelFormat,
-                sourceRegion: effectiveSourceRegion(for: frame, overriding: sourceRegionOverride),
+                sourceRegion: effectiveSourceRegion(for: frame),
                 hdrConfiguration: hdrConfiguration,
                 cursorTexture: cursorTexture,
                 cursorOverlaySample: frame.cursorOverlaySample
@@ -788,7 +746,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
 
             for (sourceTexture, destinationTexture) in zip(sourceTextures, slot.textures) {
-                let sourceRegion = effectiveSourceRegion(for: frame, overriding: sourceRegionOverride)
+                let sourceRegion = effectiveSourceRegion(for: frame)
                 let copyWidth = min(
                     destinationTexture.width,
                     max(Int(sourceRegion.width.rounded(.down)), 1)
@@ -856,7 +814,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                         frame: frame,
                         slotIdentifier: slotIdentifier,
                         presentationTimeStamp: presentationTimeStamp,
-                        tileMetadataOverride: tileMetadataOverride,
                         releasePendingFrame: {}
                     )
                     releaseSourceFrame()
@@ -874,12 +831,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         commandBuffer.commit()
     }
 
-    private func effectiveSourceRegion(
-        for frame: MDKCaptureFrame,
-        overriding sourceRegionOverride: CGRect? = nil
-    ) -> CGRect {
+    private func effectiveSourceRegion(for frame: MDKCaptureFrame) -> CGRect {
         let fullFrame = CGRect(x: 0, y: 0, width: frame.width, height: frame.height)
-        let sourceRegion = sourceRegionOverride ?? self.sourceRegion
         guard let sourceRegion else {
             return fullFrame
         }
@@ -892,7 +845,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         frame: MDKCaptureFrame,
         slotIdentifier: Int?,
         presentationTimeStamp: CMTime? = nil,
-        tileMetadataOverride: MDKEncodedFrameTileMetadata? = nil,
         releasePendingFrame: @escaping @Sendable () -> Void = {}
     ) throws {
         guard let compressionSession else {
@@ -912,7 +864,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 submittedAt: ProcessInfo.processInfo.systemUptime,
                 sourceSequenceNumber: frame.sequenceNumber,
                 sourceDisplayTime: frame.displayTime,
-                tileMetadata: tileMetadataOverride ?? tileMetadata,
                 releasePendingFrame: releasePendingFrame
             )
         )
@@ -1645,10 +1596,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             encodeInvocationTiming = MDKVideoToolboxTimingAccumulator()
             metalStageTiming = MDKVideoToolboxTimingAccumulator()
             vtEncodeCallTiming = MDKVideoToolboxTimingAccumulator()
-            pendingSubmissionThrottleCount = 0
-            pendingSubmissionThrottleTimeoutCount = 0
-            pendingSubmissionThrottleTotalWaitMilliseconds = 0
-            pendingSubmissionThrottleMaxWaitMilliseconds = 0
         }
         lastFreshReplayState = nil
         lastImmediateRecoveryReplayDisplayTime = nil
@@ -1674,50 +1621,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         outputQueue.sync {
             processingFailureCount += 1
             processingErrorHistogram[description, default: 0] += 1
-        }
-    }
-
-    private func waitForPendingSubmissionCapacity() {
-        guard let maxPendingSubmissionCount else {
-            return
-        }
-
-        let startedAt = ProcessInfo.processInfo.systemUptime
-        let maxWaitSeconds = 1.0 / Double(max(targetFrameRate, 1))
-        var didWait = false
-        var timedOut = false
-        while pendingSubmissionCount() >= maxPendingSubmissionCount {
-            let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
-            guard elapsed < maxWaitSeconds else {
-                timedOut = true
-                break
-            }
-            didWait = true
-            Thread.sleep(forTimeInterval: 0.0005)
-        }
-
-        guard didWait || timedOut else {
-            return
-        }
-
-        let waitedMilliseconds = max((ProcessInfo.processInfo.systemUptime - startedAt) * 1000.0, 0)
-        pendingSubmissionThrottleCount += 1
-        pendingSubmissionThrottleTotalWaitMilliseconds += waitedMilliseconds
-        pendingSubmissionThrottleMaxWaitMilliseconds = max(
-            pendingSubmissionThrottleMaxWaitMilliseconds,
-            waitedMilliseconds
-        )
-        if timedOut {
-            pendingSubmissionThrottleTimeoutCount += 1
-        }
-    }
-
-    private func pendingSubmissionCount() -> Int {
-        outputQueue.sync {
-            guard submittedFrameCount >= outputCallbackCount else {
-                return 0
-            }
-            return Int(submittedFrameCount - outputCallbackCount)
         }
     }
 
@@ -1751,14 +1654,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             ) ?? sampleBuffer
         }
         let sourceSequenceNumber = submissionToken?.sourceSequenceNumber ?? 0
-        let callbackTileMetadata = submissionToken?.tileMetadata ?? tileMetadata
         let resolvedTileMetadata = MDKEncodedFrameTileMetadata(
-            frameGroupID: callbackTileMetadata.frameGroupID == 0 ? sourceSequenceNumber : callbackTileMetadata.frameGroupID,
-            tileIndex: callbackTileMetadata.tileIndex,
-            tileCount: callbackTileMetadata.tileCount,
-            encodedLaneIndex: callbackTileMetadata.encodedLaneIndex,
-            encodedLaneCount: callbackTileMetadata.encodedLaneCount,
-            tileRegion: callbackTileMetadata.tileRegion
+            frameGroupID: tileMetadata.frameGroupID == 0 ? sourceSequenceNumber : tileMetadata.frameGroupID,
+            tileIndex: tileMetadata.tileIndex,
+            tileCount: tileMetadata.tileCount,
+            encodedLaneIndex: tileMetadata.encodedLaneIndex,
+            encodedLaneCount: tileMetadata.encodedLaneCount,
+            tileRegion: tileMetadata.tileRegion
         )
         let encodedFrame = resolvedSampleBuffer.map {
             MDKEncodedFrame(
