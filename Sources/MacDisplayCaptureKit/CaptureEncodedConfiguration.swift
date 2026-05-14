@@ -271,10 +271,6 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
     private func shouldPreferRawSkyLightDisplayStream(
         using capabilities: MDKPrivateCaptureCapabilities
     ) -> Bool {
-        if ProcessInfo.processInfo.environment["MDK_DISABLE_RAW_SKYLIGHT_DISPLAY_STREAM"] == "1" {
-            return false
-        }
-
         guard capabilities.rawSkyLightDisplayStreamAvailable else {
             return false
         }
