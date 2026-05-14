@@ -446,6 +446,18 @@ private actor MDKEncodedCaptureLatestFrameMailbox {
         return replacedDisplayTime
     }
 
+    func storePreservingFresh(_ frame: MDKCaptureFrame) -> (replacedDisplayTime: UInt64?, stored: Bool) {
+        if let latestFrame,
+           latestFrame.origin == .fresh,
+           frame.origin != .fresh {
+            return (nil, false)
+        }
+
+        let replacedDisplayTime = latestFrame?.origin == .fresh ? latestFrame?.displayTime : nil
+        latestFrame = frame
+        return (replacedDisplayTime, true)
+    }
+
     func take() -> MDKCaptureFrame? {
         let frame = latestFrame
         latestFrame = nil
@@ -1140,7 +1152,11 @@ public actor MDKEncodedCaptureSession {
             sourceTimingTracker?.record(frame: frame)
             guard pendingFrameTracker.tryAcquire(limit: maximumPendingFrameCount) else {
                 Task {
-                    let replacedDisplayTime = await latestFrameMailbox.store(frame)
+                    let storeResult = await latestFrameMailbox.storePreservingFresh(frame)
+                    guard storeResult.stored else {
+                        return
+                    }
+                    let replacedDisplayTime = storeResult.replacedDisplayTime
                     if let replacedDisplayTime {
                         await self.handleSourceFrameDropped(
                             sourceDisplayTime: replacedDisplayTime,
@@ -1164,6 +1180,9 @@ public actor MDKEncodedCaptureSession {
         runtimeDiagnosticNotes = sourcePreparation.diagnosticNotes
         if !shouldRecordSourceDiagnostics {
             runtimeDiagnosticNotes.append("sourceHotPathDiagnostics=disabled")
+        }
+        if configuration.resolvedSkyLightProcessingMode != nil {
+            runtimeDiagnosticNotes.append("sourceMailboxPolicy=preserve-fresh")
         }
 
         do {
