@@ -619,7 +619,6 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         let width = configuration.streamConfiguration.resolvedOutputWidth
         let height = configuration.streamConfiguration.resolvedOutputHeight
         let regions = Self.horizontalTileRegions(width: width, height: height, tileCount: laneCount)
-        let sharedOutputQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.encoded-capture.tile-output")
         self.lanes = regions.enumerated().map { laneIndex, region in
             MDKVideoToolboxEncodingProcessor(
                 codec: configuration.codec,
@@ -637,9 +636,7 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
                     encodedLaneIndex: UInt32(laneIndex),
                     tileRegion: region
                 ),
-                sourceRegion: region,
-                outputQueue: sharedOutputQueue,
-                outputQueueMode: "shared-tile-stream"
+                sourceRegion: region
             )
         }
     }
@@ -690,8 +687,7 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         var notes = [
             "videoToolboxEncodedTileStreamLaneCount=\(lanes.count)",
             "videoToolboxEncodedTileStreamPartition=horizontal-columns",
-            "videoToolboxEncodedTileStreamOutputMode=independent",
-            "videoToolboxEncodedTileStreamOutputQueue=shared"
+            "videoToolboxEncodedTileStreamOutputMode=independent"
         ]
         notes += summaries.flatMap(\.notes)
 
