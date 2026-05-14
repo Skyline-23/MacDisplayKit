@@ -467,7 +467,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
             "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "hybrid-direct-or-metal-staging")",
             "videoToolboxStagedSourceReleaseMode=post-submit",
-            "videoToolboxPendingCreditReleaseMode=\(shouldReleasePendingCreditOnOutputCallback ? "output-callback" : "post-submit")",
             "videoToolboxDirectSubmissionFrameCount=\(directSubmissionFrameCount)",
             "videoToolboxStagedSubmissionFrameCount=\(stagedSubmissionFrameCount)",
             "videoToolboxColorConversionMode=\(sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) ? "custom" : "passthrough")",
@@ -616,22 +615,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         let imageBuffer = try wrappedPixelBuffer(for: frame, surface: surface)
-        let releaseOnOutputCallback = shouldReleasePendingCreditOnOutputCallback
-        let releasePendingFrame: @Sendable () -> Void
-        if releaseOnOutputCallback {
-            releasePendingFrame = releaseSourceFrame
-        } else {
-            releasePendingFrame = {}
-        }
         try submitToEncoder(
             imageBuffer: imageBuffer,
             frame: frame,
             slotIdentifier: nil,
-            releasePendingFrame: releasePendingFrame
+            releasePendingFrame: {}
         )
-        if !releaseOnOutputCallback {
-            releaseSourceFrame()
-        }
+        releaseSourceFrame()
         recordProcessingSuccess(isStaged: false)
     }
 
@@ -799,23 +789,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
             self.submissionQueue.async { [self] in
                 do {
-                    let releaseOnOutputCallback = shouldReleasePendingCreditOnOutputCallback
-                    let releasePendingFrame: @Sendable () -> Void
-                    if releaseOnOutputCallback {
-                        releasePendingFrame = releaseSourceFrame
-                    } else {
-                        releasePendingFrame = {}
-                    }
                     try submitToEncoder(
                         imageBuffer: stagedPixelBuffer.pixelBuffer,
                         frame: frame,
                         slotIdentifier: slotIdentifier,
                         presentationTimeStamp: presentationTimeStamp,
-                        releasePendingFrame: releasePendingFrame
+                        releasePendingFrame: {}
                     )
-                    if !releaseOnOutputCallback {
-                        releaseSourceFrame()
-                    }
+                    releaseSourceFrame()
                     recordProcessingSuccess(isStaged: true)
                 } catch {
                     releaseSourceFrame()
@@ -828,10 +809,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         commandBuffer.commit()
-    }
-
-    private var shouldReleasePendingCreditOnOutputCallback: Bool {
-        codec == .hevc && hdrConfiguration?.transferFunction == .smpteSt2084PQ
     }
 
     private func submitToEncoder(
