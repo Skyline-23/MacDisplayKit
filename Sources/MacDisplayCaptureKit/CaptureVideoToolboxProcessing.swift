@@ -467,7 +467,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
             "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "hybrid-direct-or-metal-staging")",
             "videoToolboxStagedSourceReleaseMode=post-submit",
-            "videoToolboxStagedSubmissionPreparation=precomputed-frame-state",
             "videoToolboxDirectSubmissionFrameCount=\(directSubmissionFrameCount)",
             "videoToolboxStagedSubmissionFrameCount=\(stagedSubmissionFrameCount)",
             "videoToolboxColorConversionMode=\(sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) ? "custom" : "passthrough")",
@@ -669,8 +668,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
         let presentationTimeStamp = CMTime(value: frameIndex, timescale: Int32(targetFrameRate))
         frameIndex += 1
-        let forceKeyFrame = consumeImmediateKeyFrameRequest()
-        hdrConfiguration?.apply(to: stagedPixelBuffer.pixelBuffer)
         stagingSubmissionGroup.enter()
 
         if frame.pixelFormat != targetPixelFormat {
@@ -797,8 +794,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                         frame: frame,
                         slotIdentifier: slotIdentifier,
                         presentationTimeStamp: presentationTimeStamp,
-                        forceKeyFrame: forceKeyFrame,
-                        shouldApplyHDRConfiguration: false,
                         releasePendingFrame: {}
                     )
                     releaseSourceFrame()
@@ -821,17 +816,13 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         frame: MDKCaptureFrame,
         slotIdentifier: Int?,
         presentationTimeStamp: CMTime? = nil,
-        forceKeyFrame: Bool? = nil,
-        shouldApplyHDRConfiguration: Bool = true,
         releasePendingFrame: @escaping @Sendable () -> Void = {}
     ) throws {
         guard let compressionSession else {
             throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: OSStatus(unimpErr))
         }
 
-        if shouldApplyHDRConfiguration {
-            hdrConfiguration?.apply(to: imageBuffer)
-        }
+        hdrConfiguration?.apply(to: imageBuffer)
 
         let resolvedPresentationTimeStamp = presentationTimeStamp ?? {
             let timestamp = CMTime(value: frameIndex, timescale: Int32(targetFrameRate))
@@ -856,7 +847,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             imageBuffer: imageBuffer,
             presentationTimeStamp: resolvedPresentationTimeStamp,
             duration: .invalid,
-            frameProperties: makeFrameProperties(forceKeyFrame: forceKeyFrame ?? consumeImmediateKeyFrameRequest()),
+            frameProperties: makeFrameProperties(forceKeyFrame: consumeImmediateKeyFrameRequest()),
             sourceFrameRefcon: submissionToken.toOpaque(),
             infoFlagsOut: nil
         )
