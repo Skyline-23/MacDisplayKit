@@ -620,7 +620,15 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         let height = configuration.streamConfiguration.resolvedOutputHeight
         let regions = Self.horizontalTileRegions(width: width, height: height, tileCount: laneCount)
         self.lanes = regions.enumerated().map { laneIndex, region in
-            MDKVideoToolboxEncodingProcessor(
+            let tileMetadata = MDKEncodedFrameTileMetadata(
+                frameGroupID: 0,
+                tileIndex: UInt32(laneIndex),
+                tileCount: 1,
+                encodedLaneIndex: UInt32(laneIndex),
+                encodedLaneCount: UInt32(laneCount),
+                tileRegion: region
+            )
+            return MDKVideoToolboxEncodingProcessor(
                 codec: configuration.codec,
                 preprocessStrategy: configuration.preprocessStrategy,
                 targetFrameRate: configuration.targetFrameRate,
@@ -630,12 +638,7 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
                 failureHandler: failureHandler,
                 hdrConfiguration: configuration.resolvedEncodedHDRConfiguration,
                 targetAverageBitRateBitsPerSecond: configuration.targetAverageBitRateBitsPerSecond,
-                tileMetadata: configuration.tileLayout.metadata(
-                    frameGroupID: 0,
-                    tileIndex: UInt32(laneIndex),
-                    encodedLaneIndex: UInt32(laneIndex),
-                    tileRegion: region
-                ),
+                tileMetadata: tileMetadata,
                 sourceRegion: region
             )
         }
@@ -687,7 +690,8 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         var notes = [
             "videoToolboxEncodedTileStreamLaneCount=\(lanes.count)",
             "videoToolboxEncodedTileStreamPartition=horizontal-columns",
-            "videoToolboxEncodedTileStreamOutputMode=independent"
+            "videoToolboxEncodedTileStreamOutputMode=independent",
+            "videoToolboxEncodedTileStreamPresentationGroupMode=per-tile-update"
         ]
         notes += summaries.flatMap(\.notes)
 
