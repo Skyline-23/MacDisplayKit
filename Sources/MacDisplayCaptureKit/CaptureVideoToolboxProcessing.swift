@@ -469,7 +469,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxCodec=\(codec.rawValue)",
             "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
             "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "hybrid-direct-or-metal-staging")",
-            "videoToolboxStagedSourceReleaseMode=post-submit",
+            "videoToolboxStagedSourceReleaseMode=\(stagedSourceReleaseModeDescription)",
             "videoToolboxDirectSubmissionFrameCount=\(directSubmissionFrameCount)",
             "videoToolboxStagedSubmissionFrameCount=\(stagedSubmissionFrameCount)",
             "videoToolboxColorConversionMode=\(sessionConfigurationNotes.contains(where: { $0.hasPrefix("videoToolboxColorConversion=") }) ? "custom" : "passthrough")",
@@ -667,6 +667,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         let slotIdentifier = slot.identifier
         let stagedPixelBuffer = MDKVideoToolboxSendablePixelBuffer(pixelBuffer: slot.pixelBuffer)
         let metalStageStartedAt = ProcessInfo.processInfo.systemUptime
+        let releasesSourceAfterMetalStage = shouldReleaseStagedSourceAfterMetalStage
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             releaseStagingSlot(identifier: slotIdentifier)
@@ -807,6 +808,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 return
             }
             self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
+            if releasesSourceAfterMetalStage {
+                releaseSourceFrame()
+            }
             self.submissionQueue.async { [self] in
                 do {
                     try submitToEncoder(
@@ -816,10 +820,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                         presentationTimeStamp: presentationTimeStamp,
                         releasePendingFrame: {}
                     )
-                    releaseSourceFrame()
+                    if !releasesSourceAfterMetalStage {
+                        releaseSourceFrame()
+                    }
                     recordProcessingSuccess(isStaged: true)
                 } catch {
-                    releaseSourceFrame()
+                    if !releasesSourceAfterMetalStage {
+                        releaseSourceFrame()
+                    }
                     let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
                     recordProcessingFailure(errorDescription)
                     releaseStagingSlot(identifier: slotIdentifier)
@@ -829,6 +837,16 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         commandBuffer.commit()
+    }
+
+    private var shouldReleaseStagedSourceAfterMetalStage: Bool {
+        codec == .hevc &&
+            hdrConfiguration?.transferFunction == .smpteSt2084PQ &&
+            tileMetadata.encodedLaneCount > 1
+    }
+
+    private var stagedSourceReleaseModeDescription: String {
+        shouldReleaseStagedSourceAfterMetalStage ? "post-metal-stage-hevc-tile" : "post-submit"
     }
 
     private func effectiveSourceRegion(for frame: MDKCaptureFrame) -> CGRect {
