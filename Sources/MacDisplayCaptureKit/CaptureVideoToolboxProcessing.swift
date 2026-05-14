@@ -1654,17 +1654,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             ) ?? sampleBuffer
         }
         let sourceSequenceNumber = submissionToken?.sourceSequenceNumber ?? 0
-        let resolvedFrameGroupID: UInt64
-        if tileMetadata.frameGroupID != 0 {
-            resolvedFrameGroupID = tileMetadata.frameGroupID
-        } else if tileMetadata.tileCount == 1 && tileMetadata.encodedLaneCount > 1 {
-            let laneCount = UInt64(max(tileMetadata.encodedLaneCount, 1))
-            resolvedFrameGroupID = sourceSequenceNumber &* laneCount &+ UInt64(tileMetadata.encodedLaneIndex)
-        } else {
-            resolvedFrameGroupID = sourceSequenceNumber
-        }
         let resolvedTileMetadata = MDKEncodedFrameTileMetadata(
-            frameGroupID: resolvedFrameGroupID,
+            frameGroupID: tileMetadata.frameGroupID == 0 ? sourceSequenceNumber : tileMetadata.frameGroupID,
             tileIndex: tileMetadata.tileIndex,
             tileCount: tileMetadata.tileCount,
             encodedLaneIndex: tileMetadata.encodedLaneIndex,
