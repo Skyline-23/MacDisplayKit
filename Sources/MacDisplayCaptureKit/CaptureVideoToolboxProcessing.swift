@@ -102,14 +102,12 @@ private struct MDKVideoToolboxTimingAccumulator {
     var sampleCount: UInt64 = 0
     var totalMilliseconds: Double = 0
     var maxMilliseconds: Double = 0
-    private var samples: [Double] = []
 
     mutating func record(_ milliseconds: Double) {
         let boundedMilliseconds = max(milliseconds, 0)
         sampleCount += 1
         totalMilliseconds += boundedMilliseconds
         maxMilliseconds = max(maxMilliseconds, boundedMilliseconds)
-        samples.append(boundedMilliseconds)
     }
 
     var averageMilliseconds: Double {
@@ -117,17 +115,6 @@ private struct MDKVideoToolboxTimingAccumulator {
             return 0
         }
         return totalMilliseconds / Double(sampleCount)
-    }
-
-    func percentileMilliseconds(_ percentile: Double) -> Double {
-        guard !samples.isEmpty else {
-            return 0
-        }
-        let sortedSamples = samples.sorted()
-        let boundedPercentile = min(max(percentile, 0), 100)
-        let position = (boundedPercentile / 100) * Double(sortedSamples.count - 1)
-        let index = Int(position.rounded(.up))
-        return sortedSamples[index]
     }
 }
 
@@ -257,7 +244,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var outputCallbackLatencyHistogram: [String: Int] = [:]
     private var minOutputCallbackLatencyMilliseconds: Double?
     private var maxOutputCallbackLatencyMilliseconds: Double?
-    private var outputCallbackLatencyTiming = MDKVideoToolboxTimingAccumulator()
     private var submittedFrameCount: UInt64 = 0
     private var usingHardwareAcceleratedEncoder: Bool?
     private var encoderPixelBufferPoolIsShared: Bool?
@@ -497,34 +483,16 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxPixelBufferCacheSize=\(pixelBufferCache.count)",
             "videoToolboxEncodeQueueWaitSampleCount=\(encodeQueueWaitTiming.sampleCount)",
             "videoToolboxEncodeQueueWaitAverageMilliseconds=\(formatMilliseconds(encodeQueueWaitTiming.averageMilliseconds))",
-            "videoToolboxEncodeQueueWaitP50Milliseconds=\(formatMilliseconds(encodeQueueWaitTiming.percentileMilliseconds(50)))",
-            "videoToolboxEncodeQueueWaitP95Milliseconds=\(formatMilliseconds(encodeQueueWaitTiming.percentileMilliseconds(95)))",
-            "videoToolboxEncodeQueueWaitP99Milliseconds=\(formatMilliseconds(encodeQueueWaitTiming.percentileMilliseconds(99)))",
             "videoToolboxEncodeQueueWaitMaxMilliseconds=\(formatMilliseconds(encodeQueueWaitTiming.maxMilliseconds))",
             "videoToolboxEncodeInvocationSampleCount=\(encodeInvocationTiming.sampleCount)",
             "videoToolboxEncodeInvocationAverageMilliseconds=\(formatMilliseconds(encodeInvocationTiming.averageMilliseconds))",
-            "videoToolboxEncodeInvocationP50Milliseconds=\(formatMilliseconds(encodeInvocationTiming.percentileMilliseconds(50)))",
-            "videoToolboxEncodeInvocationP95Milliseconds=\(formatMilliseconds(encodeInvocationTiming.percentileMilliseconds(95)))",
-            "videoToolboxEncodeInvocationP99Milliseconds=\(formatMilliseconds(encodeInvocationTiming.percentileMilliseconds(99)))",
             "videoToolboxEncodeInvocationMaxMilliseconds=\(formatMilliseconds(encodeInvocationTiming.maxMilliseconds))",
             "videoToolboxMetalStageSampleCount=\(metalStageTiming.sampleCount)",
             "videoToolboxMetalStageAverageMilliseconds=\(formatMilliseconds(metalStageTiming.averageMilliseconds))",
-            "videoToolboxMetalStageP50Milliseconds=\(formatMilliseconds(metalStageTiming.percentileMilliseconds(50)))",
-            "videoToolboxMetalStageP95Milliseconds=\(formatMilliseconds(metalStageTiming.percentileMilliseconds(95)))",
-            "videoToolboxMetalStageP99Milliseconds=\(formatMilliseconds(metalStageTiming.percentileMilliseconds(99)))",
             "videoToolboxMetalStageMaxMilliseconds=\(formatMilliseconds(metalStageTiming.maxMilliseconds))",
             "videoToolboxVTEncodeCallSampleCount=\(vtEncodeCallTiming.sampleCount)",
             "videoToolboxVTEncodeCallAverageMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.averageMilliseconds))",
-            "videoToolboxVTEncodeCallP50Milliseconds=\(formatMilliseconds(vtEncodeCallTiming.percentileMilliseconds(50)))",
-            "videoToolboxVTEncodeCallP95Milliseconds=\(formatMilliseconds(vtEncodeCallTiming.percentileMilliseconds(95)))",
-            "videoToolboxVTEncodeCallP99Milliseconds=\(formatMilliseconds(vtEncodeCallTiming.percentileMilliseconds(99)))",
-            "videoToolboxVTEncodeCallMaxMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.maxMilliseconds))",
-            "videoToolboxOutputCallbackLatencySampleCount=\(outputCallbackLatencyTiming.sampleCount)",
-            "videoToolboxOutputCallbackLatencyAverageMilliseconds=\(formatMilliseconds(outputCallbackLatencyTiming.averageMilliseconds))",
-            "videoToolboxOutputCallbackLatencyP50Milliseconds=\(formatMilliseconds(outputCallbackLatencyTiming.percentileMilliseconds(50)))",
-            "videoToolboxOutputCallbackLatencyP95Milliseconds=\(formatMilliseconds(outputCallbackLatencyTiming.percentileMilliseconds(95)))",
-            "videoToolboxOutputCallbackLatencyP99Milliseconds=\(formatMilliseconds(outputCallbackLatencyTiming.percentileMilliseconds(99)))",
-            "videoToolboxOutputCallbackLatencyMaxMilliseconds=\(formatMilliseconds(outputCallbackLatencyTiming.maxMilliseconds))"
+            "videoToolboxVTEncodeCallMaxMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.maxMilliseconds))"
         ]
         if includeDrainWaitStatus {
             notes.append("videoToolboxStagingSubmissionWait=\(stagingSubmissionWaitStatus == .success ? "success" : "timeout")")
@@ -1624,7 +1592,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             outputCallbackLatencyHistogram = [:]
             minOutputCallbackLatencyMilliseconds = nil
             maxOutputCallbackLatencyMilliseconds = nil
-            outputCallbackLatencyTiming = MDKVideoToolboxTimingAccumulator()
             encodeQueueWaitTiming = MDKVideoToolboxTimingAccumulator()
             encodeInvocationTiming = MDKVideoToolboxTimingAccumulator()
             metalStageTiming = MDKVideoToolboxTimingAccumulator()
@@ -1725,7 +1692,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                     latencyMilliseconds
                 )
                 outputCallbackLatencyHistogram[roundedLatencyBucket(for: latencyMilliseconds), default: 0] += 1
-                outputCallbackLatencyTiming.record(latencyMilliseconds)
             }
 
             if outputCompleted {
