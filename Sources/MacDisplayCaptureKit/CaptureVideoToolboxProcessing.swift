@@ -1099,14 +1099,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
         setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: targetFrameRate), label: "MaxKeyFrameInterval")
         setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: NSNumber(value: 1.0), label: "MaxKeyFrameIntervalDuration")
-        let requiresTenBitOutput =
-            pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
-            pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange ||
-            (
-                codec == .hevc &&
-                hdrConfiguration.map { $0.transferFunction != .ituR709 } == true
-            )
-        if requiresTenBitOutput {
+        if pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
+            pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange {
             setSessionProperty(
                 session,
                 key: kVTCompressionPropertyKey_OutputBitDepth,
@@ -1146,10 +1140,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         if codec.supportsReferenceBufferCount {
             setSessionProperty(session, key: kVTCompressionPropertyKey_ReferenceBufferCount, value: NSNumber(value: codec.referenceBufferCount), label: "ReferenceBufferCount")
         }
-        if let profileLevel = codec.defaultProfileLevel(
-            for: pixelFormat,
-            hdrConfiguration: hdrConfiguration
-        ) {
+        if let profileLevel = codec.defaultProfileLevel(for: pixelFormat) {
             setSessionProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: profileLevel, label: "ProfileLevel")
             sessionConfigurationNotes.append("videoToolboxConfiguredProfileLevel=\(profileLevel)")
         }

@@ -108,11 +108,6 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
                 preferredBitDepth: 8
             )
         case .yuv420v10:
-            if self == .hevc,
-               usesHDRTransfer,
-               sourcePixelFormat == kCVPixelFormatType_32BGRA {
-                return sourcePixelFormat
-            }
             return preferred420InputPixelFormat(
                 for: sourcePixelFormat,
                 preferredBitDepth: 10
@@ -197,23 +192,17 @@ public enum MDKVideoEncoderCodec: String, CaseIterable, Codable, Sendable {
         }
     }
 
-    func defaultProfileLevel(
-        for pixelFormat: UInt32,
-        hdrConfiguration: MDKVideoHDRConfiguration? = nil
-    ) -> CFString? {
+    func defaultProfileLevel(for pixelFormat: UInt32) -> CFString? {
         switch self {
         case .h264:
             return kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel
         case .hevc:
-            let usesHDRTransfer = hdrConfiguration.map { $0.transferFunction != .ituR709 } ?? false
             switch pixelFormat {
             case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
                  kCVPixelFormatType_420YpCbCr10BiPlanarFullRange:
                 return kVTProfileLevel_HEVC_Main10_AutoLevel
             default:
-                return usesHDRTransfer
-                    ? kVTProfileLevel_HEVC_Main10_AutoLevel
-                    : kVTProfileLevel_HEVC_Main_AutoLevel
+                return kVTProfileLevel_HEVC_Main_AutoLevel
             }
         case .proResProxy:
             return nil
