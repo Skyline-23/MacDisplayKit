@@ -881,9 +881,6 @@ public actor MDKEncodedCaptureSession {
     private var sourceTimingTracker: MDKEncodedCaptureSourceTimingTracker?
     private var scheduledRestartTask: Task<Void, Never>?
     private var scheduledRestartGeneration: UInt64?
-    private var sourceStartupWatchdogTask: Task<Void, Never>?
-    private var sourceStartupWatchdogGeneration: UInt64?
-    private static let sourceStartupWatchdogDelayNanoseconds: UInt64 = 250_000_000
 
     public init(configuration: MDKEncodedCaptureConfiguration) {
         self.configuration = configuration
@@ -999,27 +996,6 @@ public actor MDKEncodedCaptureSession {
         }
 
         return min(max(effectiveQueueDepth * 3, 10), 16)
-    }
-
-    static func shouldRestartForSourceStartupTimeout(
-        statistics: MDKEncodedCaptureSessionStatistics,
-        processingSummary: MDKCaptureFrameProcessingSummary?
-    ) -> Bool {
-        guard statistics.isRunning,
-              statistics.emittedFrameCount == 0,
-              statistics.droppedFrameCount == 0,
-              statistics.processingFailureCount == 0 else {
-            return false
-        }
-
-        guard let processingSummary else {
-            return true
-        }
-
-        return processingSummary.processedFrameCount == 0 &&
-            processingSummary.processingFailureCount == 0 &&
-            (processingSummary.outputCallbackCount ?? 0) == 0 &&
-            (processingSummary.completedOutputFrameCount ?? 0) == 0
     }
 
     public func frames() -> AsyncThrowingStream<MDKEncodedFrame, Error> {
@@ -1208,10 +1184,6 @@ public actor MDKEncodedCaptureSession {
             isRunning: true,
             notes: mergedRuntimeNotes(with: statistics.notes)
         )
-        scheduleSourceStartupWatchdogIfNeeded(
-            runtimeGeneration: currentRuntimeGeneration,
-            callbackOnlyDelivery: callbackOnlyDelivery
-        )
         let startupDiagnostics = statistics.notes.joined(separator: ";")
         emitEvent(
             .init(
@@ -1358,55 +1330,6 @@ public actor MDKEncodedCaptureSession {
         }
     }
 
-    private func scheduleSourceStartupWatchdogIfNeeded(
-        runtimeGeneration: UInt64,
-        callbackOnlyDelivery: Bool
-    ) {
-        guard callbackOnlyDelivery,
-              configuration.resolvedSourceBackend == .skyLightDisplayStream,
-              configuration.resolvedSkyLightProcessingMode != nil else {
-            return
-        }
-
-        sourceStartupWatchdogGeneration = runtimeGeneration
-        sourceStartupWatchdogTask = Task { [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: Self.sourceStartupWatchdogDelayNanoseconds)
-            } catch {
-                return
-            }
-            guard !Task.isCancelled, let self else {
-                return
-            }
-            await self.handleSourceStartupWatchdogTimeout(runtimeGeneration: runtimeGeneration)
-        }
-    }
-
-    private func handleSourceStartupWatchdogTimeout(runtimeGeneration: UInt64) {
-        guard runtime != nil,
-              self.runtimeGeneration == runtimeGeneration,
-              sourceStartupWatchdogGeneration == runtimeGeneration else {
-            sourceStartupWatchdogTask = nil
-            sourceStartupWatchdogGeneration = nil
-            return
-        }
-        sourceStartupWatchdogTask = nil
-        sourceStartupWatchdogGeneration = nil
-
-        let processingSummary = runtime?.processor.liveSummary()
-        guard Self.shouldRestartForSourceStartupTimeout(
-            statistics: statistics,
-            processingSummary: processingSummary
-        ) else {
-            return
-        }
-
-        handleProcessingFailure(
-            "Encoded capture source startup produced no frames before the liveness deadline.",
-            runtimeGeneration: runtimeGeneration
-        )
-    }
-
     private func handleProcessingFailure(_ description: String, runtimeGeneration: UInt64) {
         guard runtime != nil, self.runtimeGeneration == runtimeGeneration else {
             return
@@ -1522,9 +1445,6 @@ public actor MDKEncodedCaptureSession {
         emitStopEvent: Bool = true
     ) {
         runtimeGeneration &+= 1
-        sourceStartupWatchdogTask?.cancel()
-        sourceStartupWatchdogTask = nil
-        sourceStartupWatchdogGeneration = nil
         scheduledRestartTask?.cancel()
         scheduledRestartTask = nil
         scheduledRestartGeneration = nil
