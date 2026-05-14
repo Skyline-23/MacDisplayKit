@@ -255,6 +255,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private let stagingSubmissionGroup = DispatchGroup()
     private let encodeQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.encode")
     private let submissionQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.capture.videotoolbox.submit")
+    private let vtAdmissionQueue = DispatchQueue(
+        label: "com.skyline23.MacDisplayKit.capture.videotoolbox.vt-admission",
+        attributes: .concurrent
+    )
+    private let vtAdmissionSemaphore = DispatchSemaphore(value: 2)
     private let encodeQueueSpecificKey = DispatchSpecificKey<UInt8>()
     private let encodeQueueSpecificValue: UInt8 = 1
     private var forceNextKeyFrame = false
@@ -788,6 +793,17 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
             self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
             self.submissionQueue.async { [self] in
+                if shouldUseBoundedConcurrentVTAdmission {
+                    submitStagedToEncoderWithBoundedConcurrentAdmission(
+                        imageBuffer: stagedPixelBuffer.pixelBuffer,
+                        frame: frame,
+                        slotIdentifier: slotIdentifier,
+                        presentationTimeStamp: presentationTimeStamp,
+                        releaseSourceFrame: releaseSourceFrame
+                    )
+                    return
+                }
+
                 do {
                     try submitToEncoder(
                         imageBuffer: stagedPixelBuffer.pixelBuffer,
@@ -809,6 +825,88 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             }
         }
         commandBuffer.commit()
+    }
+
+    private var shouldUseBoundedConcurrentVTAdmission: Bool {
+        codec == .hevc &&
+            hdrConfiguration?.transferFunction == .smpteSt2084PQ
+    }
+
+    private func submitStagedToEncoderWithBoundedConcurrentAdmission(
+        imageBuffer: CVPixelBuffer,
+        frame: MDKCaptureFrame,
+        slotIdentifier: Int,
+        presentationTimeStamp: CMTime,
+        releaseSourceFrame: @escaping @Sendable () -> Void
+    ) {
+        guard let compressionSession else {
+            releaseSourceFrame()
+            recordProcessingFailure(MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: OSStatus(unimpErr)).localizedDescription)
+            releaseStagingSlot(identifier: slotIdentifier)
+            failureHandler?(MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: OSStatus(unimpErr)).localizedDescription)
+            stagingSubmissionGroup.leave()
+            return
+        }
+
+        hdrConfiguration?.apply(to: imageBuffer)
+        let forceKeyFrame = consumeImmediateKeyFrameRequest()
+        let submissionToken = Unmanaged.passRetained(
+            MDKVideoToolboxSubmissionToken(
+                slotIdentifier: slotIdentifier,
+                submittedAt: ProcessInfo.processInfo.systemUptime,
+                sourceSequenceNumber: frame.sequenceNumber,
+                sourceDisplayTime: frame.displayTime,
+                releasePendingFrame: {}
+            )
+        )
+        outputDrainGroup.enter()
+        if !sessionConfigurationNotes.contains("videoToolboxVTAdmissionMode=bounded-concurrent-2") {
+            sessionConfigurationNotes.append("videoToolboxVTAdmissionMode=bounded-concurrent-2")
+        }
+
+        vtAdmissionQueue.async { [self] in
+            vtAdmissionSemaphore.wait()
+            defer { vtAdmissionSemaphore.signal() }
+
+            let vtEncodeCallStartedAt = ProcessInfo.processInfo.systemUptime
+            let status = VTCompressionSessionEncodeFrame(
+                compressionSession,
+                imageBuffer: imageBuffer,
+                presentationTimeStamp: presentationTimeStamp,
+                duration: .invalid,
+                frameProperties: makeFrameProperties(forceKeyFrame: forceKeyFrame),
+                sourceFrameRefcon: submissionToken.toOpaque(),
+                infoFlagsOut: nil
+            )
+            recordTiming(.vtEncodeCall, startedAt: vtEncodeCallStartedAt)
+            guard status == noErr else {
+                outputDrainGroup.leave()
+                submissionToken.release()
+                releaseSourceFrame()
+                let errorDescription = MDKVideoToolboxProcessingError.encodeFailed(status: status).localizedDescription
+                recordProcessingFailure(errorDescription)
+                releaseStagingSlot(identifier: slotIdentifier)
+                failureHandler?(errorDescription)
+                stagingSubmissionGroup.leave()
+                return
+            }
+
+            if frame.origin == .fresh {
+                let replayState = MDKVideoToolboxReplayState(
+                    imageBuffer: MDKVideoToolboxSendablePixelBuffer(pixelBuffer: imageBuffer),
+                    frame: frame
+                )
+                encodeQueue.async { [self] in
+                    lastFreshReplayState = replayState
+                }
+            }
+            outputQueue.sync {
+                submittedFrameCount += 1
+            }
+            releaseSourceFrame()
+            recordProcessingSuccess(isStaged: true)
+            stagingSubmissionGroup.leave()
+        }
     }
 
     private func submitToEncoder(
