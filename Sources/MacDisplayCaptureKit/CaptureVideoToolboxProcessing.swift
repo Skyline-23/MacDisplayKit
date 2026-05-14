@@ -125,6 +125,11 @@ private enum MDKVideoToolboxTimingMetric {
     case vtEncodeCall
 }
 
+private enum MDKVideoToolboxSubmissionKind {
+    case direct
+    case staged
+}
+
 enum MDKVideoToolboxLatencyPolicy {
     static func maxFrameDelayCount(
         codec: MDKVideoEncoderCodec,
@@ -619,10 +624,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             imageBuffer: imageBuffer,
             frame: frame,
             slotIdentifier: nil,
-            releasePendingFrame: {}
+            releasePendingFrame: {},
+            submissionKind: .direct
         )
         releaseSourceFrame()
-        recordProcessingSuccess(isStaged: false)
     }
 
     private func stageAndEncode(
@@ -794,10 +799,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                         frame: frame,
                         slotIdentifier: slotIdentifier,
                         presentationTimeStamp: presentationTimeStamp,
-                        releasePendingFrame: {}
+                        releasePendingFrame: {},
+                        submissionKind: .staged
                     )
                     releaseSourceFrame()
-                    recordProcessingSuccess(isStaged: true)
                 } catch {
                     releaseSourceFrame()
                     let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
@@ -816,7 +821,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         frame: MDKCaptureFrame,
         slotIdentifier: Int?,
         presentationTimeStamp: CMTime? = nil,
-        releasePendingFrame: @escaping @Sendable () -> Void = {}
+        releasePendingFrame: @escaping @Sendable () -> Void = {},
+        submissionKind: MDKVideoToolboxSubmissionKind? = nil
     ) throws {
         guard let compressionSession else {
             throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: OSStatus(unimpErr))
@@ -851,8 +857,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             sourceFrameRefcon: submissionToken.toOpaque(),
             infoFlagsOut: nil
         )
-        recordTiming(.vtEncodeCall, startedAt: vtEncodeCallStartedAt)
         guard status == noErr else {
+            recordTiming(.vtEncodeCall, startedAt: vtEncodeCallStartedAt)
             outputDrainGroup.leave()
             submissionToken.release()
             releasePendingFrame()
@@ -864,9 +870,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 frame: frame
             )
         }
-        outputQueue.sync {
-            submittedFrameCount += 1
-        }
+        recordSuccessfulSubmission(startedAt: vtEncodeCallStartedAt, submissionKind: submissionKind)
     }
 
     private func replayLastSubmittedFrameAsKeyFrameIfPossible() {
@@ -1577,13 +1581,23 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         recommendedParallelizationLimit = nil
     }
 
-    private func recordProcessingSuccess(isStaged: Bool) {
+    private func recordSuccessfulSubmission(
+        startedAt: TimeInterval,
+        submissionKind: MDKVideoToolboxSubmissionKind?
+    ) {
+        let elapsedMilliseconds = (ProcessInfo.processInfo.systemUptime - startedAt) * 1000.0
         outputQueue.sync {
-            processedFrameCount += 1
-            if isStaged {
-                stagedSubmissionFrameCount += 1
-            } else {
+            vtEncodeCallTiming.record(elapsedMilliseconds)
+            submittedFrameCount += 1
+            switch submissionKind {
+            case .direct:
+                processedFrameCount += 1
                 directSubmissionFrameCount += 1
+            case .staged:
+                processedFrameCount += 1
+                stagedSubmissionFrameCount += 1
+            case .none:
+                break
             }
         }
     }
