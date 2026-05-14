@@ -1154,10 +1154,17 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 )
             }
         }
-        let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(session)
-        guard prepareStatus == noErr else {
-            VTCompressionSessionInvalidate(session)
-            throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: prepareStatus)
+        let shouldPrepareToEncodeFrames = !(
+            codec == .hevc &&
+            tileMetadata.tileCount > 1 &&
+            hdrConfiguration?.transferFunction == .smpteSt2084PQ
+        )
+        if shouldPrepareToEncodeFrames {
+            let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(session)
+            guard prepareStatus == noErr else {
+                VTCompressionSessionInvalidate(session)
+                throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: prepareStatus)
+            }
         }
 
         compressionSession = session
@@ -1167,6 +1174,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         sessionConfigurationNotes.append("videoToolboxEncoderInputStrategy=\(encoderInputStrategy.rawValue)")
         sessionConfigurationNotes.append("videoToolboxEncodedWidth=\(width)")
         sessionConfigurationNotes.append("videoToolboxEncodedHeight=\(height)")
+        sessionConfigurationNotes.append("videoToolboxPrepareToEncodeFrames=\(shouldPrepareToEncodeFrames ? "enabled" : "skipped-hevc-hdr-tile-stream")")
         sessionConfigurationNotes.append("videoToolboxTargetFrameRateHint=\(expectedFrameRateHint)")
         if #available(macOS 15.0, *),
             let maximumRealTimeFrameRateHint {
