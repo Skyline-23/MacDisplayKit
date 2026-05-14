@@ -13411,7 +13411,6 @@ static CGRect MDKCreateCursorDrawRect(
     const CFDictionaryRef streamPropertiesRef =
         streamProperties.count > 0 ? (__bridge CFDictionaryRef) streamProperties : nil;
 
-    __weak MDKShimSkyLightDisplayStreamSession *weakSelf = self;
     _stream = createSymbol(
         static_cast<CGDirectDisplayID>(_displayID),
         width,
@@ -13423,7 +13422,7 @@ static CGRect MDKCreateCursorDrawRect(
           uint64_t displayTime,
           IOSurfaceRef frameSurface,
           CGDisplayStreamUpdateRef updateRef) {
-            MDKShimSkyLightDisplayStreamSession *strongSelf = weakSelf;
+            MDKShimSkyLightDisplayStreamSession *strongSelf = self;
             if (strongSelf == nil || strongSelf->_frameHandler == nil) {
                 return;
             }
