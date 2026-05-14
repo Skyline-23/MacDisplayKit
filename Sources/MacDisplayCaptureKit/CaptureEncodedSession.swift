@@ -3,6 +3,7 @@ import CoreVideo
 import Darwin
 import Foundation
 import MacDisplayKitObjCShim
+import Metal
 
 enum MDKEncodedCaptureSourceBackend: String, Sendable {
     case privateDirectIOSurface = "private-direct-iosurface"
@@ -619,12 +620,17 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         let width = configuration.streamConfiguration.resolvedOutputWidth
         let height = configuration.streamConfiguration.resolvedOutputHeight
         let regions = Self.horizontalTileRegions(width: width, height: height, tileCount: laneCount)
+        let sharedDevice = MTLCreateSystemDefaultDevice()
+        let sharedCommandQueue = sharedDevice?.makeCommandQueue()
         self.lanes = regions.enumerated().map { laneIndex, region in
             MDKVideoToolboxEncodingProcessor(
                 codec: configuration.codec,
                 preprocessStrategy: configuration.preprocessStrategy,
                 targetFrameRate: configuration.targetFrameRate,
                 encoderInputStrategy: configuration.resolvedEncoderInputStrategy,
+                device: sharedDevice,
+                commandQueue: sharedCommandQueue,
+                commandQueueMode: "shared-tile-stream",
                 maxInflightStagingSlots: 128,
                 outputHandler: outputHandler,
                 failureHandler: failureHandler,
@@ -687,7 +693,8 @@ private final class MDKEncodedTileStreamProcessor: MDKEncodedCaptureProcessorRun
         var notes = [
             "videoToolboxEncodedTileStreamLaneCount=\(lanes.count)",
             "videoToolboxEncodedTileStreamPartition=horizontal-columns",
-            "videoToolboxEncodedTileStreamOutputMode=independent"
+            "videoToolboxEncodedTileStreamOutputMode=independent",
+            "videoToolboxEncodedTileStreamMetalCommandQueue=shared"
         ]
         notes += summaries.flatMap(\.notes)
 
