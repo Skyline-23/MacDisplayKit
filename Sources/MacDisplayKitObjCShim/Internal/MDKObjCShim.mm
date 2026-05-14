@@ -13365,20 +13365,16 @@ static CGRect MDKCreateCursorDrawRect(
         dispatch_queue_t,
         CGDisplayStreamFrameAvailableHandler
     );
-    using MDKSLDisplayStreamStartFn = CGError (*)(CGDisplayStreamRef);
 
     auto createSymbol = reinterpret_cast<MDKSLDisplayStreamCreateWithDispatchQueueFn>(
         MDKLookupCaptureSymbol("SLDisplayStreamCreateWithDispatchQueue")
     );
-    auto startSymbol = reinterpret_cast<MDKSLDisplayStreamStartFn>(
-        MDKLookupCaptureSymbol("SLDisplayStreamStart")
-    );
-    if (createSymbol == nullptr || startSymbol == nullptr) {
+    if (createSymbol == nullptr) {
         if (error != nullptr) {
             *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
                                          code:1
                                      userInfo:@{
-                                         NSLocalizedDescriptionKey: @"One or more raw SkyLight SLDisplayStream symbols are unavailable."
+                                         NSLocalizedDescriptionKey: @"The raw SkyLight SLDisplayStream create symbol is unavailable."
                                      }];
         }
         return NO;
@@ -13448,13 +13444,13 @@ static CGRect MDKCreateCursorDrawRect(
         return NO;
     }
 
-    const CGError startStatus = startSymbol(_stream);
+    const CGError startStatus = CGDisplayStreamStart(_stream);
     _running = (startStatus == kCGErrorSuccess);
     if (!_running && error != nullptr) {
         *error = [NSError errorWithDomain:@"MacDisplayKit.SkyLightDisplayStream"
                                      code:startStatus
                                  userInfo:@{
-                                     NSLocalizedDescriptionKey: @"SLDisplayStreamStart returned a non-zero status."
+                                     NSLocalizedDescriptionKey: @"CGDisplayStreamStart returned a non-zero status for the raw SkyLight stream."
                                  }];
     }
     return _running;
