@@ -13,6 +13,13 @@ protocol MDKEncodedCaptureSourceRuntime: AnyObject, Sendable {
     var runtimeDescription: String { get }
     func start() throws
     func stop() -> Int32
+    func diagnosticNotesSnapshot() -> [String]
+}
+
+extension MDKEncodedCaptureSourceRuntime {
+    func diagnosticNotesSnapshot() -> [String] {
+        []
+    }
 }
 
 struct MDKEncodedCaptureSourcePreparation: Sendable {
@@ -303,11 +310,52 @@ private actor MDKSkyLightEncodedCaptureReplayState {
     }
 }
 
+private final class MDKSkyLightEncodedCaptureSourceDiagnosticState: @unchecked Sendable {
+    private var sourceCallbackCount: UInt64 = 0
+    private var sourceCallbackWithSurfaceCount: UInt64 = 0
+    private var sourceCallbackFrameCompleteCount: UInt64 = 0
+    private var sourceCallbackFrameIdleCount: UInt64 = 0
+    private var sourceCallbackDropStatusCount: UInt64 = 0
+    private var sourceTimerTickCount: UInt64 = 0
+
+    func recordSourceCallback(status: CGDisplayStreamFrameStatus, hasFrameSurface: Bool) {
+        sourceCallbackCount += 1
+        if hasFrameSurface {
+            sourceCallbackWithSurfaceCount += 1
+        }
+        switch status {
+        case .frameComplete:
+            sourceCallbackFrameCompleteCount += 1
+        case .frameIdle:
+            sourceCallbackFrameIdleCount += 1
+        default:
+            sourceCallbackDropStatusCount += 1
+        }
+    }
+
+    func recordTimerTick() {
+        sourceTimerTickCount += 1
+    }
+
+    func snapshotNotes() -> [String] {
+        [
+            "skyLightSourceCallbackCount=\(sourceCallbackCount)",
+            "skyLightSourceCallbackWithSurfaceCount=\(sourceCallbackWithSurfaceCount)",
+            "skyLightSourceCallbackFrameCompleteCount=\(sourceCallbackFrameCompleteCount)",
+            "skyLightSourceCallbackFrameIdleCount=\(sourceCallbackFrameIdleCount)",
+            "skyLightSourceCallbackDropStatusCount=\(sourceCallbackDropStatusCount)",
+            "skyLightSourceTimerTickCount=\(sourceTimerTickCount)"
+        ]
+    }
+}
+
 private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSourceRuntime, @unchecked Sendable {
     private let shimSession: MDKShimSkyLightDisplayStreamSession
     private let tuningSelection: MDKSkyLightDisplayStreamAutotuningSelection?
     private let replayState: MDKSkyLightEncodedCaptureReplayState
     private let deliveryQueue: DispatchQueue
+    private let deliveryQueueSpecificKey = DispatchSpecificKey<Void>()
+    private let diagnosticState: MDKSkyLightEncodedCaptureSourceDiagnosticState
     private let frameHandler: @Sendable (MDKCaptureFrame) -> Void
     private let replayIntervalNanoseconds: UInt64
     private let replayIntervalMachTicks: UInt64
@@ -328,13 +376,16 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         frameHandler: @escaping @Sendable (MDKCaptureFrame) -> Void
     ) {
         let replayState = MDKSkyLightEncodedCaptureReplayState()
+        let diagnosticState = MDKSkyLightEncodedCaptureSourceDiagnosticState()
         let deliveryQueue = DispatchQueue(label: "com.skyline23.MacDisplayKit.encoded-capture.skylight.delivery")
+        deliveryQueue.setSpecific(key: deliveryQueueSpecificKey, value: ())
         let replayIntervalNanoseconds = UInt64(
             max((1.0 / Double(max(configuration.targetFrameRate, 1))) * 1_000_000_000.0, 1_000_000.0)
         )
         self.tuningSelection = tuningSelection
         self.replayState = replayState
         self.deliveryQueue = deliveryQueue
+        self.diagnosticState = diagnosticState
         self.frameHandler = frameHandler
         self.replayIntervalNanoseconds = replayIntervalNanoseconds
         self.replayIntervalMachTicks = max(MDKMachAbsoluteTicksForNanoseconds(replayIntervalNanoseconds), 1)
@@ -363,6 +414,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
             let dirtyRects = MDKDecodeCGRectData(reducedDirtyRectData)
             let sourceUpdateDropCount = UInt64(updateDropCount)
             deliveryQueue.async {
+                diagnosticState.recordSourceCallback(status: status, hasFrameSurface: captureSurface != nil)
                 Task {
                     guard let deliveredFrame = await replayState.captureFrame(
                         status: status,
@@ -395,6 +447,7 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         let replayIntervalMachTicks = self.replayIntervalMachTicks
         let replayCatchUpFrameLimit = self.replayCatchUpFrameLimit
         timer.setEventHandler {
+            self.diagnosticState.recordTimerTick()
             let displayTime = mach_absolute_time()
             Task {
                 if replayCatchUpFrameLimit <= 1 {
@@ -426,6 +479,15 @@ private final class MDKSkyLightEncodedCaptureSourceRuntime: MDKEncodedCaptureSou
         replayTimer?.cancel()
         replayTimer = nil
         return shimSession.stop()
+    }
+
+    func diagnosticNotesSnapshot() -> [String] {
+        if DispatchQueue.getSpecific(key: deliveryQueueSpecificKey) != nil {
+            return diagnosticState.snapshotNotes()
+        }
+        return deliveryQueue.sync {
+            diagnosticState.snapshotNotes()
+        }
     }
 }
 
@@ -1490,7 +1552,7 @@ public actor MDKEncodedCaptureSession {
         return mergedStatistics(
             with: summary,
             isRunning: statistics.isRunning,
-            sourceNotes: combinedSourceNotes()
+            sourceNotes: combinedSourceNotes() + runtime.source.diagnosticNotesSnapshot()
         )
     }
 
