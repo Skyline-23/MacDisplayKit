@@ -212,7 +212,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     public let encoderInputStrategy: MDKEncodedCaptureEncoderInputStrategy
     private let device: (any MTLDevice)?
     private let commandQueue: (any MTLCommandQueue)?
-    private let commandQueueMode: String
     private let scaler: MDKMetalBilinearScaler?
     private let colorConverter: MDKMetalBGRAToYCbCrConverter?
     private let maxInflightStagingSlots: Int
@@ -275,8 +274,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         targetFrameRate: Int = 120,
         encoderInputStrategy: MDKEncodedCaptureEncoderInputStrategy = .auto,
         device: (any MTLDevice)? = MTLCreateSystemDefaultDevice(),
-        commandQueue: (any MTLCommandQueue)? = nil,
-        commandQueueMode: String = "private",
         maxInflightStagingSlots: Int = 128,
         outputHandler: (@Sendable (MDKEncodedFrame) -> Void)? = nil,
         failureHandler: (@Sendable (String) -> Void)? = nil,
@@ -290,8 +287,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         self.targetFrameRate = max(targetFrameRate, 1)
         self.encoderInputStrategy = encoderInputStrategy
         self.device = device
-        self.commandQueue = commandQueue ?? device?.makeCommandQueue()
-        self.commandQueueMode = commandQueue == nil ? "private" : commandQueueMode
+        self.commandQueue = device?.makeCommandQueue()
         self.scaler = device.map { MDKMetalBilinearScaler(device: $0) }
         if let device {
             do {
@@ -472,7 +468,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxOutputCallback=non-nil",
             "videoToolboxCodec=\(codec.rawValue)",
             "videoToolboxPreprocessStrategy=\(preprocessStrategy.rawValue)",
-            "videoToolboxMetalCommandQueueMode=\(commandQueueMode)",
             "videoToolboxStagingMode=\(commandQueue == nil ? "direct-iosurface" : "hybrid-direct-or-metal-staging")",
             "videoToolboxStagedSourceReleaseMode=post-submit",
             "videoToolboxDirectSubmissionFrameCount=\(directSubmissionFrameCount)",
