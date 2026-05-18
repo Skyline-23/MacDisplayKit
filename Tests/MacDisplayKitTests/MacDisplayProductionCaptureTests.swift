@@ -78,6 +78,33 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         XCTAssertEqual(proResConfiguration.resolvedSourceBackend(using: capabilities), .skyLightDisplayStream)
     }
 
+    func testVeryHighResolutionHEVCHDRUsesPrivateDirectBackendWhenAvailable() {
+        let capabilities = MDKPrivateCaptureCapabilities(
+            desktopCaptureAvailable: true,
+            displayIOSurfaceCaptureAvailable: true,
+            displayIOSurfaceCaptureWithOptionsAvailable: true,
+            displayIOSurfaceProxyCaptureAvailable: true,
+            displayStreamProxyAvailable: true,
+            rawSkyLightDisplayStreamAvailable: true,
+            extendedRangeOptionAvailable: true
+        )
+        let configuration = MDKEncodedCaptureConfiguration(
+            displayID: 7,
+            streamConfiguration: MDKSkyLightDisplayStreamConfiguration(
+                queueDepth: 2,
+                queueProfile: .q2,
+                outputWidth: 3512,
+                outputHeight: 2290,
+                pixelFormat: kCVPixelFormatType_32BGRA
+            ),
+            codec: .hevc,
+            targetFrameRate: 120,
+            hdrConfiguration: .hdr10()
+        )
+
+        XCTAssertEqual(configuration.resolvedSourceBackend(using: capabilities), .privateDirectIOSurface)
+    }
+
     func testBGRAEncodedSessionsUseRawSkyLightWhenAvailable() {
         let configuration = MDKEncodedCaptureConfiguration.panelNative(
             displayID: 7,
