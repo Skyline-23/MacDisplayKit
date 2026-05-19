@@ -144,7 +144,7 @@ final class MacDisplayKitTests: XCTestCase {
             hdrConfiguration: .hdr10()
         )
 
-        XCTAssertEqual(processor.resolvedNumberOfSlices, 4)
+        XCTAssertEqual(processor.resolvedNumberOfSlices, 2)
     }
 
     func testHEVCPrefersLowLatencyRateControlAndSingleReferenceBuffer() {

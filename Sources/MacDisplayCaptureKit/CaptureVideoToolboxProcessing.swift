@@ -1267,7 +1267,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             return nil
         }
 
-        return 4
+        return 2
     }
 
     private var shouldEnableLowLatencyRateControl: Bool {
