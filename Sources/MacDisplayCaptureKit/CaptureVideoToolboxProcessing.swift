@@ -1038,16 +1038,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             (codec == .hevc && isHighRefreshHDRHEVC && !shouldEnableLowLatencyRateControl)
             ? max((targetFrameRate * 15) / 8, targetFrameRate)
             : nil
-        let variableBitRate = resolvedVariableBitRate(
-            width: width,
-            height: height,
-            isHighRefreshHDRHEVC: isHighRefreshHDRHEVC,
-            isHighRefreshLowLatency: isHighRefreshLowLatency
-        )
-        let vbvMaxBitRate = variableBitRate.map(resolvedVBVMaxBitRate)
         let expectedDurationHint = 1.0 / Double(expectedFrameRateHint)
         let vbvBufferDurationSeconds: Double? =
-            (variableBitRate != nil || (isHighRefreshHDRHEVC && shouldEnableLowLatencyRateControl))
+            (isHighRefreshHDRHEVC && shouldEnableLowLatencyRateControl)
             ? (1.0 / 30.0)
             : nil
         let vbvInitialDelayPercentage: Double? =
@@ -1089,23 +1082,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             )
         }
         if #available(macOS 26.0, *),
-            let variableBitRate,
-            let vbvMaxBitRate {
-            setSessionProperty(
-                session,
-                key: kVTCompressionPropertyKey_VariableBitRate,
-                value: NSNumber(value: variableBitRate),
-                label: "VariableBitRate"
-            )
-            setSessionProperty(
-                session,
-                key: kVTCompressionPropertyKey_VBVMaxBitRate,
-                value: NSNumber(value: vbvMaxBitRate),
-                label: "VBVMaxBitRate"
-            )
-        }
-        if #available(macOS 26.0, *),
-           let vbvBufferDurationSeconds {
+            let vbvBufferDurationSeconds {
             setSessionProperty(
                 session,
                 key: kVTCompressionPropertyKey_VBVBufferDuration,
@@ -1133,7 +1110,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 label: "OutputBitDepth"
             )
         }
-        if codec.supportsAverageBitRate && variableBitRate == nil {
+        if codec.supportsAverageBitRate {
             let averageBitRate = resolvedAverageBitRate(
                 width: width,
                 height: height,
@@ -1146,7 +1123,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 label: "AverageBitRate"
             )
         }
-        if codec.supportsDataRateLimits && variableBitRate == nil {
+        if codec.supportsDataRateLimits {
             let dataRateLimits = resolvedDataRateLimits(
                 width: width,
                 height: height,
@@ -1220,7 +1197,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         } else {
             sessionConfigurationNotes.append("videoToolboxConfiguredVBVInitialDelayPercentage=default")
         }
-        if codec.supportsAverageBitRate && variableBitRate == nil {
+        if codec.supportsAverageBitRate {
             let averageBitRate = resolvedAverageBitRate(
                 width: width,
                 height: height,
@@ -1233,7 +1210,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         } else {
             sessionConfigurationNotes.append("videoToolboxConfiguredAverageBitRate=default")
         }
-        if codec.supportsDataRateLimits && variableBitRate == nil {
+        if codec.supportsDataRateLimits {
             let dataRateLimitsDescription = resolvedDataRateLimits(
                 width: width,
                 height: height,
@@ -1248,9 +1225,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         } else {
             sessionConfigurationNotes.append("videoToolboxConfiguredDataRateLimits=default")
         }
-        sessionConfigurationNotes.append("videoToolboxConfiguredVariableBitRate=\(variableBitRate.map(String.init) ?? "default")")
-        sessionConfigurationNotes.append("videoToolboxConfiguredVBVMaxBitRate=\(vbvMaxBitRate.map(String.init) ?? "default")")
-        sessionConfigurationNotes.append("videoToolboxConfiguredRateControlMode=\(resolvedRateControlMode(variableBitRate: variableBitRate))")
         sessionConfigurationNotes.append("videoToolboxHighRefreshLowLatencyMode=\(isHighRefreshLowLatency ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxLowLatencyRateControl=\(shouldEnableLowLatencyRateControl ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxConfiguredNumberOfSlices=\(resolvedNumberOfSlices.map(String.init) ?? "default")")
@@ -1334,42 +1308,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         return isHighRefreshLowLatency
             ? codec.lowLatencyDataRateLimits(width: width, height: height, frameRate: targetFrameRate)
             : codec.dataRateLimits(width: width, height: height, frameRate: targetFrameRate)
-    }
-
-    func resolvedVariableBitRate(
-        width: Int,
-        height: Int,
-        isHighRefreshHDRHEVC: Bool,
-        isHighRefreshLowLatency: Bool
-    ) -> Int? {
-        guard isHighRefreshHDRHEVC,
-              codec == .hevc else {
-            return nil
-        }
-
-        if #available(macOS 26.0, *) {
-            return resolvedAverageBitRate(
-                width: width,
-                height: height,
-                isHighRefreshLowLatency: isHighRefreshLowLatency
-            )
-        }
-
-        return nil
-    }
-
-    func resolvedVBVMaxBitRate(forVariableBitRate variableBitRate: Int) -> Int {
-        variableBitRate * 7 / 4
-    }
-
-    func resolvedRateControlMode(variableBitRate: Int?) -> String {
-        if variableBitRate != nil {
-            return "vbr-vbv"
-        }
-        if codec.supportsAverageBitRate || codec.supportsDataRateLimits {
-            return "average-data-rate-limits"
-        }
-        return "codec-default"
     }
 
     private func resolvedAverageBitRateSource(isHighRefreshLowLatency: Bool) -> String {
