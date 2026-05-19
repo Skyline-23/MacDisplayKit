@@ -1108,7 +1108,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
         setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: targetFrameRate), label: "MaxKeyFrameInterval")
         setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: NSNumber(value: 1.0), label: "MaxKeyFrameIntervalDuration")
-        if pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
+        if isHighRefreshHDRHEVC ||
+            pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
             pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange {
             setSessionProperty(
                 session,
@@ -1149,7 +1150,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         if codec.supportsReferenceBufferCount {
             setSessionProperty(session, key: kVTCompressionPropertyKey_ReferenceBufferCount, value: NSNumber(value: codec.referenceBufferCount), label: "ReferenceBufferCount")
         }
-        if let profileLevel = codec.defaultProfileLevel(for: pixelFormat) {
+        if let profileLevel = resolvedProfileLevel(for: pixelFormat, isHighRefreshHDRHEVC: isHighRefreshHDRHEVC) {
             setSessionProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: profileLevel, label: "ProfileLevel")
             sessionConfigurationNotes.append("videoToolboxConfiguredProfileLevel=\(profileLevel)")
         }
@@ -1275,6 +1276,16 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         return 4
+    }
+
+    private func resolvedProfileLevel(
+        for pixelFormat: UInt32,
+        isHighRefreshHDRHEVC: Bool
+    ) -> CFString? {
+        if isHighRefreshHDRHEVC {
+            return kVTProfileLevel_HEVC_Main10_AutoLevel
+        }
+        return codec.defaultProfileLevel(for: pixelFormat)
     }
 
     private var shouldEnableLowLatencyRateControl: Bool {
