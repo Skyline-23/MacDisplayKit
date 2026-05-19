@@ -8,7 +8,6 @@ import MetalPerformanceShaders
 import VideoToolbox
 
 private let kVTCompressionPropertyKeyNumberOfSlicesPrivate = "NumberOfSlices"
-private let kVTCompressionPropertyKeyInputQueueMaxCountPrivate = "InputQueueMaxCount"
 
 public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
     case surfaceUnavailable
@@ -1155,14 +1154,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 label: "NumberOfSlices"
             )
         }
-        if let inputQueueMaxCount = resolvedInputQueueMaxCount {
-            setSessionProperty(
-                session,
-                key: kVTCompressionPropertyKeyInputQueueMaxCountPrivate as CFString,
-                value: NSNumber(value: inputQueueMaxCount),
-                label: "InputQueueMaxCount"
-            )
-        }
         if let hdrConfiguration {
             for property in hdrConfiguration.sessionProperties {
                 setSessionProperty(
@@ -1237,7 +1228,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         sessionConfigurationNotes.append("videoToolboxHighRefreshLowLatencyMode=\(isHighRefreshLowLatency ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxLowLatencyRateControl=\(shouldEnableLowLatencyRateControl ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxConfiguredNumberOfSlices=\(resolvedNumberOfSlices.map(String.init) ?? "default")")
-        sessionConfigurationNotes.append("videoToolboxConfiguredInputQueueMaxCount=\(resolvedInputQueueMaxCount.map(String.init) ?? "default")")
         usingHardwareAcceleratedEncoder = copyBooleanSessionProperty(
             session,
             key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder
@@ -1278,16 +1268,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         return 4
-    }
-
-    var resolvedInputQueueMaxCount: Int? {
-        guard codec == .hevc,
-              hdrConfiguration?.transferFunction == .smpteSt2084PQ,
-              tileMetadata.tileCount == 1 else {
-            return nil
-        }
-
-        return 1
     }
 
     private var shouldEnableLowLatencyRateControl: Bool {
