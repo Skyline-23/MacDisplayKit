@@ -1106,15 +1106,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 label: "VBVInitialDelayPercentage"
             )
         }
-        if #available(macOS 15.0, *),
-            let suggestedLookAheadFrameCount = resolvedSuggestedLookAheadFrameCount {
-            setSessionProperty(
-                session,
-                key: kVTCompressionPropertyKey_SuggestedLookAheadFrameCount,
-                value: NSNumber(value: suggestedLookAheadFrameCount),
-                label: "SuggestedLookAheadFrameCount"
-            )
-        }
         setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: targetFrameRate), label: "MaxKeyFrameInterval")
         setSessionProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: NSNumber(value: 1.0), label: "MaxKeyFrameIntervalDuration")
         if pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
@@ -1203,12 +1194,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         sessionConfigurationNotes.append("videoToolboxHighRefreshHDRLowLatencyMode=\(isHighRefreshHDRHEVC ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxAllowTemporalCompression=\(allowsTemporalCompression ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxConfiguredMaxFrameDelayCount=\(maxFrameDelayCount)")
-        if #available(macOS 15.0, *),
-            let suggestedLookAheadFrameCount = resolvedSuggestedLookAheadFrameCount {
-            sessionConfigurationNotes.append("videoToolboxConfiguredSuggestedLookAheadFrameCount=\(suggestedLookAheadFrameCount)")
-        } else {
-            sessionConfigurationNotes.append("videoToolboxConfiguredSuggestedLookAheadFrameCount=default")
-        }
         if let vbvBufferDurationSeconds {
             sessionConfigurationNotes.append("videoToolboxConfiguredVBVBufferDurationSeconds=\(vbvBufferDurationSeconds)")
         } else {
@@ -1290,17 +1275,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         return 4
-    }
-
-    var resolvedSuggestedLookAheadFrameCount: Int? {
-        guard codec == .hevc,
-              hdrConfiguration?.transferFunction == .smpteSt2084PQ,
-              tileMetadata.tileCount == 1,
-              !shouldEnableLowLatencyRateControl else {
-            return nil
-        }
-
-        return 0
     }
 
     private var shouldEnableLowLatencyRateControl: Bool {
