@@ -359,7 +359,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             sourceCaptureDurationNanoseconds: frame.sourceCaptureDurationNanoseconds,
             sourceCursorCompositeDurationNanoseconds: frame.sourceCursorCompositeDurationNanoseconds
         )
-        let submitFrame = { [self, retainedFrame] in
+        let submitFrame: @Sendable () -> Void = { [self, retainedFrame] in
             let encodeStartedAt = ProcessInfo.processInfo.systemUptime
             recordTiming(.encodeQueueWait, startedAt: processRequestedAt, endedAt: encodeStartedAt)
             do {
@@ -379,7 +379,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) == encodeQueueSpecificValue {
             submitFrame()
         } else {
-            encodeQueue.sync(execute: submitFrame)
+            encodeQueue.async(execute: submitFrame)
         }
     }
 
