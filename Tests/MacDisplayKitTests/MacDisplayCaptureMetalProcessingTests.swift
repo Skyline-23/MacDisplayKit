@@ -63,13 +63,6 @@ final class MacDisplayCaptureMetalProcessingTests: XCTestCase {
         XCTAssertNoThrow(try processor.process(frame: frame))
     }
 
-    func testBGRAtoYCbCrConverterUsesSingleBiplanarPass() throws {
-        let device = try requireMetalDevice()
-        let converter = try MDKMetalBGRAToYCbCrConverter(device: device)
-
-        XCTAssertEqual(converter.biplanarConversionPassCount, 1)
-    }
-
     private func requireMetalDevice() throws -> any MTLDevice {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("Metal device is not available on this host.")
