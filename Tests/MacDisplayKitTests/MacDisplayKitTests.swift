@@ -144,6 +144,8 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertTrue(notes.contains("videoToolboxOutputCallbackIntervalAverageMilliseconds=0.000"))
         XCTAssertTrue(notes.contains("videoToolboxOutputCallbackIntervalMaxMilliseconds=0.000"))
         XCTAssertTrue(notes.contains("videoToolboxSubmittedOutputBacklogMax=0"))
+        XCTAssertTrue(notes.contains("videoToolboxRecommendedParallelizedSubdivisionMinimumFrameCount=unknown"))
+        XCTAssertTrue(notes.contains("videoToolboxRecommendedParallelizedSubdivisionMinimumDuration=unknown"))
     }
 
     func testStandardHEVCHDRRequestsMultipleSlices() {

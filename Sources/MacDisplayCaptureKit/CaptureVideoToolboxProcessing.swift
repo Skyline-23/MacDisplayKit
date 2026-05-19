@@ -253,6 +253,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var usingHardwareAcceleratedEncoder: Bool?
     private var encoderPixelBufferPoolIsShared: Bool?
     private var recommendedParallelizationLimit: Int?
+    private var recommendedParallelizedSubdivisionMinimumFrameCount: Int?
+    private var recommendedParallelizedSubdivisionMinimumDuration: String?
     private var sessionConfigurationNotes: [String] = []
     private var directSubmissionFrameCount: UInt64 = 0
     private var stagedSubmissionFrameCount: UInt64 = 0
@@ -485,6 +487,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
             "videoToolboxPixelBufferPoolIsShared=\(describeHardwareAcceleration(encoderPixelBufferPoolIsShared))",
             "videoToolboxRecommendedParallelizationLimit=\(recommendedParallelizationLimit.map(String.init) ?? "unknown")",
+            "videoToolboxRecommendedParallelizedSubdivisionMinimumFrameCount=\(recommendedParallelizedSubdivisionMinimumFrameCount.map(String.init) ?? "unknown")",
+            "videoToolboxRecommendedParallelizedSubdivisionMinimumDuration=\(recommendedParallelizedSubdivisionMinimumDuration ?? "unknown")",
             "videoToolboxPixelBufferCacheSize=\(pixelBufferCache.count)",
             "videoToolboxEncodeQueueWaitSampleCount=\(encodeQueueWaitTiming.sampleCount)",
             "videoToolboxEncodeQueueWaitAverageMilliseconds=\(formatMilliseconds(encodeQueueWaitTiming.averageMilliseconds))",
@@ -1252,8 +1256,18 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 session,
                 key: kVTCompressionPropertyKey_RecommendedParallelizationLimit
             )
+            recommendedParallelizedSubdivisionMinimumFrameCount = copyIntegerSessionProperty(
+                session,
+                key: kVTCompressionPropertyKey_RecommendedParallelizedSubdivisionMinimumFrameCount
+            )
+            recommendedParallelizedSubdivisionMinimumDuration = copyCMTimeSessionPropertyDescription(
+                session,
+                key: kVTCompressionPropertyKey_RecommendedParallelizedSubdivisionMinimumDuration
+            )
         } else {
             recommendedParallelizationLimit = nil
+            recommendedParallelizedSubdivisionMinimumFrameCount = nil
+            recommendedParallelizedSubdivisionMinimumDuration = nil
         }
     }
 
@@ -1635,6 +1649,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         usingHardwareAcceleratedEncoder = nil
         encoderPixelBufferPoolIsShared = nil
         recommendedParallelizationLimit = nil
+        recommendedParallelizedSubdivisionMinimumFrameCount = nil
+        recommendedParallelizedSubdivisionMinimumDuration = nil
     }
 
     private func recordProcessingSuccess(isStaged: Bool) {
@@ -1832,6 +1848,28 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         return (copiedValue as? NSNumber)?.intValue
+    }
+
+    private func copyCMTimeSessionPropertyDescription(
+        _ session: VTCompressionSession,
+        key: CFString
+    ) -> String? {
+        guard let copiedValue = copySessionProperty(session, key: key) else {
+            return nil
+        }
+
+        guard CFGetTypeID(copiedValue) == CFDictionaryGetTypeID() else {
+            return nil
+        }
+
+        let time = CMTimeMakeFromDictionary((copiedValue as! CFDictionary))
+        guard time.isValid else {
+            return nil
+        }
+        if time.timescale == 0 {
+            return "\(time.value)/0"
+        }
+        return "\(time.value)/\(time.timescale)"
     }
 
     private func copySessionProperty(
