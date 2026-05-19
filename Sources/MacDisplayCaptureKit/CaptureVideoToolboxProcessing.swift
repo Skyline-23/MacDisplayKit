@@ -246,6 +246,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var outputCallbackLatencyHistogram: [String: Int] = [:]
     private var minOutputCallbackLatencyMilliseconds: Double?
     private var maxOutputCallbackLatencyMilliseconds: Double?
+    private var lastOutputCallbackReceivedAt: TimeInterval?
+    private var outputCallbackIntervalTiming = MDKVideoToolboxTimingAccumulator()
+    private var maxSubmittedOutputBacklog: UInt64 = 0
     private var submittedFrameCount: UInt64 = 0
     private var usingHardwareAcceleratedEncoder: Bool?
     private var encoderPixelBufferPoolIsShared: Bool?
@@ -494,7 +497,11 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxMetalStageMaxMilliseconds=\(formatMilliseconds(metalStageTiming.maxMilliseconds))",
             "videoToolboxVTEncodeCallSampleCount=\(vtEncodeCallTiming.sampleCount)",
             "videoToolboxVTEncodeCallAverageMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.averageMilliseconds))",
-            "videoToolboxVTEncodeCallMaxMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.maxMilliseconds))"
+            "videoToolboxVTEncodeCallMaxMilliseconds=\(formatMilliseconds(vtEncodeCallTiming.maxMilliseconds))",
+            "videoToolboxOutputCallbackIntervalSampleCount=\(outputCallbackIntervalTiming.sampleCount)",
+            "videoToolboxOutputCallbackIntervalAverageMilliseconds=\(formatMilliseconds(outputCallbackIntervalTiming.averageMilliseconds))",
+            "videoToolboxOutputCallbackIntervalMaxMilliseconds=\(formatMilliseconds(outputCallbackIntervalTiming.maxMilliseconds))",
+            "videoToolboxSubmittedOutputBacklogMax=\(maxSubmittedOutputBacklog)"
         ]
         if includeDrainWaitStatus {
             notes.append("videoToolboxStagingSubmissionWait=\(stagingSubmissionWaitStatus == .success ? "success" : "timeout")")
@@ -1613,6 +1620,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             outputCallbackLatencyHistogram = [:]
             minOutputCallbackLatencyMilliseconds = nil
             maxOutputCallbackLatencyMilliseconds = nil
+            lastOutputCallbackReceivedAt = nil
+            outputCallbackIntervalTiming = MDKVideoToolboxTimingAccumulator()
+            maxSubmittedOutputBacklog = 0
             encodeQueueWaitTiming = MDKVideoToolboxTimingAccumulator()
             encodeInvocationTiming = MDKVideoToolboxTimingAccumulator()
             metalStageTiming = MDKVideoToolboxTimingAccumulator()
@@ -1700,6 +1710,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
         submissionToken?.markCompleted()
         outputQueue.async { [self] in
+            if let lastOutputCallbackReceivedAt {
+                outputCallbackIntervalTiming.record((callbackReceivedAt - lastOutputCallbackReceivedAt) * 1000.0)
+            }
+            lastOutputCallbackReceivedAt = callbackReceivedAt
+            let submittedOutputBacklog = submittedFrameCount > completedOutputFrameCount
+                ? submittedFrameCount - completedOutputFrameCount
+                : 0
+            maxSubmittedOutputBacklog = max(maxSubmittedOutputBacklog, submittedOutputBacklog)
             outputCallbackCount += 1
             outputCallbackStatusHistogram[describe(status: status), default: 0] += 1
 

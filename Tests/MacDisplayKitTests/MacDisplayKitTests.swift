@@ -136,6 +136,16 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertNotNil(processor.liveSummary())
     }
 
+    func testVideoToolboxProcessorReportsOutputCadenceDiagnostics() {
+        let processor = MDKVideoToolboxEncodingProcessor(codec: .hevc)
+        let notes = processor.liveSummary()?.notes ?? []
+
+        XCTAssertTrue(notes.contains("videoToolboxOutputCallbackIntervalSampleCount=0"))
+        XCTAssertTrue(notes.contains("videoToolboxOutputCallbackIntervalAverageMilliseconds=0.000"))
+        XCTAssertTrue(notes.contains("videoToolboxOutputCallbackIntervalMaxMilliseconds=0.000"))
+        XCTAssertTrue(notes.contains("videoToolboxSubmittedOutputBacklogMax=0"))
+    }
+
     func testStandardHEVCHDRRequestsMultipleSlices() {
         let processor = MDKVideoToolboxEncodingProcessor(
             codec: .hevc,
