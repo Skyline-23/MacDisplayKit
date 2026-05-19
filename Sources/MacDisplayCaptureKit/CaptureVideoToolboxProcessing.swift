@@ -7,6 +7,8 @@ import Metal
 import MetalPerformanceShaders
 import VideoToolbox
 
+private let kVTCompressionPropertyKeyNumberOfSlicesPrivate = "NumberOfSlices"
+
 public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
     case surfaceUnavailable
     case pixelBufferCreationFailed(status: CVReturn)
@@ -1144,6 +1146,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             setSessionProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: profileLevel, label: "ProfileLevel")
             sessionConfigurationNotes.append("videoToolboxConfiguredProfileLevel=\(profileLevel)")
         }
+        if let numberOfSlices = resolvedNumberOfSlices {
+            setSessionProperty(
+                session,
+                key: kVTCompressionPropertyKeyNumberOfSlicesPrivate as CFString,
+                value: NSNumber(value: numberOfSlices),
+                label: "NumberOfSlices"
+            )
+        }
         if let hdrConfiguration {
             for property in hdrConfiguration.sessionProperties {
                 setSessionProperty(
@@ -1217,6 +1227,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
         sessionConfigurationNotes.append("videoToolboxHighRefreshLowLatencyMode=\(isHighRefreshLowLatency ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxLowLatencyRateControl=\(shouldEnableLowLatencyRateControl ? "enabled" : "disabled")")
+        sessionConfigurationNotes.append("videoToolboxConfiguredNumberOfSlices=\(resolvedNumberOfSlices.map(String.init) ?? "default")")
         usingHardwareAcceleratedEncoder = copyBooleanSessionProperty(
             session,
             key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder
@@ -1247,6 +1258,16 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             encoderSpecification[kVTVideoEncoderSpecification_EnableLowLatencyRateControl] = true as CFBoolean
         }
         return encoderSpecification as CFDictionary
+    }
+
+    var resolvedNumberOfSlices: Int? {
+        guard codec == .hevc,
+              hdrConfiguration?.transferFunction == .smpteSt2084PQ,
+              tileMetadata.tileCount == 1 else {
+            return nil
+        }
+
+        return 4
     }
 
     private var shouldEnableLowLatencyRateControl: Bool {

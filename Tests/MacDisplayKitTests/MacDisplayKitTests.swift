@@ -136,6 +136,17 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertNotNil(processor.liveSummary())
     }
 
+    func testStandardHEVCHDRRequestsMultipleSlices() {
+        let processor = MDKVideoToolboxEncodingProcessor(
+            codec: .hevc,
+            targetFrameRate: 120,
+            device: nil,
+            hdrConfiguration: .hdr10()
+        )
+
+        XCTAssertEqual(processor.resolvedNumberOfSlices, 4)
+    }
+
     func testHEVCPrefersLowLatencyRateControlAndSingleReferenceBuffer() {
         XCTAssertTrue(MDKVideoEncoderCodec.hevc.lowLatencyRateControlSupported)
         XCTAssertEqual(MDKVideoEncoderCodec.hevc.referenceBufferCount, 1)
