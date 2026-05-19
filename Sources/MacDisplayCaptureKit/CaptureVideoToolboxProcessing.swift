@@ -268,7 +268,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var lastImmediateRecoveryReplayDisplayTime: UInt64?
     private var immediateReplaySubmissionCount: UInt64 = 0
     private var suppressedImmediateReplayCount: UInt64 = 0
-    private var submitQueueKeyFrameSyncCount: UInt64 = 0
     private var encodeQueueWaitTiming = MDKVideoToolboxTimingAccumulator()
     private var encodeInvocationTiming = MDKVideoToolboxTimingAccumulator()
     private var metalStageTiming = MDKVideoToolboxTimingAccumulator()
@@ -483,7 +482,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxSubmittedFrameCount=\(submittedFrameCount)",
             "videoToolboxImmediateReplaySubmissionCount=\(immediateReplaySubmissionCount)",
             "videoToolboxSuppressedImmediateReplayCount=\(suppressedImmediateReplayCount)",
-            "videoToolboxSubmitQueueKeyFrameSyncCount=\(submitQueueKeyFrameSyncCount)",
             "videoToolboxUsingHardwareEncoder=\(describeHardwareAcceleration(usingHardwareAcceleratedEncoder))",
             "videoToolboxPixelBufferPoolIsShared=\(describeHardwareAcceleration(encoderPixelBufferPoolIsShared))",
             "videoToolboxRecommendedParallelizationLimit=\(recommendedParallelizationLimit.map(String.init) ?? "unknown")",
@@ -685,7 +683,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
         let presentationTimeStamp = CMTime(value: frameIndex, timescale: Int32(targetFrameRate))
         frameIndex += 1
-        let forceKeyFrame = consumeImmediateKeyFrameRequest()
         stagingSubmissionGroup.enter()
 
         if frame.pixelFormat != targetPixelFormat {
@@ -826,7 +823,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                         frame: frame,
                         slotIdentifier: slotIdentifier,
                         presentationTimeStamp: presentationTimeStamp,
-                        forceKeyFrame: forceKeyFrame,
                         releasePendingFrame: {}
                     )
                     releaseSourceFrame()
@@ -858,7 +854,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         frame: MDKCaptureFrame,
         slotIdentifier: Int?,
         presentationTimeStamp: CMTime? = nil,
-        forceKeyFrame: Bool? = nil,
         releasePendingFrame: @escaping @Sendable () -> Void = {}
     ) throws {
         guard let compressionSession else {
@@ -890,7 +885,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             imageBuffer: imageBuffer,
             presentationTimeStamp: resolvedPresentationTimeStamp,
             duration: .invalid,
-            frameProperties: makeFrameProperties(forceKeyFrame: forceKeyFrame ?? consumeImmediateKeyFrameRequest()),
+            frameProperties: makeFrameProperties(forceKeyFrame: consumeImmediateKeyFrameRequest()),
             sourceFrameRefcon: submissionToken.toOpaque(),
             infoFlagsOut: nil
         )
@@ -979,8 +974,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private func consumeImmediateKeyFrameRequest() -> Bool {
         if DispatchQueue.getSpecific(key: encodeQueueSpecificKey) != encodeQueueSpecificValue {
             return encodeQueue.sync {
-                submitQueueKeyFrameSyncCount += 1
-                return consumeImmediateKeyFrameRequest()
+                consumeImmediateKeyFrameRequest()
             }
         }
 
@@ -1638,7 +1632,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         lastImmediateRecoveryReplayDisplayTime = nil
         immediateReplaySubmissionCount = 0
         suppressedImmediateReplayCount = 0
-        submitQueueKeyFrameSyncCount = 0
         usingHardwareAcceleratedEncoder = nil
         encoderPixelBufferPoolIsShared = nil
         recommendedParallelizationLimit = nil
