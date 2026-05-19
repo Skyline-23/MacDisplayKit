@@ -78,7 +78,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         XCTAssertEqual(proResConfiguration.resolvedSourceBackend(using: capabilities), .skyLightDisplayStream)
     }
 
-    func testVeryHighResolutionHEVCHDRUsesPrivateDirectBackendWhenAvailable() {
+    func testVeryHighResolutionHEVCHDRUsesRawSkyLightBackendWhenAvailable() {
         let capabilities = MDKPrivateCaptureCapabilities(
             desktopCaptureAvailable: true,
             displayIOSurfaceCaptureAvailable: true,
@@ -102,7 +102,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
             hdrConfiguration: .hdr10()
         )
 
-        XCTAssertEqual(configuration.resolvedSourceBackend(using: capabilities), .privateDirectIOSurface)
+        XCTAssertEqual(configuration.resolvedSourceBackend(using: capabilities), .skyLightDisplayStream)
     }
 
     func testBGRAEncodedSessionsUseRawSkyLightWhenAvailable() {

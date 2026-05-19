@@ -275,13 +275,6 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
             return false
         }
 
-        if codec == .hevc,
-           hdrConfiguration != nil,
-           usesVeryHighResolutionOutput,
-           capabilities.supportsIOSurfaceDisplayCapture {
-            return false
-        }
-
         if codec == .proResProxy || codec == .hevc {
             return true
         }
@@ -291,16 +284,6 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
         // private SLDisplayStream path can emit YUV surfaces directly, which is
         // the better production path for HEVC/H.264 and high-refresh HDR work.
         return resolvedCapturePixelFormat != kCVPixelFormatType_32BGRA
-    }
-
-    private var usesVeryHighResolutionOutput: Bool {
-        let width = streamConfiguration.resolvedOutputWidth
-        let height = streamConfiguration.resolvedOutputHeight
-        guard width > 0, height > 0 else {
-            return false
-        }
-
-        return width * height >= 8_000_000
     }
 
     var resolvedEncoderInputStrategy: MDKEncodedCaptureEncoderInputStrategy {
