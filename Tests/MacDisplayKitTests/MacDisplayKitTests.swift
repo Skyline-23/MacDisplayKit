@@ -146,6 +146,13 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertTrue(notes.contains("videoToolboxSubmittedOutputBacklogMax=0"))
     }
 
+    func testVideoToolboxProcessorReportsSubmitQueueKeyFrameSyncDiagnostics() {
+        let processor = MDKVideoToolboxEncodingProcessor(codec: .hevc)
+        let notes = processor.liveSummary()?.notes ?? []
+
+        XCTAssertTrue(notes.contains("videoToolboxSubmitQueueKeyFrameSyncCount=0"))
+    }
+
     func testStandardHEVCHDRRequestsMultipleSlices() {
         let processor = MDKVideoToolboxEncodingProcessor(
             codec: .hevc,
