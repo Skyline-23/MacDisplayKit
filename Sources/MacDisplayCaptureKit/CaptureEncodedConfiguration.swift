@@ -309,6 +309,11 @@ public struct MDKEncodedCaptureConfiguration: Codable, Equatable, Sendable {
                 return .bgra
             }
         case .skyLightDisplayStream:
+            if codec == .hevc,
+               let encodedHDRConfiguration = resolvedEncodedHDRConfiguration(using: capabilities),
+               encodedHDRConfiguration.transferFunction != .ituR709 {
+                return .bgra
+            }
             return .auto
         }
     }
