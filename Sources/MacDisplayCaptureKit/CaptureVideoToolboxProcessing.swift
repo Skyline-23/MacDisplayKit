@@ -1154,14 +1154,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 label: "NumberOfSlices"
             )
         }
-        if let sourceFrameCount = resolvedSourceFrameCount {
-            setSessionProperty(
-                session,
-                key: kVTCompressionPropertyKey_SourceFrameCount,
-                value: NSNumber(value: sourceFrameCount),
-                label: "SourceFrameCount"
-            )
-        }
         if let hdrConfiguration {
             for property in hdrConfiguration.sessionProperties {
                 setSessionProperty(
@@ -1236,7 +1228,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         sessionConfigurationNotes.append("videoToolboxHighRefreshLowLatencyMode=\(isHighRefreshLowLatency ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxLowLatencyRateControl=\(shouldEnableLowLatencyRateControl ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxConfiguredNumberOfSlices=\(resolvedNumberOfSlices.map(String.init) ?? "default")")
-        sessionConfigurationNotes.append("videoToolboxConfiguredSourceFrameCount=\(resolvedSourceFrameCount.map(String.init) ?? "default")")
         usingHardwareAcceleratedEncoder = copyBooleanSessionProperty(
             session,
             key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder
@@ -1277,16 +1268,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         return 4
-    }
-
-    var resolvedSourceFrameCount: Int? {
-        guard codec == .hevc,
-              hdrConfiguration?.transferFunction == .smpteSt2084PQ,
-              tileMetadata.tileCount == 1 else {
-            return nil
-        }
-
-        return targetFrameRate
     }
 
     private var shouldEnableLowLatencyRateControl: Bool {
