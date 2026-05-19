@@ -1154,10 +1154,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 )
             }
         }
-        let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(session)
-        guard prepareStatus == noErr else {
-            VTCompressionSessionInvalidate(session)
-            throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: prepareStatus)
+        if shouldPrepareCompressionSession {
+            let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(session)
+            guard prepareStatus == noErr else {
+                VTCompressionSessionInvalidate(session)
+                throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: prepareStatus)
+            }
         }
 
         compressionSession = session
@@ -1175,6 +1177,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             sessionConfigurationNotes.append("videoToolboxConfiguredMaximumRealTimeFrameRate=default")
         }
         sessionConfigurationNotes.append("videoToolboxHighRefreshHDRLowLatencyMode=\(isHighRefreshHDRHEVC ? "enabled" : "disabled")")
+        sessionConfigurationNotes.append("videoToolboxPrepareToEncodeFrames=\(shouldPrepareCompressionSession ? "explicit" : "lazy-standard-hevc-hdr")")
         sessionConfigurationNotes.append("videoToolboxAllowTemporalCompression=\(allowsTemporalCompression ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxConfiguredMaxFrameDelayCount=\(maxFrameDelayCount)")
         if let vbvBufferDurationSeconds {
@@ -1247,6 +1250,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             encoderSpecification[kVTVideoEncoderSpecification_EnableLowLatencyRateControl] = true as CFBoolean
         }
         return encoderSpecification as CFDictionary
+    }
+
+    var shouldPrepareCompressionSession: Bool {
+        !(
+            codec == .hevc &&
+            hdrConfiguration?.transferFunction == .smpteSt2084PQ &&
+            tileMetadata.tileCount == 1
+        )
     }
 
     private var shouldEnableLowLatencyRateControl: Bool {
