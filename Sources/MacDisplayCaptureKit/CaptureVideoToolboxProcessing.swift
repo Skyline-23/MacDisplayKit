@@ -145,14 +145,6 @@ enum MDKVideoToolboxLatencyPolicy {
             return 0
         }
     }
-
-    static func maximumRealTimeFrameRateHint(
-        codec: MDKVideoEncoderCodec,
-        transferFunction: MDKVideoTransferFunction?,
-        targetFrameRate: Int
-    ) -> Int? {
-        nil
-    }
 }
 
 private struct MDKVideoToolboxReplayState {
@@ -1042,11 +1034,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             hdrConfiguration?.transferFunction == .smpteSt2084PQ
         let allowsTemporalCompression = codec != .proResProxy
         let expectedFrameRateHint = targetFrameRate
-        let maximumRealTimeFrameRateHint = MDKVideoToolboxLatencyPolicy.maximumRealTimeFrameRateHint(
-            codec: codec,
-            transferFunction: hdrConfiguration?.transferFunction,
-            targetFrameRate: targetFrameRate
-        )
+        let maximumRealTimeFrameRateHint =
+            (codec == .hevc && isHighRefreshHDRHEVC && !shouldEnableLowLatencyRateControl)
+            ? max((targetFrameRate * 15) / 8, targetFrameRate)
+            : nil
         let expectedDurationHint = 1.0 / Double(expectedFrameRateHint)
         let vbvBufferDurationSeconds: Double? =
             (isHighRefreshHDRHEVC && shouldEnableLowLatencyRateControl)

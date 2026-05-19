@@ -147,16 +147,6 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(processor.resolvedNumberOfSlices, 4)
     }
 
-    func testStandardHEVCHDRUsesDefaultMaximumRealtimeFrameRate() {
-        XCTAssertNil(
-            MDKVideoToolboxLatencyPolicy.maximumRealTimeFrameRateHint(
-                codec: .hevc,
-                transferFunction: .smpteSt2084PQ,
-                targetFrameRate: 120
-            )
-        )
-    }
-
     func testHEVCPrefersLowLatencyRateControlAndSingleReferenceBuffer() {
         XCTAssertTrue(MDKVideoEncoderCodec.hevc.lowLatencyRateControlSupported)
         XCTAssertEqual(MDKVideoEncoderCodec.hevc.referenceBufferCount, 1)
