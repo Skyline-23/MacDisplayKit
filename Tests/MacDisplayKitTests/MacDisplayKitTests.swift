@@ -147,6 +147,31 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(processor.resolvedNumberOfSlices, 4)
     }
 
+    func testStandardHEVCHDRUsesVBRRateControlWithoutLoweringTargetBitrate() {
+        let processor = MDKVideoToolboxEncodingProcessor(
+            codec: .hevc,
+            targetFrameRate: 120,
+            device: nil,
+            hdrConfiguration: .hdr10()
+        )
+
+        let variableBitRate = processor.resolvedVariableBitRate(
+            width: 3512,
+            height: 2290,
+            isHighRefreshHDRHEVC: true,
+            isHighRefreshLowLatency: true
+        )
+
+        if #available(macOS 26.0, *) {
+            XCTAssertEqual(variableBitRate, 192_000_000)
+            XCTAssertEqual(processor.resolvedVBVMaxBitRate(forVariableBitRate: 192_000_000), 336_000_000)
+            XCTAssertEqual(processor.resolvedRateControlMode(variableBitRate: variableBitRate), "vbr-vbv")
+        } else {
+            XCTAssertNil(variableBitRate)
+            XCTAssertEqual(processor.resolvedRateControlMode(variableBitRate: nil), "average-data-rate-limits")
+        }
+    }
+
     func testHEVCPrefersLowLatencyRateControlAndSingleReferenceBuffer() {
         XCTAssertTrue(MDKVideoEncoderCodec.hevc.lowLatencyRateControlSupported)
         XCTAssertEqual(MDKVideoEncoderCodec.hevc.referenceBufferCount, 1)
