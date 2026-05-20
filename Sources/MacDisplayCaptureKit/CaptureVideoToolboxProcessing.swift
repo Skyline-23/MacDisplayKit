@@ -164,8 +164,6 @@ private struct MDKVideoToolboxSourceTextureCacheEntry {
     let textures: [MTLTexture]
 }
 
-private let MDKVideoToolboxRTVCHEVCEncoderID = "com.apple.videotoolbox.videoencoder.hevc.rtvc"
-
 private final class MDKMetalBilinearScaler {
     private let scaler: MPSImageBilinearScale
 
@@ -252,7 +250,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var outputCallbackIntervalTiming = MDKVideoToolboxTimingAccumulator()
     private var maxSubmittedOutputBacklog: UInt64 = 0
     private var submittedFrameCount: UInt64 = 0
-    private var activeEncoderID: String?
     private var usingHardwareAcceleratedEncoder: Bool?
     private var encoderPixelBufferPoolIsShared: Bool?
     private var recommendedParallelizationLimit: Int?
@@ -1046,20 +1043,19 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             codec == .hevc &&
             isHighRefreshLowLatency &&
             hdrConfiguration?.transferFunction == .smpteSt2084PQ
-        let usesLowLatencyRateControl = resolvedLowLatencyRateControlEnabled
         let allowsTemporalCompression = codec != .proResProxy
         let expectedFrameRateHint = targetFrameRate
         let maximumRealTimeFrameRateHint =
-            (codec == .hevc && isHighRefreshHDRHEVC && !usesLowLatencyRateControl)
+            (codec == .hevc && isHighRefreshHDRHEVC && !shouldEnableLowLatencyRateControl)
             ? max((targetFrameRate * 15) / 8, targetFrameRate)
             : nil
         let expectedDurationHint = 1.0 / Double(expectedFrameRateHint)
         let vbvBufferDurationSeconds: Double? =
-            (isHighRefreshHDRHEVC && usesLowLatencyRateControl)
+            (isHighRefreshHDRHEVC && shouldEnableLowLatencyRateControl)
             ? (1.0 / 30.0)
             : nil
         let vbvInitialDelayPercentage: Double? =
-            (codec == .hevc && isHighRefreshLowLatency && !usesLowLatencyRateControl)
+            (codec == .hevc && isHighRefreshLowLatency && !shouldEnableLowLatencyRateControl)
             ? 0
             : nil
         let maxFrameDelayCount = MDKVideoToolboxLatencyPolicy.maxFrameDelayCount(
@@ -1241,14 +1237,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             sessionConfigurationNotes.append("videoToolboxConfiguredDataRateLimits=default")
         }
         sessionConfigurationNotes.append("videoToolboxHighRefreshLowLatencyMode=\(isHighRefreshLowLatency ? "enabled" : "disabled")")
-        sessionConfigurationNotes.append("videoToolboxLowLatencyRateControl=\(usesLowLatencyRateControl ? "enabled" : "disabled")")
+        sessionConfigurationNotes.append("videoToolboxLowLatencyRateControl=\(shouldEnableLowLatencyRateControl ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxConfiguredNumberOfSlices=\(resolvedNumberOfSlices.map(String.init) ?? "default")")
-        activeEncoderID = copyStringSessionProperty(
-            session,
-            key: kVTCompressionPropertyKey_EncoderID
-        )
-        sessionConfigurationNotes.append("videoToolboxRequestedEncoderID=\(resolvedEncoderSpecificationEncoderID ?? "default")")
-        sessionConfigurationNotes.append("videoToolboxEncoderID=\(activeEncoderID ?? "unknown")")
         usingHardwareAcceleratedEncoder = copyBooleanSessionProperty(
             session,
             key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder
@@ -1285,31 +1275,10 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         var encoderSpecification: [CFString: Any] = [
             kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: true as CFBoolean
         ]
-        if let resolvedEncoderSpecificationEncoderID {
-            encoderSpecification[kVTVideoEncoderSpecification_EncoderID] = resolvedEncoderSpecificationEncoderID as CFString
-        }
-        if resolvedLowLatencyRateControlEnabled {
+        if shouldEnableLowLatencyRateControl {
             encoderSpecification[kVTVideoEncoderSpecification_EnableLowLatencyRateControl] = true as CFBoolean
         }
         return encoderSpecification as CFDictionary
-    }
-
-    var resolvedEncoderSpecificationEncoderID: String? {
-        guard codec == .hevc,
-              hdrConfiguration?.transferFunction == .smpteSt2084PQ,
-              tileMetadata.tileCount == 1 else {
-            return nil
-        }
-
-        return MDKVideoToolboxRTVCHEVCEncoderID
-    }
-
-    var resolvedLowLatencyRateControlEnabled: Bool {
-        if resolvedEncoderSpecificationEncoderID == MDKVideoToolboxRTVCHEVCEncoderID {
-            return true
-        }
-
-        return shouldEnableLowLatencyRateControl
     }
 
     var resolvedNumberOfSlices: Int? {
@@ -1677,7 +1646,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         lastImmediateRecoveryReplayDisplayTime = nil
         immediateReplaySubmissionCount = 0
         suppressedImmediateReplayCount = 0
-        activeEncoderID = nil
         usingHardwareAcceleratedEncoder = nil
         encoderPixelBufferPoolIsShared = nil
         recommendedParallelizationLimit = nil
@@ -1865,21 +1833,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         return (copiedValue as! CFDictionary)
-    }
-
-    private func copyStringSessionProperty(
-        _ session: VTCompressionSession,
-        key: CFString
-    ) -> String? {
-        guard let copiedValue = copySessionProperty(session, key: key) else {
-            return nil
-        }
-
-        guard CFGetTypeID(copiedValue) == CFStringGetTypeID() else {
-            return nil
-        }
-
-        return copiedValue as? String
     }
 
     private func copyIntegerSessionProperty(
