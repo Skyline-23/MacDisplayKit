@@ -8,17 +8,6 @@ import MetalPerformanceShaders
 import VideoToolbox
 
 private let kVTCompressionPropertyKeyNumberOfSlicesPrivate = "NumberOfSlices"
-private let kVTCompressionPropertyKeyEncoderUsagePrivate = "EncoderUsage"
-private let kVTCompressionPropertyKeyFrameRateTargetForAverageBitratePrivate = "FrameRateTargetForAverageBitrate"
-private let kVTCompressionPropertyKeyMCTFLatencyModePrivate = "MCTFLatencyMode"
-private let kVTCompressionPropertyKeyMaxEncoderPixelRatePrivate = "MaxEncoderPixelRate"
-private let kVTCompressionPropertyKeyMotionEstimationSearchModePrivate = "MotionEstimationSearchMode"
-private let kVTCompressionPropertyKeyNumberOfCoresPrivate = "NumberOfCores"
-private let kVTCompressionPropertyKeyNumberOfSubFrameSectionsPrivate = "NumberOfSubFrameSections"
-private let kVTCompressionPropertyKeyPriorityPrivate = "Priority"
-private let kVTCompressionPropertyKeyRequireDeterministicDependencyAndReorderingPrivate = "RequireDeterministicDependencyAndReordering"
-private let kVTCompressionPropertyKeySAOModePrivate = "SAOMode"
-private let kVTCompressionPropertyKeyUsagePrivate = "Usage"
 
 public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
     case surfaceUnavailable
@@ -1280,7 +1269,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             recommendedParallelizedSubdivisionMinimumFrameCount = nil
             recommendedParallelizedSubdivisionMinimumDuration = nil
         }
-        appendAppleAVEReconNotes(for: session)
     }
 
     private func makeEncoderSpecification() -> CFDictionary {
@@ -1362,43 +1350,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         sessionConfigurationNotes.append("videoToolboxProperty.\(label)=\(describe(status: status))")
-    }
-
-    private func appendAppleAVEReconNotes(for session: VTCompressionSession) {
-        guard codec == .hevc else {
-            return
-        }
-
-        let properties: [(name: String, key: CFString)] = [
-            ("p", kVTCompressionPropertyKeyPriorityPrivate as CFString),
-            ("eu", kVTCompressionPropertyKeyEncoderUsagePrivate as CFString),
-            ("u", kVTCompressionPropertyKeyUsagePrivate as CFString),
-            (
-                "rd",
-                kVTCompressionPropertyKeyRequireDeterministicDependencyAndReorderingPrivate as CFString
-            ),
-            (
-                "fr",
-                kVTCompressionPropertyKeyFrameRateTargetForAverageBitratePrivate as CFString
-            ),
-            (
-                "me",
-                kVTCompressionPropertyKeyMotionEstimationSearchModePrivate as CFString
-            ),
-            ("sao", kVTCompressionPropertyKeySAOModePrivate as CFString),
-            ("mctf", kVTCompressionPropertyKeyMCTFLatencyModePrivate as CFString),
-            ("mpr", kVTCompressionPropertyKeyMaxEncoderPixelRatePrivate as CFString),
-            ("nc", kVTCompressionPropertyKeyNumberOfCoresPrivate as CFString),
-            ("ns", kVTCompressionPropertyKeyNumberOfSubFrameSectionsPrivate as CFString),
-            ("mfd", kVTCompressionPropertyKey_MaxFrameDelayCount)
-        ]
-
-        let description = properties
-            .map { property in
-                "\(property.name):\(copySessionPropertyDescription(session, key: property.key) ?? "unknown")"
-            }
-            .joined(separator: ",")
-        sessionConfigurationNotes.append("videoToolboxActiveAppleAVEProperties=\(description)")
     }
 
     private func acquireStagingSlot(
@@ -1919,34 +1870,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             return "\(time.value)/0"
         }
         return "\(time.value)/\(time.timescale)"
-    }
-
-    private func copySessionPropertyDescription(
-        _ session: VTCompressionSession,
-        key: CFString
-    ) -> String? {
-        guard let copiedValue = copySessionProperty(session, key: key) else {
-            return nil
-        }
-
-        let typeID = CFGetTypeID(copiedValue)
-        if typeID == CFBooleanGetTypeID() {
-            return CFBooleanGetValue((copiedValue as! CFBoolean)) ? "true" : "false"
-        }
-        if typeID == CFNumberGetTypeID() {
-            return (copiedValue as? NSNumber)?.stringValue
-        }
-        if typeID == CFStringGetTypeID() {
-            return copiedValue as? String
-        }
-        if typeID == CFDictionaryGetTypeID() || typeID == CFArrayGetTypeID() {
-            return String(describing: copiedValue)
-                .replacingOccurrences(of: "\n", with: " ")
-                .replacingOccurrences(of: "\t", with: " ")
-                .replacingOccurrences(of: ";", with: ",")
-        }
-        return String(describing: copiedValue)
-            .replacingOccurrences(of: ";", with: ",")
     }
 
     private func copySessionProperty(
