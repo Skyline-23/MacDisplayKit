@@ -8,6 +8,7 @@ import MetalPerformanceShaders
 import VideoToolbox
 
 private let kVTCompressionPropertyKeyNumberOfSlicesPrivate = "NumberOfSlices"
+private let kVTCompressionPropertyKeyAverageNonDroppableFrameRatePrivate = "AverageNonDroppableFrameRate"
 
 public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
     case surfaceUnavailable
@@ -1083,6 +1084,14 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         )
         setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedDuration, value: NSNumber(value: expectedDurationHint), label: "ExpectedDuration")
         setSessionProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: expectedFrameRateHint), label: "ExpectedFrameRate")
+        if let averageNonDroppableFrameRate = resolvedAverageNonDroppableFrameRate {
+            setSessionProperty(
+                session,
+                key: kVTCompressionPropertyKeyAverageNonDroppableFrameRatePrivate as CFString,
+                value: NSNumber(value: averageNonDroppableFrameRate),
+                label: "AverageNonDroppableFrameRate"
+            )
+        }
         if #available(macOS 15.0, *),
             let maximumRealTimeFrameRateHint {
             setSessionProperty(
@@ -1189,6 +1198,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         sessionConfigurationNotes.append("videoToolboxEncodedWidth=\(width)")
         sessionConfigurationNotes.append("videoToolboxEncodedHeight=\(height)")
         sessionConfigurationNotes.append("videoToolboxTargetFrameRateHint=\(expectedFrameRateHint)")
+        sessionConfigurationNotes.append(
+            "videoToolboxConfiguredAverageNonDroppableFrameRate=\(copyIntegerSessionProperty(session, key: kVTCompressionPropertyKeyAverageNonDroppableFrameRatePrivate as CFString).map(String.init) ?? "default")"
+        )
         if #available(macOS 15.0, *),
             let maximumRealTimeFrameRateHint {
             sessionConfigurationNotes.append("videoToolboxConfiguredMaximumRealTimeFrameRate=\(maximumRealTimeFrameRateHint)")
@@ -1289,6 +1301,16 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         return 4
+    }
+
+    var resolvedAverageNonDroppableFrameRate: Int? {
+        guard codec == .hevc,
+              hdrConfiguration?.transferFunction == .smpteSt2084PQ,
+              tileMetadata.tileCount == 1 else {
+            return nil
+        }
+
+        return targetFrameRate
     }
 
     private var shouldEnableLowLatencyRateControl: Bool {
