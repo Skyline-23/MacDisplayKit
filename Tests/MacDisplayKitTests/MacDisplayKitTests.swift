@@ -159,37 +159,6 @@ final class MacDisplayKitTests: XCTestCase {
         XCTAssertEqual(processor.resolvedNumberOfSlices, 4)
     }
 
-    func testHEVCPQHDRSingleFrameRequestsClientProcessCreateOption() {
-        XCTAssertTrue(
-            MDKVideoToolboxCreateOptionsPolicy.shouldAllowClientProcessEncode(
-                codec: .hevc,
-                hdrConfiguration: .hdr10(),
-                tileMetadata: .singleFrame
-            )
-        )
-        XCTAssertFalse(
-            MDKVideoToolboxCreateOptionsPolicy.shouldAllowClientProcessEncode(
-                codec: .hevc,
-                hdrConfiguration: nil,
-                tileMetadata: .singleFrame
-            )
-        )
-        XCTAssertFalse(
-            MDKVideoToolboxCreateOptionsPolicy.shouldAllowClientProcessEncode(
-                codec: .h264,
-                hdrConfiguration: .hdr10(),
-                tileMetadata: .singleFrame
-            )
-        )
-        XCTAssertFalse(
-            MDKVideoToolboxCreateOptionsPolicy.shouldAllowClientProcessEncode(
-                codec: .hevc,
-                hdrConfiguration: .hdr10(),
-                tileMetadata: MDKEncodedFrameTileMetadata(tileCount: 2)
-            )
-        )
-    }
-
     func testHEVCPrefersLowLatencyRateControlAndSingleReferenceBuffer() {
         XCTAssertTrue(MDKVideoEncoderCodec.hevc.lowLatencyRateControlSupported)
         XCTAssertEqual(MDKVideoEncoderCodec.hevc.referenceBufferCount, 1)

@@ -1,7 +1,6 @@
 import CoreGraphics
 import CoreMedia
 import CoreVideo
-import Darwin
 import Foundation
 import IOSurface
 import Metal
@@ -9,20 +8,6 @@ import MetalPerformanceShaders
 import VideoToolbox
 
 private let kVTCompressionPropertyKeyNumberOfSlicesPrivate = "NumberOfSlices"
-
-typealias MDKVTCompressionSessionCreateWithOptions = @convention(c) (
-    CFAllocator?,
-    Int32,
-    Int32,
-    CMVideoCodecType,
-    CFDictionary?,
-    CFDictionary?,
-    CFAllocator?,
-    VTCompressionOutputCallback?,
-    UnsafeMutableRawPointer?,
-    CFDictionary?,
-    UnsafeMutablePointer<VTCompressionSession?>
-) -> OSStatus
 
 public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
     case surfaceUnavailable
@@ -159,94 +144,6 @@ enum MDKVideoToolboxLatencyPolicy {
         case .proResProxy:
             return 0
         }
-    }
-}
-
-enum MDKVideoToolboxCreateOptionsPolicy {
-    private static let videoToolboxPath = "/System/Library/Frameworks/VideoToolbox.framework/VideoToolbox"
-    private static let createWithOptionsSymbol = "VTCompressionSessionCreateWithOptions"
-
-    static func shouldAllowClientProcessEncode(
-        codec: MDKVideoEncoderCodec,
-        hdrConfiguration: MDKVideoHDRConfiguration?,
-        tileMetadata: MDKEncodedFrameTileMetadata
-    ) -> Bool {
-        codec == .hevc &&
-        hdrConfiguration?.transferFunction == .smpteSt2084PQ &&
-        tileMetadata.tileCount == 1
-    }
-
-    static func makeCreateOptions(
-        codec: MDKVideoEncoderCodec,
-        hdrConfiguration: MDKVideoHDRConfiguration?,
-        tileMetadata: MDKEncodedFrameTileMetadata
-    ) -> CFDictionary? {
-        guard shouldAllowClientProcessEncode(
-            codec: codec,
-            hdrConfiguration: hdrConfiguration,
-            tileMetadata: tileMetadata
-        ) else {
-            return nil
-        }
-
-        return [
-            "AllowClientProcessEncode" as CFString: kCFBooleanTrue as Any
-        ] as CFDictionary
-    }
-
-    static func createCompressionSession(
-        allocator: CFAllocator?,
-        width: Int32,
-        height: Int32,
-        codecType: CMVideoCodecType,
-        encoderSpecification: CFDictionary?,
-        imageBufferAttributes: CFDictionary?,
-        compressedDataAllocator: CFAllocator?,
-        outputCallback: VTCompressionOutputCallback?,
-        refcon: UnsafeMutableRawPointer?,
-        options: CFDictionary?,
-        compressionSessionOut: UnsafeMutablePointer<VTCompressionSession?>
-    ) -> (status: OSStatus, usedCreateWithOptions: Bool) {
-        guard let options,
-              let createWithOptions = createWithOptionsFunction() else {
-            let status = VTCompressionSessionCreate(
-                allocator: allocator,
-                width: width,
-                height: height,
-                codecType: codecType,
-                encoderSpecification: encoderSpecification,
-                imageBufferAttributes: imageBufferAttributes,
-                compressedDataAllocator: compressedDataAllocator,
-                outputCallback: outputCallback,
-                refcon: refcon,
-                compressionSessionOut: compressionSessionOut
-            )
-            return (status, false)
-        }
-
-        let status = createWithOptions(
-            allocator,
-            width,
-            height,
-            codecType,
-            encoderSpecification,
-            imageBufferAttributes,
-            compressedDataAllocator,
-            outputCallback,
-            refcon,
-            options,
-            compressionSessionOut
-        )
-        return (status, true)
-    }
-
-    private static func createWithOptionsFunction() -> MDKVTCompressionSessionCreateWithOptions? {
-        guard let handle = dlopen(videoToolboxPath, RTLD_NOW),
-              let symbol = dlsym(handle, createWithOptionsSymbol) else {
-            return nil
-        }
-
-        return unsafeBitCast(symbol, to: MDKVTCompressionSessionCreateWithOptions.self)
     }
 }
 
@@ -1124,13 +1021,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         pixelBufferAttributes = sourceImageAttributes as CFDictionary
         sessionConfigurationNotes.removeAll(keepingCapacity: true)
 
-        let createOptions = MDKVideoToolboxCreateOptionsPolicy.makeCreateOptions(
-            codec: codec,
-            hdrConfiguration: hdrConfiguration,
-            tileMetadata: tileMetadata
-        )
         var session: VTCompressionSession?
-        let createResult = MDKVideoToolboxCreateOptionsPolicy.createCompressionSession(
+        let status = VTCompressionSessionCreate(
             allocator: kCFAllocatorDefault,
             width: Int32(width),
             height: Int32(height),
@@ -1140,10 +1032,8 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             compressedDataAllocator: nil,
             outputCallback: MDKVideoToolboxOutputCallback,
             refcon: Unmanaged.passUnretained(self).toOpaque(),
-            options: createOptions,
             compressionSessionOut: &session
         )
-        let status = createResult.status
         guard status == noErr, let session else {
             throw MDKVideoToolboxProcessingError.compressionSessionCreationFailed(status: status)
         }
@@ -1349,8 +1239,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         sessionConfigurationNotes.append("videoToolboxHighRefreshLowLatencyMode=\(isHighRefreshLowLatency ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxLowLatencyRateControl=\(shouldEnableLowLatencyRateControl ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxConfiguredNumberOfSlices=\(resolvedNumberOfSlices.map(String.init) ?? "default")")
-        sessionConfigurationNotes.append("videoToolboxCreateWithOptions=\(createResult.usedCreateWithOptions ? "enabled" : "disabled")")
-        sessionConfigurationNotes.append("videoToolboxCreateWithOptionsAllowClientProcessEncode=\(createOptions == nil ? "disabled" : "enabled")")
         usingHardwareAcceleratedEncoder = copyBooleanSessionProperty(
             session,
             key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder
