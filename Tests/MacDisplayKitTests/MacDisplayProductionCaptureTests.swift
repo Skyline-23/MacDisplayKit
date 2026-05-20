@@ -878,7 +878,6 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
                 return min(max(effectiveQueueDepth * 3, 10), 16)
             }()
         }
-        let expectedDroppedCount = UInt64(10 - expectedPendingLimit)
         let session = makeTestSession(
             configuration: configuration,
             source: source,
@@ -895,7 +894,7 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         try await Task.sleep(nanoseconds: 50_000_000)
 
         let saturatedStats = await session.statisticsSnapshot()
-        XCTAssertEqual(saturatedStats.droppedFrameCount, expectedDroppedCount)
+        XCTAssertEqual(saturatedStats.droppedFrameCount, 0)
         XCTAssertEqual(processor.pendingReleaseCount, expectedPendingLimit)
 
         processor.releaseOne()
@@ -903,7 +902,49 @@ final class MacDisplayProductionCaptureTests: XCTestCase {
         try await Task.sleep(nanoseconds: 50_000_000)
 
         let resumedStats = await session.statisticsSnapshot()
-        XCTAssertEqual(resumedStats.droppedFrameCount, expectedDroppedCount)
+        XCTAssertEqual(resumedStats.droppedFrameCount, 0)
+        XCTAssertEqual(processor.pendingReleaseCount, expectedPendingLimit)
+
+        await session.stop()
+    }
+
+    func testEncodedCaptureSessionReportsMailboxReplacementAsCoalescedFrame() async throws {
+        let source = TestSourceSession()
+        let processor = BlockingReleaseProcessor()
+        let configuration = MDKEncodedCaptureConfiguration.panelNative(displayID: 11)
+        let expectedPendingLimit = switch configuration.resolvedSourceBackend {
+        case .privateDirectIOSurface:
+            max(configuration.resolvedPrivateCaptureSurfaceCount - 1, 1)
+        case .skyLightDisplayStream:
+            {
+                let effectiveQueueDepth = max(configuration.streamConfiguration.resolvedQueueDepth, 1)
+                return min(max(effectiveQueueDepth * 3, 10), 16)
+            }()
+        }
+        let session = makeTestSession(
+            configuration: configuration,
+            source: source,
+            processorFactory: { _, _ in
+                processor
+            }
+        )
+
+        let eventStream = await session.makeEventStream()
+        var eventIterator = eventStream.makeAsyncIterator()
+        try await session.start()
+        _ = await eventIterator.next()
+
+        for displayTime in 1...(expectedPendingLimit + 2) {
+            source.emitFrame(displayTime: UInt64(displayTime), surface: Self.makeTestSurface())
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let coalescedEvent = await eventIterator.next()
+        XCTAssertEqual(coalescedEvent?.kind, .coalescedFrame)
+        XCTAssertEqual(coalescedEvent?.sourceDisplayTime, UInt64(expectedPendingLimit + 1))
+
+        let saturatedStats = await session.statisticsSnapshot()
+        XCTAssertEqual(saturatedStats.droppedFrameCount, 0)
         XCTAssertEqual(processor.pendingReleaseCount, expectedPendingLimit)
 
         await session.stop()
