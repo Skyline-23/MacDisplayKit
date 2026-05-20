@@ -8,7 +8,6 @@ import MetalPerformanceShaders
 import VideoToolbox
 
 private let kVTCompressionPropertyKeyNumberOfSlicesPrivate = "NumberOfSlices"
-private let kVTCompressionPropertyKeyMCTFLatencyModePrivate = "MCTFLatencyMode"
 
 public enum MDKVideoToolboxProcessingError: Error, LocalizedError, Equatable {
     case surfaceUnavailable
@@ -1166,14 +1165,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                 label: "NumberOfSlices"
             )
         }
-        if let mctfLatencyMode = resolvedMCTFLatencyMode {
-            setSessionProperty(
-                session,
-                key: kVTCompressionPropertyKeyMCTFLatencyModePrivate as CFString,
-                value: mctfLatencyMode as CFString,
-                label: "MCTFLatencyMode"
-            )
-        }
         if let hdrConfiguration {
             for property in hdrConfiguration.sessionProperties {
                 setSessionProperty(
@@ -1248,7 +1239,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         sessionConfigurationNotes.append("videoToolboxHighRefreshLowLatencyMode=\(isHighRefreshLowLatency ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxLowLatencyRateControl=\(shouldEnableLowLatencyRateControl ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxConfiguredNumberOfSlices=\(resolvedNumberOfSlices.map(String.init) ?? "default")")
-        sessionConfigurationNotes.append("videoToolboxConfiguredMCTFLatencyMode=\(resolvedMCTFLatencyMode ?? "default")")
         usingHardwareAcceleratedEncoder = copyBooleanSessionProperty(
             session,
             key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder
@@ -1299,16 +1289,6 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         }
 
         return 4
-    }
-
-    var resolvedMCTFLatencyMode: String? {
-        guard codec == .hevc,
-              hdrConfiguration?.transferFunction == .smpteSt2084PQ,
-              tileMetadata.tileCount == 1 else {
-            return nil
-        }
-
-        return "Low"
     }
 
     private var shouldEnableLowLatencyRateControl: Bool {
