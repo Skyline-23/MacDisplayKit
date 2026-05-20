@@ -822,7 +822,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             self.recordTiming(.metalStage, startedAt: metalStageStartedAt)
             self.submissionQueue.async { [self] in
                 do {
-                    try submitToEncoder(
+                    try self.submitToEncoder(
                         imageBuffer: stagedPixelBuffer.pixelBuffer,
                         frame: frame,
                         slotIdentifier: slotIdentifier,
@@ -830,15 +830,15 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
                         releasePendingFrame: {}
                     )
                     releaseSourceFrame()
-                    recordProcessingSuccess(isStaged: true)
+                    self.recordProcessingSuccess(isStaged: true)
                 } catch {
                     releaseSourceFrame()
                     let errorDescription = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-                    recordProcessingFailure(errorDescription)
-                    releaseStagingSlot(identifier: slotIdentifier)
-                    failureHandler?(errorDescription)
+                    self.recordProcessingFailure(errorDescription)
+                    self.releaseStagingSlot(identifier: slotIdentifier)
+                    self.failureHandler?(errorDescription)
                 }
-                stagingSubmissionGroup.leave()
+                self.stagingSubmissionGroup.leave()
             }
         }
         commandBuffer.commit()
