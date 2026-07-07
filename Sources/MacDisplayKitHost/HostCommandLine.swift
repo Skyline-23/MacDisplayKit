@@ -69,6 +69,11 @@ private enum MDKHostCLICommand {
         preprocessStrategy: MDKVideoPreprocessStrategy,
         queueProfile: MDKSkyLightDisplayStreamQueueProfile?,
         queueDepth: Int?,
+        pixelFormatOverride: UInt32?,
+        encoderInputStrategy: MDKEncodedCaptureEncoderInputStrategy?,
+        targetAverageBitRateBitsPerSecond: Int?,
+        tileCount: Int?,
+        encodedLaneCount: Int?,
         showCursor: Bool,
         hdrConfiguration: MDKVideoHDRConfiguration?,
         backpressurePolicy: MDKEncodedCaptureBackpressurePolicy,
@@ -137,6 +142,11 @@ enum MDKHostCommandLine {
             let preprocessStrategy,
             let queueProfile,
             let queueDepth,
+            let pixelFormatOverride,
+            let encoderInputStrategy,
+            let targetAverageBitRateBitsPerSecond,
+            let tileCount,
+            let encodedLaneCount,
             let showCursor,
             let hdrConfiguration,
             let backpressurePolicy,
@@ -155,9 +165,16 @@ enum MDKHostCommandLine {
                     codec: codec,
                     preprocessStrategy: preprocessStrategy,
                     targetFrameRate: 120,
+                    targetAverageBitRateBitsPerSecond: targetAverageBitRateBitsPerSecond,
+                    capturePixelFormat: pixelFormatOverride,
+                    encoderInputStrategy: encoderInputStrategy ?? .auto,
                     hdrConfiguration: hdrConfiguration,
                     backpressurePolicy: backpressurePolicy,
-                    recoveryPolicy: recoveryPolicy
+                    recoveryPolicy: recoveryPolicy,
+                    tileLayout: MDKEncodedCaptureTileLayout(
+                        tileCount: UInt32(tileCount ?? 1),
+                        encodedLaneCount: UInt32(encodedLaneCount ?? tileCount ?? 1)
+                    )
                 )
                 stimulus?.start()
                 defer { stimulus?.stop() }
@@ -812,6 +829,14 @@ enum MDKHostCommandLine {
                 preprocessStrategy: parsePreprocessStrategy(tokens: tokens) ?? .none,
                 queueProfile: parseQueueProfile(tokens: tokens),
                 queueDepth: parseQueueDepth(tokens: tokens),
+                pixelFormatOverride: parseSkyLightPixelFormat(tokens: tokens),
+                encoderInputStrategy: parseEncoderInputStrategy(tokens: tokens),
+                targetAverageBitRateBitsPerSecond: parsePositiveInt(
+                    flag: "--target-average-bitrate",
+                    tokens: tokens
+                ),
+                tileCount: parsePositiveInt(flag: "--tile-count", tokens: tokens),
+                encodedLaneCount: parsePositiveInt(flag: "--encoded-lane-count", tokens: tokens),
                 showCursor: tokens.contains("--show-cursor"),
                 hdrConfiguration: parseHDRConfiguration(tokens: tokens),
                 backpressurePolicy: parseBackpressurePolicy(tokens: tokens),
@@ -1110,6 +1135,15 @@ enum MDKHostCommandLine {
         return MDKVideoPreprocessStrategy(rawValue: tokens[index + 1])
     }
 
+    private static func parseEncoderInputStrategy(tokens: [String]) -> MDKEncodedCaptureEncoderInputStrategy? {
+        guard let index = tokens.firstIndex(of: "--encoder-input-strategy"),
+              tokens.indices.contains(index + 1) else {
+            return nil
+        }
+
+        return MDKEncodedCaptureEncoderInputStrategy(rawValue: tokens[index + 1])
+    }
+
     private static func parseQueueProfile(tokens: [String]) -> MDKSkyLightDisplayStreamQueueProfile? {
         guard let index = tokens.firstIndex(of: "--queue-profile"),
               tokens.indices.contains(index + 1) else {
@@ -1235,6 +1269,17 @@ enum MDKHostCommandLine {
 
     private static func parseQueueDepth(tokens: [String]) -> Int? {
         guard let index = tokens.firstIndex(of: "--queue-depth"),
+              tokens.indices.contains(index + 1),
+              let value = Int(tokens[index + 1]),
+              value > 0 else {
+            return nil
+        }
+
+        return value
+    }
+
+    private static func parsePositiveInt(flag: String, tokens: [String]) -> Int? {
+        guard let index = tokens.firstIndex(of: flag),
               tokens.indices.contains(index + 1),
               let value = Int(tokens[index + 1]),
               value > 0 else {

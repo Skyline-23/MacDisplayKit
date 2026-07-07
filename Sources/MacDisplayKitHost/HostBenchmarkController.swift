@@ -556,11 +556,14 @@ final class MDKHostBenchmarkController {
             codec: configuration.codec,
             preprocessStrategy: configuration.preprocessStrategy,
             targetFrameRate: configuration.targetFrameRate,
+            targetAverageBitRateBitsPerSecond: configuration.targetAverageBitRateBitsPerSecond,
             deliveryMode: consumerMode == .callback ? .callbackOnly : .multiplexed,
             capturePixelFormat: configuration.capturePixelFormat,
+            encoderInputStrategy: configuration.encoderInputStrategy,
             hdrConfiguration: configuration.hdrConfiguration,
             backpressurePolicy: configuration.backpressurePolicy,
-            recoveryPolicy: configuration.recoveryPolicy
+            recoveryPolicy: configuration.recoveryPolicy,
+            tileLayout: configuration.tileLayout
         )
         let session = MDKEncodedCaptureSession(configuration: effectiveConfiguration)
         let observer = MDKHostEncodedCaptureSessionObserver()
