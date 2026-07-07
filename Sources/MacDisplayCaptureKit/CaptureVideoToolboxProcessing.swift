@@ -1477,7 +1477,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             return
         }
 
-        if codec != .hevc, let encoderManagedPixelBufferPool {
+        if let encoderManagedPixelBufferPool {
             stagingPixelBufferPool = encoderManagedPixelBufferPool
             stagingSlots.removeAll(keepingCapacity: true)
             availableStagingSlotIdentifiers.removeAll(keepingCapacity: true)
