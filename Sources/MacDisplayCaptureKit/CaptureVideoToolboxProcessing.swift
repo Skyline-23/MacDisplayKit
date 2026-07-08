@@ -8,6 +8,7 @@ import MetalPerformanceShaders
 import VideoToolbox
 
 private let kVTCompressionPropertyKeyNumberOfSlicesPrivate = "NumberOfSlices"
+private let kVTCompressionPropertyKeyNumberOfSubFrameSectionsPrivate = "NumberOfSubFrameSections"
 private let kVTCompressionPropertyKeyMaxEncoderPixelRatePrivate = "MaxEncoderPixelRate"
 private let kVTCompressionPropertyKeyNumberOfCoresPrivate = "NumberOfCores"
 private let kVTCompressionPropertyKeyMotionEstimationSearchModePrivate = "MotionEstimationSearchMode"
@@ -261,6 +262,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
     private var encoderMaxPixelRate: Int?
     private var encoderCoreCount: Int?
     private var encoderMotionEstimationSearchMode: Int?
+    private var activeMaxFrameDelayCount: Int?
+    private var activeNumberOfSlices: Int?
+    private var activeNumberOfSubFrameSections: Int?
     private var supportedPresetDictionaryNames: [String]?
     private var recommendedParallelizationLimit: Int?
     private var recommendedParallelizedSubdivisionMinimumFrameCount: Int?
@@ -501,6 +505,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             "videoToolboxEncoderMaxPixelRate=\(encoderMaxPixelRate.map(String.init) ?? "unknown")",
             "videoToolboxEncoderCoreCount=\(encoderCoreCount.map(String.init) ?? "unknown")",
             "videoToolboxEncoderMotionEstimationSearchMode=\(encoderMotionEstimationSearchMode.map(String.init) ?? "unknown")",
+            "videoToolboxActiveMaxFrameDelayCount=\(activeMaxFrameDelayCount.map(String.init) ?? "unknown")",
+            "videoToolboxActiveNumberOfSlices=\(activeNumberOfSlices.map(String.init) ?? "unknown")",
+            "videoToolboxActiveNumberOfSubFrameSections=\(activeNumberOfSubFrameSections.map(String.init) ?? "unknown")",
             "videoToolboxSupportedPresetDictionaries=\(supportedPresetDictionaryNames?.joined(separator: ",") ?? "unknown")",
             "videoToolboxRecommendedParallelizationLimit=\(recommendedParallelizationLimit.map(String.init) ?? "unknown")",
             "videoToolboxRecommendedParallelizedSubdivisionMinimumFrameCount=\(recommendedParallelizedSubdivisionMinimumFrameCount.map(String.init) ?? "unknown")",
@@ -1289,6 +1296,18 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             session,
             key: kVTCompressionPropertyKeyMotionEstimationSearchModePrivate as CFString
         )
+        activeMaxFrameDelayCount = copyIntegerSessionProperty(
+            session,
+            key: kVTCompressionPropertyKey_MaxFrameDelayCount
+        )
+        activeNumberOfSlices = copyIntegerSessionProperty(
+            session,
+            key: kVTCompressionPropertyKeyNumberOfSlicesPrivate as CFString
+        )
+        activeNumberOfSubFrameSections = copyIntegerSessionProperty(
+            session,
+            key: kVTCompressionPropertyKeyNumberOfSubFrameSectionsPrivate as CFString
+        )
         encoderPixelBufferAttributes = copyDictionarySessionProperty(
             session,
             key: kVTCompressionPropertyKey_VideoEncoderPixelBufferAttributes
@@ -1731,6 +1750,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         encoderMaxPixelRate = nil
         encoderCoreCount = nil
         encoderMotionEstimationSearchMode = nil
+        activeMaxFrameDelayCount = nil
+        activeNumberOfSlices = nil
+        activeNumberOfSubFrameSections = nil
         supportedPresetDictionaryNames = nil
         recommendedParallelizationLimit = nil
         recommendedParallelizedSubdivisionMinimumFrameCount = nil
