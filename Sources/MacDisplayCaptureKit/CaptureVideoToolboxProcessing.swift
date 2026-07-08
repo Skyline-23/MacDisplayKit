@@ -1089,6 +1089,7 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
             codec: codec,
             targetFrameRate: targetFrameRate
         )
+        let prioritizesEncodingSpeedOverQuality = false
 
         setSessionProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue, label: "RealTime")
         setSessionProperty(session, key: kVTCompressionPropertyKey_ProgressiveScan, value: kCFBooleanTrue, label: "ProgressiveScan")
@@ -1100,7 +1101,12 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         )
         setSessionProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse, label: "AllowFrameReordering")
         setSessionProperty(session, key: kVTCompressionPropertyKey_AllowOpenGOP, value: kCFBooleanFalse, label: "AllowOpenGOP")
-        setSessionProperty(session, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue, label: "PrioritizeEncodingSpeedOverQuality")
+        setSessionProperty(
+            session,
+            key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+            value: kCFBooleanFalse,
+            label: "PrioritizeEncodingSpeedOverQuality"
+        )
         setSessionProperty(session, key: kVTCompressionPropertyKey_MaximizePowerEfficiency, value: kCFBooleanFalse, label: "MaximizePowerEfficiency")
         setSessionProperty(
             session,
@@ -1225,6 +1231,9 @@ public final class MDKVideoToolboxEncodingProcessor: MDKCaptureFrameProcessing, 
         sessionConfigurationNotes.append("videoToolboxHighRefreshHDRLowLatencyMode=\(isHighRefreshHDRHEVC ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxAllowTemporalCompression=\(allowsTemporalCompression ? "enabled" : "disabled")")
         sessionConfigurationNotes.append("videoToolboxConfiguredMaxFrameDelayCount=\(maxFrameDelayCount)")
+        sessionConfigurationNotes.append(
+            "videoToolboxConfiguredPrioritizeEncodingSpeedOverQuality=\(prioritizesEncodingSpeedOverQuality)"
+        )
         if let vbvBufferDurationSeconds {
             sessionConfigurationNotes.append("videoToolboxConfiguredVBVBufferDurationSeconds=\(vbvBufferDurationSeconds)")
         } else {
